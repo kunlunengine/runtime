@@ -1,0 +1,18 @@
+[package]
+name = "kunlunengine-runtime"
+version = "0.1.0"
+edition = "2024"
+description = "The native JavaScriptCore host for Kunlun Engine"
+license = "MIT"
+repository = "https://github.com/kunlunengine/runtime"
+rust-version = "1.85"
+
+[lib]
+name = "kunlun_runtime"
+path = "src/lib.rs"
+
+[[bin]]
+name = "kunlun-runtime"
+path = "src/main.rs"
+
+[dependencies]

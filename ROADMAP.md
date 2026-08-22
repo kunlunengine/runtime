@@ -1,6 +1,6 @@
 # Kunlun Runtime Roadmap
 
-Status date: 2026-08-21
+Status date: 2026-08-22
 
 This roadmap starts from the actual repository state, not from the aspirations in the core README.
 Before this revision the repository contained only a `Hello, world!` binary and no runtime
@@ -33,11 +33,19 @@ Goal: replace `Hello, world!` with an honest, testable engine slice.
 - [x] owned context with `!Send + !Sync` thread affinity.
 - [x] classic-script evaluation, source URLs, UTF-8 conversion, and exception propagation.
 - [x] inspectable-context primitive and `doctor` smoke test.
+- [x] Virtual Cargo Workspace split into `kunlun-jsc-sys`, `kunlun-jsc`, and `kunlun-runtime`.
+- [x] Tokio current-thread isolate loop, JSC Deferred Promise bridge, and Promise-returning
+  `sleep(ms)` host function.
+- [x] `async`/`await`, timer ordering, and asynchronous exception tests.
+- [x] Plain-data Tokio completion channel; Deferred Promises remain isolate-local.
+- [x] Capability-gated `kunlun:fs` read and `kunlun:http` request bootstrap modules.
+- [x] Ambient `@kunlun-js/runtime-types` declarations checked against the built-in registry.
 - [x] architecture, JSC binding, DevTools, and CLI decisions recorded.
 - [ ] CI on macOS arm64/x64 and formatting/lint policy.
 
-Exit gate: `cargo test`, `kunlun-runtime doctor`, and an exception-path test pass on supported macOS
-builders. No ESM or runtime-compatibility claim is allowed at this milestone.
+Exit gate: `cargo test --workspace`, `kunlun-runtime doctor`, synchronous/asynchronous exception
+paths, and a Tokio-to-JSC Promise resolution test pass on supported macOS builders. No ESM, Fetch,
+or runtime-compatibility claim is allowed at this milestone.
 
 ### M1 — Reproducible JSC distribution and safe binding
 
@@ -59,10 +67,14 @@ downloads an unaudited native archive implicitly.
 
 Goal: run real bundled server entrypoints rather than classic scripts.
 
-- URL-based ESM resolver with file, `kunlun:`, and generated-module schemes.
-- Module registry, cyclic graph handling, dynamic import, `import.meta.url`, and source maps.
-- Promise rejection tracking and a deterministic microtask checkpoint API.
-- Host task loop for timers, signals, async I/O completions, and graceful shutdown.
+- [ ] URL-based native ESM resolver with file, `kunlun:`, and generated-module schemes.
+- [x] Built-in module registry and bootstrap loader for `kunlun:` specifiers.
+- [ ] Native module linking, cyclic graph handling, dynamic import, `import.meta.url`, and source maps.
+- [x] Initial Deferred Promise bridge and native Promise/`async`/`await` continuation execution.
+- [x] Tokio current-thread `LocalSet` host loop and Promise-returning timer primitive.
+- [ ] Promise rejection tracking and an explicit deterministic microtask checkpoint API.
+- [x] Extend the host loop from timers to plain-data filesystem/HTTP completion messages.
+- [ ] Add signals, cancellation/AbortSignal, streaming I/O, and graceful shutdown.
 - Execution deadlines, cooperative cancellation, heap telemetry, and out-of-memory policy.
 - Console, text encoding, URL, streams, and crypto primitives required by the runtime profile.
 

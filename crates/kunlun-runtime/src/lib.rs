@@ -226,7 +226,7 @@ impl<'a> AsyncStateCleanup<'a> {
     fn cleanup(&mut self) {
         cleanup_state(self.vm, &self.state);
         self.timers.cancel_evaluation(self.evaluation_id);
-        self.host.finish_evaluation(self.evaluation_id);
+        self.host.cancel_evaluation(self.evaluation_id);
         self.armed = false;
     }
 }
@@ -373,6 +373,36 @@ mod tests {
             isolate.timers.pending.borrow().is_empty(),
             "successful evaluation left an unawaited timer pending"
         );
+    }
+
+    #[test]
+    fn successful_evaluation_removes_unawaited_host_calls() {
+        let runtime = test_runtime();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let permissions = HostPermissions::none().allow_net_host("127.0.0.1");
+        let mut isolate =
+            TokioIsolate::new_with_permissions("unawaited-host-call-test", permissions).unwrap();
+        let url = serde_json::to_string(&format!("http://{address}/slow")).unwrap();
+
+        let value = runtime
+            .block_on(isolate.evaluate_async_body(
+                &format!(
+                    "const http = await kunlun.import('kunlun:http');\n\
+                     http.request({url});\n\
+                     return 'done';"
+                ),
+                "test:///unawaited-host-call.js",
+            ))
+            .unwrap();
+
+        assert_eq!(value, "done");
+        assert_eq!(
+            isolate.host.pending_count(),
+            0,
+            "successful evaluation left a host call pending"
+        );
+        drop(listener);
     }
 
     #[test]

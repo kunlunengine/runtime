@@ -5,12 +5,13 @@
 Use a two-stage binding strategy:
 
 1. **Bootstrap:** link Apple's system `JavaScriptCore.framework` on macOS to prove basic ownership,
-   evaluation, exception handling, source URLs, and `JSGlobalContextSetInspectable` without a native
-   dependency download.
+   evaluation, exception handling, source URLs, `JSGlobalContextSetInspectable`, and Deferred Promise
+   resolution from the host event loop without a native dependency download.
 2. **Product:** build an exact pinned WebKit revision and bind it through a Kunlun-owned C ABI shim.
    Release and CI builds use that hermetic engine on macOS and Linux.
 
-The bootstrap exists in `src/jsc/macos.rs`. It must not grow into the production binding by accretion.
+The bootstrap is split across `crates/kunlun-jsc-sys` and `crates/kunlun-jsc`. It must not grow into
+the production binding by accretion.
 The public JSC C API does not expose everything a server runtime needs, including a complete ESM
 loader, deterministic job-loop integration, robust termination controls, and a portable Inspector
 transport.
@@ -45,6 +46,10 @@ This is an engineering and supply-chain boundary, not a claim that existing crat
 
 - Owns context groups, global contexts, protected values, strings, modules, exceptions, and callbacks.
 - Uses RAII for `JSGlobalContextRelease`, `JSStringRelease`, and `JSValueProtect/Unprotect` pairs.
+- Protects Deferred Promise resolver/rejector functions until the owning Tokio local task settles or
+  drops them.
+- Exposes a generic `(operation, JSON payload) -> DeferredPromise` host-call bridge without depending
+  on Tokio, HTTP, filesystem, or application policy.
 - Makes all context-bound values `!Send + !Sync`.
 - Converts Rust panics inside callbacks to JS exceptions; no unwind crosses the C boundary.
 - Does not expose raw handles except in narrowly scoped `unsafe` extension points.

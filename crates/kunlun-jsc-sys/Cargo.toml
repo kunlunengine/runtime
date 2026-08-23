@@ -1,0 +1,16 @@
+[package]
+name = "kunlun-jsc-sys"
+description = "Raw JavaScriptCore bindings for Kunlun Runtime"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+name = "kunlun_jsc_sys"
+path = "src/lib.rs"
+
+[lints]
+workspace = true

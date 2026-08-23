@@ -5,13 +5,14 @@ use reqwest::redirect::Policy;
 use serde::{Deserialize, Serialize};
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::io;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 
-const MAX_HTTP_RESPONSE_BYTES: usize = 1024 * 1024;
+pub(crate) const MAX_HTTP_RESPONSE_BYTES: usize = 1024 * 1024;
+pub(crate) const MAX_IN_FLIGHT_HOST_CALLS: usize = 256;
 
 #[derive(Debug, Clone, Default)]
 pub struct HostPermissions {
@@ -98,6 +99,7 @@ pub(crate) struct HostDispatcher {
     pending: Rc<RefCell<HashMap<u64, DeferredPromise>>>,
     completion_tx: UnboundedSender<Completion>,
     completion_rx: UnboundedReceiver<Completion>,
+    buffered_completion: Option<Completion>,
     permissions: HostPermissions,
     http_client: reqwest::Client,
 }
@@ -113,6 +115,7 @@ impl HostDispatcher {
             pending: Rc::new(RefCell::new(HashMap::new())),
             completion_tx,
             completion_rx,
+            buffered_completion: None,
             permissions,
             http_client,
         })
@@ -126,6 +129,15 @@ impl HostDispatcher {
         let http_client = self.http_client.clone();
 
         vm.install_host_call_scheduler(move |call, promise| {
+            // Pending entries are retained through completion settlement, so this
+            // admission check also bounds the completion queue.
+            if pending.borrow().len() >= MAX_IN_FLIGHT_HOST_CALLS {
+                let _ = promise.reject_message(&format!(
+                    "too many in-flight Kunlun host calls; limit is {MAX_IN_FLIGHT_HOST_CALLS}"
+                ));
+                return;
+            }
+
             let id = next_id.get();
             next_id.set(id.wrapping_add(1).max(1));
             pending.borrow_mut().insert(id, promise);
@@ -140,7 +152,11 @@ impl HostDispatcher {
     }
 
     pub(crate) fn settle_completions(&mut self) -> Result<(), JscError> {
-        while let Ok(completion) = self.completion_rx.try_recv() {
+        while let Some(completion) = self
+            .buffered_completion
+            .take()
+            .or_else(|| self.completion_rx.try_recv().ok())
+        {
             let promise = self.pending.borrow_mut().remove(&completion.id);
             let Some(promise) = promise else {
                 continue;
@@ -151,6 +167,11 @@ impl HostDispatcher {
             }
         }
         Ok(())
+    }
+
+    pub(crate) async fn wait_for_completion(&mut self) {
+        debug_assert!(self.buffered_completion.is_none());
+        self.buffered_completion = self.completion_rx.recv().await;
     }
 }
 
@@ -182,9 +203,17 @@ async fn read_text_file(payload: &str, permissions: &HostPermissions) -> Result<
     let authorized = permissions.authorize_read(Path::new(&request.path))?;
     let display_path = authorized.display_path;
     tokio::task::spawn_blocking(move || {
-        authorized
-            .directory
-            .read_to_string(authorized.relative_path)
+        let file = authorized.directory.open(authorized.relative_path)?;
+        let mut bytes = Vec::new();
+        file.take((MAX_HTTP_RESPONSE_BYTES + 1) as u64)
+            .read_to_end(&mut bytes)?;
+        if bytes.len() > MAX_HTTP_RESPONSE_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::FileTooLarge,
+                format!("file exceeds the {MAX_HTTP_RESPONSE_BYTES}-byte bootstrap limit"),
+            ));
+        }
+        String::from_utf8(bytes).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
     })
     .await
     .map_err(|error| {

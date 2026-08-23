@@ -71,7 +71,9 @@ WebKit's unstable C++ ABI. High-level host code never handles an unrooted raw `J
 - Contexts, values, callbacks, and module records are `!Send + !Sync`.
 - Work crosses isolate boundaries through owned byte buffers and structured-clone messages.
 - Host async operations return opaque request IDs; completion is posted to the isolate queue.
-- Microtask checkpoints occur at specified host boundaries, never from arbitrary foreign threads.
+- Target state: microtask checkpoints occur at specified host boundaries, never from arbitrary
+  foreign threads. Explicit deterministic checkpoints remain pending and are not currently provided
+  by the bootstrap API.
 - Execution deadlines require an engine watchdog in the pinned JSC shim; the bootstrap API does not
   claim that Tokio timers can interrupt synchronous JavaScript.
 

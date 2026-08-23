@@ -14,7 +14,6 @@ use std::error::Error;
 use std::fmt::{self, Display, Formatter};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
 use tokio::time::Instant;
 
 static NEXT_EVALUATION_ID: AtomicU64 = AtomicU64::new(1);
@@ -156,6 +155,47 @@ impl TimerDispatcher {
         }
         Ok(())
     }
+
+    fn next_deadline(&self) -> Option<Instant> {
+        self.pending
+            .borrow()
+            .iter()
+            .filter_map(|timer| timer.deadline)
+            .min()
+    }
+}
+
+struct AsyncStateCleanup<'a> {
+    vm: &'a mut JscVm,
+    state: String,
+    armed: bool,
+}
+
+impl<'a> AsyncStateCleanup<'a> {
+    fn new(vm: &'a mut JscVm, state: String) -> Self {
+        Self {
+            vm,
+            state,
+            armed: true,
+        }
+    }
+
+    fn vm(&mut self) -> &mut JscVm {
+        self.vm
+    }
+
+    fn cleanup(&mut self) {
+        cleanup_state(self.vm, &self.state);
+        self.armed = false;
+    }
+}
+
+impl Drop for AsyncStateCleanup<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            cleanup_state(self.vm, &self.state);
+        }
+    }
 }
 
 async fn run_async_body(
@@ -183,8 +223,8 @@ async fn run_async_body(
          }})();"
     );
 
-    if let Err(error) = vm.evaluate(&wrapper, source_url) {
-        cleanup_state(vm, &state);
+    let mut cleanup = AsyncStateCleanup::new(vm, state);
+    if let Err(error) = cleanup.vm().evaluate(&wrapper, source_url) {
         return Err(error.into());
     }
 
@@ -193,27 +233,36 @@ async fn run_async_body(
             timers.settle_expired()?;
             host.settle_completions()?;
 
-            let done = vm.evaluate(&format!("globalThis.{state}.done"), "kunlun:async-poll")?;
+            let poll_source = format!("globalThis.{}.done", cleanup.state);
+            let done = cleanup.vm().evaluate(&poll_source, "kunlun:async-poll")?;
             if done == "true" {
                 break;
             }
-            tokio::time::sleep(Duration::from_millis(1)).await;
+            if let Some(deadline) = timers.next_deadline() {
+                let _ = tokio::time::timeout_at(deadline, host.wait_for_completion()).await;
+            } else {
+                host.wait_for_completion().await;
+            }
         }
-        let has_error = vm.evaluate(
-            &format!("globalThis.{state}.error !== undefined"),
-            "kunlun:async-result",
-        )? == "true";
+        let error_check = format!("globalThis.{}.error !== undefined", cleanup.state);
+        let has_error = cleanup.vm().evaluate(&error_check, "kunlun:async-result")? == "true";
         if has_error {
-            vm.evaluate(&format!("globalThis.{state}.error"), "kunlun:async-result")
+            let error_source = format!("globalThis.{}.error", cleanup.state);
+            cleanup
+                .vm()
+                .evaluate(&error_source, "kunlun:async-result")
                 .map_err(RuntimeError::Jsc)
                 .and_then(|message| Err(RuntimeError::Jsc(JscError::Exception(message))))
         } else {
-            vm.evaluate(&format!("globalThis.{state}.value"), "kunlun:async-result")
+            let value_source = format!("globalThis.{}.value", cleanup.state);
+            cleanup
+                .vm()
+                .evaluate(&value_source, "kunlun:async-result")
                 .map_err(RuntimeError::Jsc)
         }
     }
     .await;
-    cleanup_state(vm, &state);
+    cleanup.cleanup();
     result
 }
 
@@ -230,6 +279,7 @@ mod tests {
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::thread;
+    use std::time::Duration;
     use tokio::runtime::{Builder, Runtime};
 
     fn test_runtime() -> Runtime {
@@ -261,6 +311,27 @@ mod tests {
             .unwrap();
         assert_eq!(first, "first");
         assert_eq!(second, "second");
+    }
+
+    #[test]
+    fn cancellation_removes_async_state() {
+        let runtime = test_runtime();
+        let mut isolate = TokioIsolate::new("cancelled-evaluation-test").unwrap();
+        let result = runtime.block_on(async {
+            tokio::time::timeout(
+                Duration::from_millis(10),
+                isolate.evaluate_async_body("await new Promise(() => {});", "test:///cancelled.js"),
+            )
+            .await
+        });
+        assert!(result.is_err(), "evaluation unexpectedly completed");
+        let state_count = isolate
+            .evaluate(
+                "Object.keys(globalThis).filter(key => key.startsWith('__kunlunAsyncState')).length",
+                "test:///cancelled-state.js",
+            )
+            .unwrap();
+        assert_eq!(state_count, "0");
     }
 
     #[test]
@@ -333,6 +404,57 @@ mod tests {
             .unwrap();
         assert_eq!(value, "hello from kunlun:fs");
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn rejects_text_files_over_the_bootstrap_limit() {
+        let runtime = test_runtime();
+        let root = std::env::temp_dir().join(format!(
+            "kunlun-runtime-large-fs-test-{}-{}",
+            std::process::id(),
+            NEXT_EVALUATION_ID.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let file = root.join("large.txt");
+        std::fs::write(&file, vec![b'a'; host::MAX_HTTP_RESPONSE_BYTES + 1]).unwrap();
+        let permissions = HostPermissions::none().allow_read_root(&root).unwrap();
+        let mut isolate = TokioIsolate::new_with_permissions("large-fs-test", permissions).unwrap();
+        let path = serde_json::to_string(file.to_str().unwrap()).unwrap();
+        let error = runtime
+            .block_on(isolate.evaluate_async_body(
+                &format!(
+                    "const fs = await kunlun.import('kunlun:fs'); return await fs.readTextFile({path});"
+                ),
+                "test:///large-fs.js",
+            ))
+            .unwrap_err();
+        assert!(
+            matches!(&error, RuntimeError::Jsc(JscError::Exception(message)) if message.contains("file exceeds")),
+            "unexpected error: {error:?}"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn rejects_host_calls_above_the_in_flight_limit() {
+        let runtime = test_runtime();
+        let mut isolate = TokioIsolate::new("host-call-limit-test").unwrap();
+        let value = runtime
+            .block_on(isolate.evaluate_async_body(
+                &format!(
+                    "const fs = await kunlun.import('kunlun:fs');\
+                     const calls = Array.from(\
+                       {{ length: {} }},\
+                       () => fs.readTextFile('/definitely-not-allowed')\
+                         .then(() => 'resolved', error => String(error)));\
+                     const results = await Promise.all(calls);\
+                     return results.filter(result => result.includes('too many in-flight')).length;",
+                    host::MAX_IN_FLIGHT_HOST_CALLS + 1
+                ),
+                "test:///host-call-limit.js",
+            ))
+            .unwrap();
+        assert_eq!(value, "1");
     }
 
     #[test]

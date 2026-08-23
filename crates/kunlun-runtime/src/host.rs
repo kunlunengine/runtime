@@ -4,12 +4,13 @@ use kunlun_jsc::{DeferredPromise, HostCall, JscError, JscVm};
 use reqwest::redirect::Policy;
 use serde::{Deserialize, Serialize};
 use std::cell::{Cell, RefCell};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
+use tokio::task::AbortHandle;
 
 pub(crate) const MAX_HTTP_RESPONSE_BYTES: usize = 1024 * 1024;
 pub(crate) const MAX_IN_FLIGHT_HOST_CALLS: usize = 256;
@@ -94,12 +95,20 @@ struct Completion {
     result: Result<String, String>,
 }
 
+struct PendingHostCall {
+    evaluation_id: Option<u64>,
+    promise: DeferredPromise,
+    abort_handle: AbortHandle,
+    completion_enabled: Arc<Mutex<bool>>,
+}
+
 pub(crate) struct HostDispatcher {
     next_id: Rc<Cell<u64>>,
-    pending: Rc<RefCell<HashMap<u64, DeferredPromise>>>,
+    pending: Rc<RefCell<HashMap<u64, PendingHostCall>>>,
+    active_evaluation: Rc<Cell<Option<u64>>>,
     completion_tx: UnboundedSender<Completion>,
     completion_rx: UnboundedReceiver<Completion>,
-    buffered_completion: Option<Completion>,
+    buffered_completions: VecDeque<Completion>,
     permissions: HostPermissions,
     http_client: reqwest::Client,
 }
@@ -113,9 +122,10 @@ impl HostDispatcher {
         Ok(Self {
             next_id: Rc::new(Cell::new(1)),
             pending: Rc::new(RefCell::new(HashMap::new())),
+            active_evaluation: Rc::new(Cell::new(None)),
             completion_tx,
             completion_rx,
-            buffered_completion: None,
+            buffered_completions: VecDeque::new(),
             permissions,
             http_client,
         })
@@ -124,6 +134,7 @@ impl HostDispatcher {
     pub(crate) fn install(&self, vm: &JscVm) -> Result<(), JscError> {
         let next_id = Rc::clone(&self.next_id);
         let pending = Rc::clone(&self.pending);
+        let active_evaluation = Rc::clone(&self.active_evaluation);
         let completion_tx = self.completion_tx.clone();
         let permissions = self.permissions.clone();
         let http_client = self.http_client.clone();
@@ -140,38 +151,91 @@ impl HostDispatcher {
 
             let id = next_id.get();
             next_id.set(id.wrapping_add(1).max(1));
-            pending.borrow_mut().insert(id, promise);
-            dispatch(
+            let completion_enabled = Arc::new(Mutex::new(true));
+            let abort_handle = dispatch(
                 id,
                 call,
                 permissions.clone(),
                 http_client.clone(),
                 completion_tx.clone(),
+                Arc::clone(&completion_enabled),
+            );
+            pending.borrow_mut().insert(
+                id,
+                PendingHostCall {
+                    evaluation_id: active_evaluation.get(),
+                    promise,
+                    abort_handle,
+                    completion_enabled,
+                },
             );
         })
     }
 
+    pub(crate) fn begin_evaluation(&self, evaluation_id: u64) {
+        debug_assert!(self.active_evaluation.get().is_none());
+        self.active_evaluation.set(Some(evaluation_id));
+    }
+
+    pub(crate) fn finish_evaluation(&self, evaluation_id: u64) {
+        if self.active_evaluation.get() == Some(evaluation_id) {
+            self.active_evaluation.set(None);
+        }
+    }
+
+    pub(crate) fn cancel_evaluation(&mut self, evaluation_id: u64) {
+        self.finish_evaluation(evaluation_id);
+        let mut cancelled = HashSet::new();
+        self.pending.borrow_mut().retain(|id, call| {
+            if call.evaluation_id == Some(evaluation_id) {
+                *call.completion_enabled.lock().unwrap() = false;
+                call.abort_handle.abort();
+                cancelled.insert(*id);
+                false
+            } else {
+                true
+            }
+        });
+        if cancelled.is_empty() {
+            return;
+        }
+        self.buffered_completions
+            .retain(|completion| !cancelled.contains(&completion.id));
+        while let Ok(completion) = self.completion_rx.try_recv() {
+            if !cancelled.contains(&completion.id) {
+                self.buffered_completions.push_back(completion);
+            }
+        }
+    }
+
     pub(crate) fn settle_completions(&mut self) -> Result<(), JscError> {
         while let Some(completion) = self
-            .buffered_completion
-            .take()
+            .buffered_completions
+            .pop_front()
             .or_else(|| self.completion_rx.try_recv().ok())
         {
-            let promise = self.pending.borrow_mut().remove(&completion.id);
-            let Some(promise) = promise else {
+            let call = self.pending.borrow_mut().remove(&completion.id);
+            let Some(call) = call else {
                 continue;
             };
             match completion.result {
-                Ok(value) => promise.resolve_string(&value)?,
-                Err(message) => promise.reject_message(&message)?,
+                Ok(value) => call.promise.resolve_string(&value)?,
+                Err(message) => call.promise.reject_message(&message)?,
             }
         }
         Ok(())
     }
 
     pub(crate) async fn wait_for_completion(&mut self) {
-        debug_assert!(self.buffered_completion.is_none());
-        self.buffered_completion = self.completion_rx.recv().await;
+        debug_assert!(self.buffered_completions.is_empty());
+        if let Some(completion) = self.completion_rx.recv().await {
+            self.buffered_completions.push_back(completion);
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pending_count(&self) -> usize {
+        self.pending.borrow().len()
     }
 }
 
@@ -181,15 +245,20 @@ fn dispatch(
     permissions: HostPermissions,
     http_client: reqwest::Client,
     completion_tx: UnboundedSender<Completion>,
-) {
+    completion_enabled: Arc<Mutex<bool>>,
+) -> AbortHandle {
     tokio::spawn(async move {
         let result = match call.operation.as_str() {
             "fs.readTextFile" => read_text_file(&call.payload, &permissions).await,
             "http.request" => http_request(&call.payload, &permissions, &http_client).await,
             operation => Err(format!("unknown Kunlun host operation: {operation}")),
         };
-        let _ = completion_tx.send(Completion { id, result });
-    });
+        let completion_enabled = completion_enabled.lock().unwrap();
+        if *completion_enabled {
+            let _ = completion_tx.send(Completion { id, result });
+        }
+    })
+    .abort_handle()
 }
 
 #[derive(Deserialize)]

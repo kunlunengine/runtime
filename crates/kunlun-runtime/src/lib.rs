@@ -189,6 +189,7 @@ impl TimerDispatcher {
 struct AsyncStateCleanup<'a> {
     vm: &'a mut JscVm,
     timers: &'a TimerDispatcher,
+    host: &'a mut host::HostDispatcher,
     evaluation_id: u64,
     state: String,
     armed: bool,
@@ -198,13 +199,16 @@ impl<'a> AsyncStateCleanup<'a> {
     fn new(
         vm: &'a mut JscVm,
         timers: &'a TimerDispatcher,
+        host: &'a mut host::HostDispatcher,
         evaluation_id: u64,
         state: String,
     ) -> Self {
         timers.begin_evaluation(evaluation_id);
+        host.begin_evaluation(evaluation_id);
         Self {
             vm,
             timers,
+            host,
             evaluation_id,
             state,
             armed: true,
@@ -215,9 +219,14 @@ impl<'a> AsyncStateCleanup<'a> {
         self.vm
     }
 
+    fn host(&mut self) -> &mut host::HostDispatcher {
+        self.host
+    }
+
     fn cleanup(&mut self) {
         cleanup_state(self.vm, &self.state);
-        self.timers.finish_evaluation(self.evaluation_id);
+        self.timers.cancel_evaluation(self.evaluation_id);
+        self.host.finish_evaluation(self.evaluation_id);
         self.armed = false;
     }
 }
@@ -227,6 +236,7 @@ impl Drop for AsyncStateCleanup<'_> {
         if self.armed {
             cleanup_state(self.vm, &self.state);
             self.timers.cancel_evaluation(self.evaluation_id);
+            self.host.cancel_evaluation(self.evaluation_id);
         }
     }
 }
@@ -256,7 +266,7 @@ async fn run_async_body(
          }})();"
     );
 
-    let mut cleanup = AsyncStateCleanup::new(vm, timers, id, state);
+    let mut cleanup = AsyncStateCleanup::new(vm, timers, host, id, state);
     if let Err(error) = cleanup.vm().evaluate(&wrapper, source_url) {
         return Err(error.into());
     }
@@ -264,7 +274,7 @@ async fn run_async_body(
     let result = async {
         loop {
             timers.settle_expired()?;
-            host.settle_completions()?;
+            cleanup.host().settle_completions()?;
 
             let poll_source = format!("globalThis.{}.done", cleanup.state);
             let done = cleanup.vm().evaluate(&poll_source, "kunlun:async-poll")?;
@@ -272,9 +282,10 @@ async fn run_async_body(
                 break;
             }
             if let Some(deadline) = timers.next_deadline() {
-                let _ = tokio::time::timeout_at(deadline, host.wait_for_completion()).await;
+                let _ =
+                    tokio::time::timeout_at(deadline, cleanup.host().wait_for_completion()).await;
             } else {
-                host.wait_for_completion().await;
+                cleanup.host().wait_for_completion().await;
             }
         }
         let error_check = format!("globalThis.{}.error !== undefined", cleanup.state);
@@ -347,6 +358,24 @@ mod tests {
     }
 
     #[test]
+    fn successful_evaluation_removes_unawaited_timers() {
+        let runtime = test_runtime();
+        let mut isolate = TokioIsolate::new("unawaited-timer-test").unwrap();
+        let value = runtime
+            .block_on(isolate.evaluate_async_body(
+                "sleep(60_000); return 'done';",
+                "test:///unawaited-timer.js",
+            ))
+            .unwrap();
+
+        assert_eq!(value, "done");
+        assert!(
+            isolate.timers.pending.borrow().is_empty(),
+            "successful evaluation left an unawaited timer pending"
+        );
+    }
+
+    #[test]
     fn cancellation_removes_async_state_and_pending_timers() {
         let runtime = test_runtime();
         let mut isolate = TokioIsolate::new("cancelled-evaluation-test").unwrap();
@@ -369,6 +398,39 @@ mod tests {
             )
             .unwrap();
         assert_eq!(state_count, "0");
+    }
+
+    #[test]
+    fn cancellation_removes_pending_host_calls() {
+        let runtime = test_runtime();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+
+        let permissions = HostPermissions::none().allow_net_host("127.0.0.1");
+        let mut isolate =
+            TokioIsolate::new_with_permissions("cancelled-host-call-test", permissions).unwrap();
+        let url = serde_json::to_string(&format!("http://{address}/slow")).unwrap();
+        let result = runtime.block_on(async {
+            tokio::time::timeout(
+                Duration::from_millis(10),
+                isolate.evaluate_async_body(
+                    &format!(
+                        "const http = await kunlun.import('kunlun:http');\n\
+                         return await http.request({url});"
+                    ),
+                    "test:///cancelled-host-call.js",
+                ),
+            )
+            .await
+        });
+
+        assert!(result.is_err(), "evaluation unexpectedly completed");
+        assert_eq!(
+            isolate.host.pending_count(),
+            0,
+            "cancelled evaluation left a host call pending"
+        );
+        drop(listener);
     }
 
     #[test]

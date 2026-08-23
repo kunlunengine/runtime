@@ -9,7 +9,7 @@ pub use builtins::{
 pub use host::HostPermissions;
 
 use kunlun_jsc::{DeferredPromise, JscError, JscVm};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
 use std::rc::Rc;
@@ -76,9 +76,11 @@ impl TokioIsolate {
         let host = host::HostDispatcher::new(permissions)
             .map_err(|error| RuntimeError::HostInitialization(error.to_string()))?;
         let pending_timers = Rc::clone(&timers.pending);
+        let active_evaluation = Rc::clone(&timers.active_evaluation);
 
         vm.install_sleep_scheduler(move |duration, promise| {
             pending_timers.borrow_mut().push(PendingTimer {
+                evaluation_id: active_evaluation.get(),
                 deadline: Instant::now().checked_add(duration),
                 promise,
             });
@@ -111,9 +113,11 @@ impl TokioIsolate {
 
 struct TimerDispatcher {
     pending: Rc<RefCell<Vec<PendingTimer>>>,
+    active_evaluation: Rc<Cell<Option<u64>>>,
 }
 
 struct PendingTimer {
+    evaluation_id: Option<u64>,
     deadline: Option<Instant>,
     promise: DeferredPromise,
 }
@@ -122,6 +126,7 @@ impl TimerDispatcher {
     fn new() -> Self {
         Self {
             pending: Rc::new(RefCell::new(Vec::new())),
+            active_evaluation: Rc::new(Cell::new(None)),
         }
     }
 
@@ -130,17 +135,15 @@ impl TimerDispatcher {
         let ready = {
             let mut pending = self.pending.borrow_mut();
             let mut ready = Vec::new();
-            let mut index = 0;
-            while index < pending.len() {
-                if pending[index]
-                    .deadline
-                    .is_none_or(|deadline| deadline <= now)
-                {
-                    ready.push(pending.swap_remove(index));
+            let mut waiting = Vec::with_capacity(pending.len());
+            for timer in pending.drain(..) {
+                if timer.deadline.is_none_or(|deadline| deadline <= now) {
+                    ready.push(timer);
                 } else {
-                    index += 1;
+                    waiting.push(timer);
                 }
             }
+            *pending = waiting;
             ready
         };
 
@@ -156,6 +159,24 @@ impl TimerDispatcher {
         Ok(())
     }
 
+    fn begin_evaluation(&self, evaluation_id: u64) {
+        debug_assert!(self.active_evaluation.get().is_none());
+        self.active_evaluation.set(Some(evaluation_id));
+    }
+
+    fn finish_evaluation(&self, evaluation_id: u64) {
+        if self.active_evaluation.get() == Some(evaluation_id) {
+            self.active_evaluation.set(None);
+        }
+    }
+
+    fn cancel_evaluation(&self, evaluation_id: u64) {
+        self.finish_evaluation(evaluation_id);
+        self.pending
+            .borrow_mut()
+            .retain(|timer| timer.evaluation_id != Some(evaluation_id));
+    }
+
     fn next_deadline(&self) -> Option<Instant> {
         self.pending
             .borrow()
@@ -167,14 +188,24 @@ impl TimerDispatcher {
 
 struct AsyncStateCleanup<'a> {
     vm: &'a mut JscVm,
+    timers: &'a TimerDispatcher,
+    evaluation_id: u64,
     state: String,
     armed: bool,
 }
 
 impl<'a> AsyncStateCleanup<'a> {
-    fn new(vm: &'a mut JscVm, state: String) -> Self {
+    fn new(
+        vm: &'a mut JscVm,
+        timers: &'a TimerDispatcher,
+        evaluation_id: u64,
+        state: String,
+    ) -> Self {
+        timers.begin_evaluation(evaluation_id);
         Self {
             vm,
+            timers,
+            evaluation_id,
             state,
             armed: true,
         }
@@ -186,6 +217,7 @@ impl<'a> AsyncStateCleanup<'a> {
 
     fn cleanup(&mut self) {
         cleanup_state(self.vm, &self.state);
+        self.timers.finish_evaluation(self.evaluation_id);
         self.armed = false;
     }
 }
@@ -194,6 +226,7 @@ impl Drop for AsyncStateCleanup<'_> {
     fn drop(&mut self) {
         if self.armed {
             cleanup_state(self.vm, &self.state);
+            self.timers.cancel_evaluation(self.evaluation_id);
         }
     }
 }
@@ -223,7 +256,7 @@ async fn run_async_body(
          }})();"
     );
 
-    let mut cleanup = AsyncStateCleanup::new(vm, state);
+    let mut cleanup = AsyncStateCleanup::new(vm, timers, id, state);
     if let Err(error) = cleanup.vm().evaluate(&wrapper, source_url) {
         return Err(error.into());
     }
@@ -314,17 +347,21 @@ mod tests {
     }
 
     #[test]
-    fn cancellation_removes_async_state() {
+    fn cancellation_removes_async_state_and_pending_timers() {
         let runtime = test_runtime();
         let mut isolate = TokioIsolate::new("cancelled-evaluation-test").unwrap();
         let result = runtime.block_on(async {
             tokio::time::timeout(
                 Duration::from_millis(10),
-                isolate.evaluate_async_body("await new Promise(() => {});", "test:///cancelled.js"),
+                isolate.evaluate_async_body("await sleep(60_000);", "test:///cancelled.js"),
             )
             .await
         });
         assert!(result.is_err(), "evaluation unexpectedly completed");
+        assert!(
+            isolate.timers.pending.borrow().is_empty(),
+            "cancelled evaluation left pending timers"
+        );
         let state_count = isolate
             .evaluate(
                 "Object.keys(globalThis).filter(key => key.startsWith('__kunlunAsyncState')).length",
@@ -362,6 +399,37 @@ mod tests {
             ))
             .unwrap();
         assert_eq!(value, "before,middle,after");
+    }
+
+    #[test]
+    fn timers_with_same_deadline_settle_in_registration_order() {
+        let mut isolate = TokioIsolate::new("same-deadline-timer-test").unwrap();
+        isolate
+            .evaluate(
+                "globalThis.__timerOrder = [];\n\
+                 sleep(60_000).then(() => __timerOrder.push('A'));\n\
+                 sleep(60_000).then(() => __timerOrder.push('B'));\n\
+                 sleep(60_000).then(() => __timerOrder.push('C'));",
+                "test:///same-deadline-timers.js",
+            )
+            .unwrap();
+
+        let deadline = Instant::now();
+        let mut pending = isolate.timers.pending.borrow_mut();
+        assert_eq!(pending.len(), 3);
+        for timer in pending.iter_mut() {
+            timer.deadline = Some(deadline);
+        }
+        drop(pending);
+
+        isolate.timers.settle_expired().unwrap();
+        let order = isolate
+            .evaluate(
+                "globalThis.__timerOrder.join(',')",
+                "test:///same-deadline-result.js",
+            )
+            .unwrap();
+        assert_eq!(order, "A,B,C");
     }
 
     #[test]

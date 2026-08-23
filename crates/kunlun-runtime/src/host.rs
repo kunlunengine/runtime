@@ -1,3 +1,5 @@
+use cap_std::ambient_authority;
+use cap_std::fs::Dir;
 use kunlun_jsc::{DeferredPromise, HostCall, JscError, JscVm};
 use reqwest::redirect::Policy;
 use serde::{Deserialize, Serialize};
@@ -6,14 +8,27 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::Arc;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 
 const MAX_HTTP_RESPONSE_BYTES: usize = 1024 * 1024;
 
 #[derive(Debug, Clone, Default)]
 pub struct HostPermissions {
-    read_roots: Vec<PathBuf>,
+    read_roots: Vec<ReadRoot>,
     net_hosts: HashSet<String>,
+}
+
+#[derive(Debug, Clone)]
+struct ReadRoot {
+    path: PathBuf,
+    directory: Arc<Dir>,
+}
+
+struct AuthorizedRead {
+    display_path: PathBuf,
+    relative_path: PathBuf,
+    directory: Arc<Dir>,
 }
 
 impl HostPermissions {
@@ -22,7 +37,12 @@ impl HostPermissions {
     }
 
     pub fn allow_read_root(mut self, root: impl AsRef<Path>) -> io::Result<Self> {
-        self.read_roots.push(root.as_ref().canonicalize()?);
+        let root = root.as_ref();
+        let directory = Dir::open_ambient_dir(root, ambient_authority())?;
+        self.read_roots.push(ReadRoot {
+            path: std::path::absolute(root)?,
+            directory: Arc::new(directory),
+        });
         Ok(self)
     }
 
@@ -31,22 +51,23 @@ impl HostPermissions {
         self
     }
 
-    async fn authorize_read(&self, path: &Path) -> Result<PathBuf, String> {
-        let canonical = tokio::fs::canonicalize(path)
-            .await
+    fn authorize_read(&self, path: &Path) -> Result<AuthorizedRead, String> {
+        let absolute = std::path::absolute(path)
             .map_err(|error| format!("cannot resolve {}: {error}", path.display()))?;
-        if self
-            .read_roots
-            .iter()
-            .any(|root| canonical.starts_with(root))
-        {
-            Ok(canonical)
-        } else {
-            Err(format!(
-                "read access denied for {}; grant a containing root with --allow-read",
-                canonical.display()
-            ))
+        for root in &self.read_roots {
+            if let Ok(relative_path) = absolute.strip_prefix(&root.path) {
+                let relative_path = relative_path.to_owned();
+                return Ok(AuthorizedRead {
+                    display_path: absolute,
+                    relative_path,
+                    directory: Arc::clone(&root.directory),
+                });
+            }
         }
+        Err(format!(
+            "read access denied for {}; grant a containing root with --allow-read",
+            absolute.display()
+        ))
     }
 
     fn authorize_url(&self, url: &reqwest::Url) -> Result<(), String> {
@@ -76,7 +97,7 @@ pub(crate) struct HostDispatcher {
     next_id: Rc<Cell<u64>>,
     pending: Rc<RefCell<HashMap<u64, DeferredPromise>>>,
     completion_tx: UnboundedSender<Completion>,
-    completion_rx: Option<UnboundedReceiver<Completion>>,
+    completion_rx: UnboundedReceiver<Completion>,
     permissions: HostPermissions,
     http_client: reqwest::Client,
 }
@@ -91,7 +112,7 @@ impl HostDispatcher {
             next_id: Rc::new(Cell::new(1)),
             pending: Rc::new(RefCell::new(HashMap::new())),
             completion_tx,
-            completion_rx: Some(completion_rx),
+            completion_rx,
             permissions,
             http_client,
         })
@@ -118,26 +139,18 @@ impl HostDispatcher {
         })
     }
 
-    pub(crate) fn start_completion_pump(&mut self, host_error: Rc<RefCell<Option<JscError>>>) {
-        let Some(mut completion_rx) = self.completion_rx.take() else {
-            return;
-        };
-        let pending = Rc::clone(&self.pending);
-        tokio::task::spawn_local(async move {
-            while let Some(completion) = completion_rx.recv().await {
-                let promise = pending.borrow_mut().remove(&completion.id);
-                let Some(promise) = promise else {
-                    continue;
-                };
-                let settled = match completion.result {
-                    Ok(value) => promise.resolve_string(&value),
-                    Err(message) => promise.reject_message(&message),
-                };
-                if let Err(error) = settled {
-                    *host_error.borrow_mut() = Some(error);
-                }
+    pub(crate) fn settle_completions(&mut self) -> Result<(), JscError> {
+        while let Ok(completion) = self.completion_rx.try_recv() {
+            let promise = self.pending.borrow_mut().remove(&completion.id);
+            let Some(promise) = promise else {
+                continue;
+            };
+            match completion.result {
+                Ok(value) => promise.resolve_string(&value)?,
+                Err(message) => promise.reject_message(&message)?,
             }
-        });
+        }
+        Ok(())
     }
 }
 
@@ -166,10 +179,26 @@ struct ReadTextFilePayload {
 async fn read_text_file(payload: &str, permissions: &HostPermissions) -> Result<String, String> {
     let request: ReadTextFilePayload =
         serde_json::from_str(payload).map_err(|error| format!("invalid fs payload: {error}"))?;
-    let path = permissions.authorize_read(Path::new(&request.path)).await?;
-    tokio::fs::read_to_string(&path)
-        .await
-        .map_err(|error| format!("cannot read {} as UTF-8 text: {error}", path.display()))
+    let authorized = permissions.authorize_read(Path::new(&request.path))?;
+    let display_path = authorized.display_path;
+    tokio::task::spawn_blocking(move || {
+        authorized
+            .directory
+            .read_to_string(authorized.relative_path)
+    })
+    .await
+    .map_err(|error| {
+        format!(
+            "file read task failed for {}: {error}",
+            display_path.display()
+        )
+    })?
+    .map_err(|error| {
+        format!(
+            "cannot read {} as UTF-8 text: {error}",
+            display_path.display()
+        )
+    })
 }
 
 #[derive(Deserialize)]

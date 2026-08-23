@@ -8,43 +8,31 @@ pub use builtins::{
 };
 pub use host::HostPermissions;
 
-use kunlun_jsc::{JscError, JscVm};
+use kunlun_jsc::{DeferredPromise, JscError, JscVm};
 use std::cell::RefCell;
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
-use tokio::runtime::{Builder, Runtime};
-use tokio::task::LocalSet;
+use tokio::time::Instant;
 
 static NEXT_EVALUATION_ID: AtomicU64 = AtomicU64::new(1);
 
-pub const EVENT_LOOP_BACKEND: &str = "Tokio current-thread runtime + LocalSet";
+pub const EVENT_LOOP_BACKEND: &str = "caller-provided Tokio runtime";
 
 #[derive(Debug)]
 pub enum RuntimeError {
     Jsc(JscError),
-    EventLoop(std::io::Error),
     HostInitialization(String),
-    Timeout(Duration),
 }
 
 impl Display for RuntimeError {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         match self {
             Self::Jsc(error) => Display::fmt(error, formatter),
-            Self::EventLoop(error) => {
-                write!(formatter, "could not create Tokio event loop: {error}")
-            }
             Self::HostInitialization(error) => {
                 write!(formatter, "could not initialize host services: {error}")
-            }
-            Self::Timeout(duration) => {
-                write!(
-                    formatter,
-                    "JavaScript async evaluation timed out after {duration:?}"
-                )
             }
         }
     }
@@ -54,9 +42,7 @@ impl Error for RuntimeError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Jsc(error) => Some(error),
-            Self::EventLoop(error) => Some(error),
             Self::HostInitialization(_) => None,
-            Self::Timeout(_) => None,
         }
     }
 }
@@ -67,16 +53,14 @@ impl From<JscError> for RuntimeError {
     }
 }
 
-/// A JSC isolate pinned to one Tokio current-thread event loop.
+/// A thread-affine JSC isolate driven by the caller's Tokio runtime.
 ///
-/// `LocalSet` is declared before the VM so outstanding local tasks (and their
-/// protected Promise resolvers) are dropped before the JSC context.
+/// Promise handles are kept in dispatcher fields declared before the VM so
+/// they are dropped before the JSC context.
 pub struct TokioIsolate {
-    local: LocalSet,
+    timers: TimerDispatcher,
     host: host::HostDispatcher,
     vm: JscVm,
-    runtime: Runtime,
-    host_error: Rc<RefCell<Option<JscError>>>,
 }
 
 impl TokioIsolate {
@@ -88,36 +72,22 @@ impl TokioIsolate {
         name: &str,
         permissions: HostPermissions,
     ) -> Result<Self, RuntimeError> {
-        let runtime = Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(RuntimeError::EventLoop)?;
-        let local = LocalSet::new();
+        let timers = TimerDispatcher::new();
         let mut vm = JscVm::new(name)?;
         let host = host::HostDispatcher::new(permissions)
             .map_err(|error| RuntimeError::HostInitialization(error.to_string()))?;
-        let host_error = Rc::new(RefCell::new(None));
-        let timer_error = Rc::clone(&host_error);
+        let pending_timers = Rc::clone(&timers.pending);
 
         vm.install_sleep_scheduler(move |duration, promise| {
-            let timer_error = Rc::clone(&timer_error);
-            tokio::task::spawn_local(async move {
-                tokio::time::sleep(duration).await;
-                if let Err(error) = promise.resolve_undefined() {
-                    *timer_error.borrow_mut() = Some(error);
-                }
+            pending_timers.borrow_mut().push(PendingTimer {
+                deadline: Instant::now().checked_add(duration),
+                promise,
             });
         })?;
         host.install(&vm)?;
         builtins::install_builtin_modules(&mut vm)?;
 
-        Ok(Self {
-            local,
-            host,
-            vm,
-            runtime,
-            host_error,
-        })
+        Ok(Self { timers, host, vm })
     }
 
     pub fn evaluate(&mut self, source: &str, source_url: &str) -> Result<String, RuntimeError> {
@@ -128,48 +98,88 @@ impl TokioIsolate {
     ///
     /// The body may use `await`, call the Promise-returning `sleep(ms)` host
     /// function, and return a value. ESM/top-level-await support is a separate
-    /// module-loader milestone.
-    pub fn evaluate_async_body(
+    /// module-loader milestone. This bootstrap API has no execution deadline:
+    /// cancelling the Rust future cannot preempt synchronous JavaScript.
+    pub async fn evaluate_async_body(
         &mut self,
         source: &str,
         source_url: &str,
-        timeout: Duration,
     ) -> Result<String, RuntimeError> {
-        *self.host_error.borrow_mut() = None;
-        let Self {
-            local,
-            host,
-            vm,
-            runtime,
-            host_error,
-        } = self;
-        runtime.block_on(local.run_until(async {
-            host.start_completion_pump(Rc::clone(host_error));
-            run_async_body(vm, source, source_url, timeout, Rc::clone(host_error)).await
-        }))
+        let Self { timers, host, vm } = self;
+        run_async_body(vm, timers, host, source, source_url).await
+    }
+}
+
+struct TimerDispatcher {
+    pending: Rc<RefCell<Vec<PendingTimer>>>,
+}
+
+struct PendingTimer {
+    deadline: Option<Instant>,
+    promise: DeferredPromise,
+}
+
+impl TimerDispatcher {
+    fn new() -> Self {
+        Self {
+            pending: Rc::new(RefCell::new(Vec::new())),
+        }
+    }
+
+    fn settle_expired(&self) -> Result<(), JscError> {
+        let now = Instant::now();
+        let ready = {
+            let mut pending = self.pending.borrow_mut();
+            let mut ready = Vec::new();
+            let mut index = 0;
+            while index < pending.len() {
+                if pending[index]
+                    .deadline
+                    .is_none_or(|deadline| deadline <= now)
+                {
+                    ready.push(pending.swap_remove(index));
+                } else {
+                    index += 1;
+                }
+            }
+            ready
+        };
+
+        for timer in ready {
+            if timer.deadline.is_some() {
+                timer.promise.resolve_undefined()?;
+            } else {
+                timer
+                    .promise
+                    .reject_message("sleep duration exceeds the host clock range")?;
+            }
+        }
+        Ok(())
     }
 }
 
 async fn run_async_body(
     vm: &mut JscVm,
+    timers: &TimerDispatcher,
+    host: &mut host::HostDispatcher,
     source: &str,
     source_url: &str,
-    timeout: Duration,
-    host_error: Rc<RefCell<Option<JscError>>>,
 ) -> Result<String, RuntimeError> {
     let id = NEXT_EVALUATION_ID.fetch_add(1, Ordering::Relaxed);
     let state = format!("__kunlunAsyncState{id}");
     let wrapper = format!(
-        "const __state = globalThis.{state} = {{ done: false, value: undefined, error: undefined }};\n\
-         (async () => {{\n\
-           try {{\n\
-             const __value = await (async () => {{\n{source}\n}})();\n\
-             __state.value = String(__value);\n\
-           }} catch (__error) {{\n\
-             __state.error = String(__error) + '\\n' + String(__error?.stack ?? '');\n\
-           }} finally {{\n\
-             __state.done = true;\n\
-           }}\n\
+        "(() => {{\n\
+           const __state = globalThis.{state} = {{ done: false, value: undefined, error: undefined }};\n\
+           (async () => {{\n\
+             try {{\n\
+               const __value = await (async () => {{\n{source}\n}})();\n\
+               __state.value = String(__value);\n\
+             }} catch (__error) {{\n\
+               __state.error = String(__error) + '\\n' + String(__error?.stack ?? '');\n\
+             }} finally {{\n\
+               __state.done = true;\n\
+             }}\n\
+           }})();\n\
          }})();"
     );
 
@@ -178,11 +188,10 @@ async fn run_async_body(
         return Err(error.into());
     }
 
-    let wait = async {
+    let result = async {
         loop {
-            if let Some(error) = host_error.borrow_mut().take() {
-                return Err(RuntimeError::Jsc(error));
-            }
+            timers.settle_expired()?;
+            host.settle_completions()?;
 
             let done = vm.evaluate(&format!("globalThis.{state}.done"), "kunlun:async-poll")?;
             if done == "true" {
@@ -190,26 +199,20 @@ async fn run_async_body(
             }
             tokio::time::sleep(Duration::from_millis(1)).await;
         }
-        Ok(())
-    };
-
-    if tokio::time::timeout(timeout, wait).await.is_err() {
-        cleanup_state(vm, &state);
-        return Err(RuntimeError::Timeout(timeout));
+        let has_error = vm.evaluate(
+            &format!("globalThis.{state}.error !== undefined"),
+            "kunlun:async-result",
+        )? == "true";
+        if has_error {
+            vm.evaluate(&format!("globalThis.{state}.error"), "kunlun:async-result")
+                .map_err(RuntimeError::Jsc)
+                .and_then(|message| Err(RuntimeError::Jsc(JscError::Exception(message))))
+        } else {
+            vm.evaluate(&format!("globalThis.{state}.value"), "kunlun:async-result")
+                .map_err(RuntimeError::Jsc)
+        }
     }
-
-    let has_error = vm.evaluate(
-        &format!("globalThis.{state}.error !== undefined"),
-        "kunlun:async-result",
-    )? == "true";
-    let result = if has_error {
-        vm.evaluate(&format!("globalThis.{state}.error"), "kunlun:async-result")
-            .map_err(RuntimeError::Jsc)
-            .and_then(|message| Err(RuntimeError::Jsc(JscError::Exception(message))))
-    } else {
-        vm.evaluate(&format!("globalThis.{state}.value"), "kunlun:async-result")
-            .map_err(RuntimeError::Jsc)
-    };
+    .await;
     cleanup_state(vm, &state);
     result
 }
@@ -227,46 +230,78 @@ mod tests {
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::thread;
+    use tokio::runtime::{Builder, Runtime};
+
+    fn test_runtime() -> Runtime {
+        Builder::new_current_thread().enable_all().build().unwrap()
+    }
 
     #[test]
     fn awaits_native_promise_jobs() {
+        let runtime = test_runtime();
         let mut isolate = TokioIsolate::new("promise-test").unwrap();
-        let value = isolate
-            .evaluate_async_body(
+        let value = runtime
+            .block_on(isolate.evaluate_async_body(
                 "const value = await Promise.resolve(21); return value * 2;",
                 "test:///promise.js",
-                Duration::from_secs(1),
-            )
+            ))
             .unwrap();
         assert_eq!(value, "42");
     }
 
     #[test]
+    fn evaluates_multiple_async_bodies_in_one_isolate() {
+        let runtime = test_runtime();
+        let mut isolate = TokioIsolate::new("repeated-evaluation-test").unwrap();
+        let first = runtime
+            .block_on(isolate.evaluate_async_body("return 'first';", "test:///first.js"))
+            .unwrap();
+        let second = runtime
+            .block_on(isolate.evaluate_async_body("return 'second';", "test:///second.js"))
+            .unwrap();
+        assert_eq!(first, "first");
+        assert_eq!(second, "second");
+    }
+
+    #[test]
+    fn evaluates_and_drops_isolate_inside_tokio_runtime() {
+        let runtime = test_runtime();
+        runtime.block_on(async {
+            let mut isolate = TokioIsolate::new("nested-runtime-test").unwrap();
+            let value = isolate
+                .evaluate_async_body("await sleep(1); return 'ok';", "test:///nested.js")
+                .await
+                .unwrap();
+            assert_eq!(value, "ok");
+        });
+    }
+
+    #[test]
     fn tokio_timer_resolves_jsc_promise_in_order() {
+        let runtime = test_runtime();
         let mut isolate = TokioIsolate::new("timer-test").unwrap();
-        let value = isolate
-            .evaluate_async_body(
+        let value = runtime
+            .block_on(isolate.evaluate_async_body(
                 "const order = ['before'];\n\
                  const timer = sleep(5).then(() => order.push('after'));\n\
                  order.push('middle');\n\
                  await timer;\n\
                  return order.join(',');",
                 "test:///timer.js",
-                Duration::from_secs(1),
-            )
+            ))
             .unwrap();
         assert_eq!(value, "before,middle,after");
     }
 
     #[test]
     fn reports_async_javascript_exceptions() {
+        let runtime = test_runtime();
         let mut isolate = TokioIsolate::new("async-error-test").unwrap();
-        let error = isolate
-            .evaluate_async_body(
+        let error = runtime
+            .block_on(isolate.evaluate_async_body(
                 "await sleep(1); throw new Error('async boom');",
                 "test:///async-error.js",
-                Duration::from_secs(1),
-            )
+            ))
             .unwrap_err();
         assert!(
             matches!(&error, RuntimeError::Jsc(JscError::Exception(message)) if message.contains("async boom")),
@@ -276,6 +311,7 @@ mod tests {
 
     #[test]
     fn reads_text_through_kunlun_fs_with_explicit_permission() {
+        let runtime = test_runtime();
         let root = std::env::temp_dir().join(format!(
             "kunlun-runtime-fs-test-{}-{}",
             std::process::id(),
@@ -287,14 +323,13 @@ mod tests {
         let permissions = HostPermissions::none().allow_read_root(&root).unwrap();
         let mut isolate = TokioIsolate::new_with_permissions("fs-test", permissions).unwrap();
         let path = serde_json::to_string(file.to_str().unwrap()).unwrap();
-        let value = isolate
-            .evaluate_async_body(
+        let value = runtime
+            .block_on(isolate.evaluate_async_body(
                 &format!(
                     "const fs = await kunlun.import('kunlun:fs'); return await fs.readTextFile({path});"
                 ),
                 "test:///fs.js",
-                Duration::from_secs(2),
-            )
+            ))
             .unwrap();
         assert_eq!(value, "hello from kunlun:fs");
         std::fs::remove_dir_all(root).unwrap();
@@ -302,6 +337,7 @@ mod tests {
 
     #[test]
     fn sends_http_request_through_completion_channel() {
+        let runtime = test_runtime();
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         let server = thread::spawn(move || {
@@ -318,16 +354,15 @@ mod tests {
         let permissions = HostPermissions::none().allow_net_host("127.0.0.1");
         let mut isolate = TokioIsolate::new_with_permissions("http-test", permissions).unwrap();
         let url = serde_json::to_string(&format!("http://{address}/hello")).unwrap();
-        let value = isolate
-            .evaluate_async_body(
+        let value = runtime
+            .block_on(isolate.evaluate_async_body(
                 &format!(
                     "const http = await kunlun.import('kunlun:http');\n\
                      const response = await http.request({url});\n\
                      return response.status + ':' + response.body;"
                 ),
                 "test:///http.js",
-                Duration::from_secs(5),
-            )
+            ))
             .unwrap();
         server.join().unwrap();
         assert_eq!(value, "200:hello from server");
@@ -335,17 +370,54 @@ mod tests {
 
     #[test]
     fn denies_builtin_io_without_capability_grants() {
+        let runtime = test_runtime();
         let mut isolate = TokioIsolate::new("denied-fs-test").unwrap();
-        let error = isolate
-            .evaluate_async_body(
+        let error = runtime
+            .block_on(isolate.evaluate_async_body(
                 "const fs = await kunlun.import('kunlun:fs'); return await fs.readTextFile('/etc/hosts');",
                 "test:///denied-fs.js",
-                Duration::from_secs(2),
-            )
+            ))
             .unwrap_err();
         assert!(
             matches!(&error, RuntimeError::Jsc(JscError::Exception(message)) if message.contains("read access denied")),
             "unexpected error: {error:?}"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn denies_symlink_escape_from_read_root() {
+        use std::os::unix::fs::symlink;
+
+        let runtime = test_runtime();
+        let id = NEXT_EVALUATION_ID.fetch_add(1, Ordering::Relaxed);
+        let base = std::env::temp_dir().join(format!(
+            "kunlun-runtime-symlink-test-{}-{id}",
+            std::process::id()
+        ));
+        let root = base.join("allowed");
+        let outside = base.join("outside.txt");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(&outside, "must stay private").unwrap();
+        let link = root.join("escape.txt");
+        symlink(&outside, &link).unwrap();
+
+        let permissions = HostPermissions::none().allow_read_root(&root).unwrap();
+        let mut isolate =
+            TokioIsolate::new_with_permissions("symlink-escape-test", permissions).unwrap();
+        let path = serde_json::to_string(link.to_str().unwrap()).unwrap();
+        let error = runtime
+            .block_on(isolate.evaluate_async_body(
+                &format!(
+                    "const fs = await kunlun.import('kunlun:fs'); return await fs.readTextFile({path});"
+                ),
+                "test:///symlink-escape.js",
+            ))
+            .unwrap_err();
+        assert!(
+            matches!(&error, RuntimeError::Jsc(JscError::Exception(message)) if message.contains("cannot read")),
+            "unexpected error: {error:?}"
+        );
+        std::fs::remove_dir_all(base).unwrap();
     }
 }

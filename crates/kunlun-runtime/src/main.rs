@@ -4,9 +4,7 @@ use std::env;
 use std::fs;
 use std::path::Path;
 use std::process::ExitCode;
-use std::time::Duration;
-
-const DEFAULT_ASYNC_TIMEOUT: Duration = Duration::from_secs(30);
+use tokio::runtime::Builder;
 
 fn main() -> ExitCode {
     match run(env::args().skip(1).collect()) {
@@ -105,10 +103,14 @@ fn evaluate_async(
     name: &str,
     permissions: HostPermissions,
 ) -> Result<(), String> {
+    let runtime = Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| format!("could not create Tokio event loop: {error}"))?;
     let mut isolate =
         TokioIsolate::new_with_permissions(name, permissions).map_err(|error| error.to_string())?;
-    let value = isolate
-        .evaluate_async_body(source, source_url, DEFAULT_ASYNC_TIMEOUT)
+    let value = runtime
+        .block_on(isolate.evaluate_async_body(source, source_url))
         .map_err(|error| error.to_string())?;
     println!("{value}");
     Ok(())
@@ -195,13 +197,16 @@ fn doctor_command() -> Result<(), String> {
     }
     println!("synchronous smoke test: ok");
 
+    let runtime = Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| format!("could not create Tokio event loop: {error}"))?;
     let mut isolate =
         TokioIsolate::new("kunlun-runtime async doctor").map_err(|error| error.to_string())?;
-    let result = isolate
-        .evaluate_async_body(
-            "await sleep(1); return 'async-ok';",
-            "kunlun:async-doctor",
-            Duration::from_secs(1),
+    let result = runtime
+        .block_on(
+            isolate
+                .evaluate_async_body("await sleep(1); return 'async-ok';", "kunlun:async-doctor"),
         )
         .map_err(|error| error.to_string())?;
     if result != "async-ok" {

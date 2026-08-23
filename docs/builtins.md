@@ -36,10 +36,11 @@ kunlun-runtime run-async script.js --allow-read ./data
 kunlun-runtime run-async script.js --allow-net api.example.com
 ```
 
-Read paths are canonicalized and must remain under an allowed root. HTTP supports `http`/`https`,
-matches the exact host, does not follow redirects, requires UTF-8 response bodies, and currently caps
-responses at 1 MiB. These constraints are bootstrap defaults; the final untrusted-code path uses
-brokered directory/network handles and deployment-issued capability grants.
+Read grants pre-open capability directory handles, and each file is opened relative to that handle;
+`..` and symbolic-link traversal cannot escape the allowed root, including if paths change during a
+read. HTTP supports `http`/`https`, matches the exact host, does not follow redirects, requires UTF-8
+response bodies, and currently caps responses at 1 MiB. These constraints are bootstrap defaults;
+the final untrusted-code path uses deployment-issued directory/network handles and capability grants.
 
 ## Completion ABI
 

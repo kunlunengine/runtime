@@ -66,27 +66,27 @@ WebKit's unstable C++ ABI. High-level host code never handles an unrooted raw `J
 
 ## Isolate and concurrency model
 
-- One isolate owns one context group/VM and one event-loop thread.
-- The current host uses a Tokio current-thread runtime plus one `LocalSet` per isolate.
+- One isolate owns one context group/VM and remains on its polling thread.
+- The caller supplies the Tokio runtime and awaits the isolate's thread-affine evaluation future.
 - Contexts, values, callbacks, and module records are `!Send + !Sync`.
 - Work crosses isolate boundaries through owned byte buffers and structured-clone messages.
 - Host async operations return opaque request IDs; completion is posted to the isolate queue.
 - Microtask checkpoints occur at specified host boundaries, never from arbitrary foreign threads.
-- A request deadline can interrupt execution, but cleanup and capability revocation still occur on
-  the owning isolate thread.
+- Execution deadlines require an engine watchdog in the pinned JSC shim; the bootstrap API does not
+  claim that Tokio timers can interrupt synchronous JavaScript.
 
 This makes illegal cross-thread JSC access difficult to express in safe Rust.
 
 The first executable proof is `sleep(ms)`: `kunlun-jsc` creates and protects a JSC Deferred Promise,
-`kunlun-runtime` schedules a Tokio timer with `spawn_local`, and the local task invokes the Promise
-resolver on the same isolate thread. Filesystem and HTTP operations extend the pattern:
+`kunlun-runtime` queues its deadline, and the evaluation future invokes the Promise resolver on the
+same isolate thread when that deadline is due. Filesystem and HTTP operations extend the pattern:
 
 ```text
 JSC host callback
   -> pending[id] = DeferredPromise            # isolate-local, !Send
   -> Tokio task(operation, JSON, id, sender)  # no JSC pointer
   -> Completion { id, Result<String, String> }
-  -> LocalSet completion pump
+  -> isolate evaluation future drains completion queue
   -> pending.remove(id).resolve/reject()
 ```
 

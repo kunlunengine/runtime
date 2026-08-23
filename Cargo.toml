@@ -10,6 +10,7 @@ license = "MIT"
 repository = "https://github.com/kunlunengine/runtime"
 
 [workspace.dependencies]
+cap-std = "4.0.3"
 kunlun-jsc = { path = "crates/kunlun-jsc", version = "0.1.0" }
 kunlun-jsc-sys = { path = "crates/kunlun-jsc-sys", version = "0.1.0" }
 reqwest = { version = "0.13.4", default-features = false, features = ["rustls"] }

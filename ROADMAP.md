@@ -71,7 +71,7 @@ Goal: run real bundled server entrypoints rather than classic scripts.
 - [x] Built-in module registry and bootstrap loader for `kunlun:` specifiers.
 - [ ] Native module linking, cyclic graph handling, dynamic import, `import.meta.url`, and source maps.
 - [x] Initial Deferred Promise bridge and native Promise/`async`/`await` continuation execution.
-- [x] Tokio current-thread `LocalSet` host loop and Promise-returning timer primitive.
+- [x] Caller-driven Tokio host loop and Promise-returning timer primitive.
 - [ ] Promise rejection tracking and an explicit deterministic microtask checkpoint API.
 - [x] Extend the host loop from timers to plain-data filesystem/HTTP completion messages.
 - [ ] Add signals, cancellation/AbortSignal, streaming I/O, and graceful shutdown.

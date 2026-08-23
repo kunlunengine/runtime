@@ -4,9 +4,9 @@ The native JavaScriptCore host for [Kunlun Engine](https://github.com/kunlunengi
 
 This repository is now in the embedding and async-host stage. The checked-in bootstrap owns a
 JavaScriptCore context on macOS, evaluates scripts with source URLs, converts exceptions, can mark a
-context as inspectable, and runs JSC Promises on a Tokio current-thread event loop. The native
-`sleep(ms)` host function returns a real JSC Deferred Promise; its Tokio timer resolves on the
-isolate's `LocalSet`, so JavaScript `async`/`await` continuations execute on the owning thread.
+context as inspectable, and runs JSC Promises on a caller-provided Tokio event loop. The native
+`sleep(ms)` host function returns a real JSC Deferred Promise; the isolate settles due timers while
+its async evaluation future is polled, so JavaScript continuations execute on the owning thread.
 
 The bootstrap also exposes capability-gated `kunlun:fs` and `kunlun:http` modules through
 `kunlun.import()`. Their Tokio operations return plain completion data to the isolate; JSC Promise

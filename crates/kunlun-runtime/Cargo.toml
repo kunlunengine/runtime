@@ -17,6 +17,7 @@ name = "kunlun-runtime"
 path = "src/main.rs"
 
 [dependencies]
+cap-std.workspace = true
 kunlun-jsc.workspace = true
 reqwest.workspace = true
 serde.workspace = true

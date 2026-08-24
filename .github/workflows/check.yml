@@ -34,4 +34,32 @@ jobs:
             - name: Check code linting
               run: cargo clippy --all-targets --all-features -- -D warnings
             - name: Run tests
-              run: cargo test --all
+              run: cargo test --workspace
+
+    m0-macos:
+        name: M0 macOS (${{ matrix.arch }})
+        strategy:
+            fail-fast: false
+            matrix:
+                include:
+                    - arch: arm64
+                      runner: macos-15
+                      uname: arm64
+                    - arch: x64
+                      runner: macos-15-intel
+                      uname: x86_64
+        runs-on: ${{ matrix.runner }}
+        permissions:
+            contents: read
+        steps:
+            - uses: actions/checkout@v7
+              with:
+                  persist-credentials: false
+            - name: Verify runner architecture
+              run: test "$(uname -m)" = "${{ matrix.uname }}"
+            - name: Install Rust
+              uses: dtolnay/rust-toolchain@stable
+            - name: Run workspace tests
+              run: cargo test --workspace
+            - name: Run runtime doctor
+              run: cargo run -p kunlun-runtime -- doctor

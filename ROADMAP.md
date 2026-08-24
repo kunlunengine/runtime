@@ -1,6 +1,6 @@
 # Kunlun Runtime Roadmap
 
-Status date: 2026-08-22
+Status date: 2026-08-24
 
 This roadmap starts from the actual repository state, not from the aspirations in the core README.
 Before this revision the repository contained only a `Hello, world!` binary and no runtime
@@ -24,7 +24,7 @@ protocol, tests, JSC ownership model, or development-tool decision.
 
 ## Workstreams and milestones
 
-### M0 — Embedding proof (current)
+### M0 — Embedding proof (complete)
 
 Goal: replace `Hello, world!` with an honest, testable engine slice.
 
@@ -41,13 +41,13 @@ Goal: replace `Hello, world!` with an honest, testable engine slice.
 - [x] Capability-gated `kunlun:fs` read and `kunlun:http` request bootstrap modules.
 - [x] Ambient `@kunlun-js/runtime-types` declarations checked against the built-in registry.
 - [x] architecture, JSC binding, DevTools, and CLI decisions recorded.
-- [ ] CI on macOS arm64/x64 and formatting/lint policy.
+- [x] CI on macOS arm64/x64 and formatting/lint policy.
 
 Exit gate: `cargo test --workspace`, `kunlun-runtime doctor`, synchronous/asynchronous exception
 paths, and a Tokio-to-JSC Promise resolution test pass on supported macOS builders. No ESM, Fetch,
 or runtime-compatibility claim is allowed at this milestone.
 
-### M1 — Reproducible JSC distribution and safe binding
+### M1 — Reproducible JSC distribution and safe binding (current)
 
 Goal: make the engine version controlled by Kunlun rather than by the host OS.
 

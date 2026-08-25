@@ -55,6 +55,9 @@ impl ContextInner {
         let status = unsafe {
             sys::kunlun_jsc_value_to_string(self.as_context(), value, &mut string, &mut exception)
         };
+        if status == sys::KUNLUN_JSC_STATUS_JS_EXCEPTION && !exception.is_null() {
+            return Err(JscError::Exception(self.value_to_string(exception)?));
+        }
         if status != sys::KUNLUN_JSC_STATUS_OK || !exception.is_null() || string.is_null() {
             return Err(JscError::ValueConversion);
         }
@@ -752,6 +755,20 @@ mod tests {
             .evaluate("throw new Error('boom')", "test:///exception.js")
             .unwrap_err();
         assert!(matches!(error, JscError::Exception(message) if message.contains("boom")));
+    }
+
+    #[test]
+    fn returns_javascript_exceptions_from_string_conversion() {
+        let mut vm = JscVm::new("kunlun-test").expect("create VM");
+        let error = vm
+            .evaluate(
+                "({ toString() { throw new Error('conversion boom'); } })",
+                "test:///string-conversion-exception.js",
+            )
+            .unwrap_err();
+        assert!(
+            matches!(error, JscError::Exception(message) if message.contains("conversion boom"))
+        );
     }
 
     #[test]

@@ -123,6 +123,11 @@ KUNLUN_JSC_API kunlun_jsc_status kunlun_jsc_object_make_deferred_promise(
     kunlun_jsc_object **out_resolve,
     kunlun_jsc_object **out_reject,
     const kunlun_jsc_value **out_exception);
+KUNLUN_JSC_API kunlun_jsc_status kunlun_jsc_object_make_error(
+    kunlun_jsc_context *context,
+    const kunlun_jsc_string *message,
+    kunlun_jsc_object **out_error,
+    const kunlun_jsc_value **out_exception);
 /*
  * The returned function is borrowed from context. The shim-owned callback
  * record is finalized with the JavaScript object; callback code must remain

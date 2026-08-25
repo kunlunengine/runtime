@@ -659,13 +659,19 @@ fn set_callback_exception(context: ContextRef, out_exception: *mut ValueRef, mes
     let Ok(message) = OwnedJsString::new(message) else {
         return;
     };
-    let mut exception = ptr::null();
+    let mut error = ptr::null_mut();
+    let mut creation_exception = ptr::null();
     // SAFETY: the caller supplied writable exception storage and the string is
-    // live for the value creation call.
-    let status = unsafe { sys::kunlun_jsc_value_make_string(context, message.raw, &mut exception) };
-    if status == sys::KUNLUN_JSC_STATUS_OK {
+    // live for the Error creation call.
+    let status = unsafe {
+        sys::kunlun_jsc_object_make_error(context, message.raw, &mut error, &mut creation_exception)
+    };
+    if status == sys::KUNLUN_JSC_STATUS_OK && !error.is_null() {
         // SAFETY: the shim supplied writable callback exception storage.
-        unsafe { *out_exception = exception };
+        unsafe { *out_exception = error.cast_const() };
+    } else if status == sys::KUNLUN_JSC_STATUS_JS_EXCEPTION && !creation_exception.is_null() {
+        // SAFETY: the shim supplied writable callback exception storage.
+        unsafe { *out_exception = creation_exception };
     }
 }
 
@@ -764,11 +770,12 @@ mod tests {
         vm.install_sleep_scheduler(|_, _| panic!("test scheduler panic"))
             .expect("install sleep callback");
 
-        let error = vm
-            .evaluate("sleep(1)", "test:///callback-panic.js")
-            .expect_err("callback panic becomes a JavaScript exception");
-        assert!(
-            matches!(error, JscError::Exception(message) if message.contains("scheduler panicked"))
-        );
+        let caught = vm
+            .evaluate(
+                "try { sleep(1); } catch (error) { [error instanceof Error, error.message, typeof error.stack === 'string' && error.stack.length > 0].join('|'); }",
+                "test:///callback-panic.js",
+            )
+            .expect("callback panic can be caught as a JavaScript Error");
+        assert_eq!(caught, "true|Kunlun timer scheduler panicked|true");
     }
 }

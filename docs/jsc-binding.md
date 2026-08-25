@@ -79,7 +79,7 @@ Later versions of the shim will provide the smallest additional API needed for:
 - microtask checkpoints and unhandled-rejection notification;
 - execution deadlines, termination, and memory telemetry;
 - Inspector frontend/backend message callbacks and pause-loop events;
-- host-function creation and external ArrayBuffer lifetime hooks.
+- external ArrayBuffer lifetime hooks.
 
 It returns status codes and explicit exception/result handles. It does not leak WebKit C++ types into
 the Rust ABI.

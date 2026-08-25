@@ -34,6 +34,14 @@ bool to_size(uint64_t value, size_t &out) noexcept
     return true;
 }
 
+JSObjectRef make_error(JSContextRef context, JSStringRef message, JSValueRef *exception)
+{
+    JSValueRef argument = JSValueMakeString(context, message);
+    if (!argument)
+        return nullptr;
+    return JSObjectMakeError(context, 1, &argument, exception);
+}
+
 void set_exception_message(JSContextRef context, JSValueRef *exception, const char *message) noexcept
 {
     if (!exception)
@@ -44,8 +52,10 @@ void set_exception_message(JSContextRef context, JSValueRef *exception, const ch
         JSStringRef string = JSStringCreateWithUTF8CString(message);
         if (!string)
             return;
-        *exception = JSValueMakeString(context, string);
+        JSValueRef creation_exception = nullptr;
+        JSObjectRef error = make_error(context, string, &creation_exception);
         JSStringRelease(string);
+        *exception = creation_exception ? creation_exception : error;
     } catch (...) {
         *exception = nullptr;
     }
@@ -362,6 +372,30 @@ kunlun_jsc_status kunlun_jsc_object_make_deferred_promise(
             return KUNLUN_JSC_STATUS_JS_EXCEPTION;
         return promise && resolve && reject ? KUNLUN_JSC_STATUS_OK
                                            : KUNLUN_JSC_STATUS_OUT_OF_MEMORY;
+    });
+}
+
+kunlun_jsc_status kunlun_jsc_object_make_error(
+    kunlun_jsc_context *context,
+    const kunlun_jsc_string *message,
+    kunlun_jsc_object **out_error,
+    const kunlun_jsc_value **out_exception)
+{
+    return guard([&] {
+        if (!context || !message || !out_error || !out_exception)
+            return KUNLUN_JSC_STATUS_INVALID_ARGUMENT;
+        *out_error = nullptr;
+        *out_exception = nullptr;
+        JSValueRef exception = nullptr;
+        JSObjectRef error = make_error(
+            opaque_cast<JSContextRef>(context),
+            mutable_opaque_cast<JSStringRef>(message),
+            &exception);
+        *out_error = opaque_cast<kunlun_jsc_object *>(error);
+        *out_exception = opaque_cast<const kunlun_jsc_value *>(exception);
+        if (exception)
+            return KUNLUN_JSC_STATUS_JS_EXCEPTION;
+        return error ? KUNLUN_JSC_STATUS_OK : KUNLUN_JSC_STATUS_OUT_OF_MEMORY;
     });
 }
 

@@ -53,6 +53,8 @@ fn compile_header_smoke_tests() {
 }
 
 fn compile_macos_shim() {
+    println!("cargo:rerun-if-env-changed=SDKROOT");
+
     let mut build = cc::Build::new();
     build
         .cpp(true)

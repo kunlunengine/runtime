@@ -33,6 +33,7 @@ fn links_every_allowlisted_symbol() {
         sys::kunlun_jsc_evaluate as *const (),
         sys::kunlun_jsc_object_call_as_function as *const (),
         sys::kunlun_jsc_object_make_deferred_promise as *const (),
+        sys::kunlun_jsc_object_make_error as *const (),
         sys::kunlun_jsc_object_make_function as *const (),
         sys::kunlun_jsc_object_set_property as *const (),
         sys::kunlun_jsc_value_make_string as *const (),
@@ -43,8 +44,8 @@ fn links_every_allowlisted_symbol() {
         sys::kunlun_jsc_value_unprotect as *const (),
     ];
 
-    assert_eq!(symbols.len(), 21);
-    assert_eq!(size_of_val(&symbols), 21 * size_of::<usize>());
+    assert_eq!(symbols.len(), 22);
+    assert_eq!(size_of_val(&symbols), 22 * size_of::<usize>());
     assert!(symbols.iter().all(|symbol| !symbol.is_null()));
 }
 

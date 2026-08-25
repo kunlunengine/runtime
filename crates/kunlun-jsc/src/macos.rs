@@ -13,6 +13,9 @@ type ContextRef = *mut sys::kunlun_jsc_context;
 type ObjectRef = *mut sys::kunlun_jsc_object;
 type ValueRef = *const sys::kunlun_jsc_value;
 
+const EXCEPTION_STRINGIFICATION_FALLBACK: &str =
+    "JavaScript exception could not be converted to a string";
+
 fn expect_status(operation: &'static str, status: sys::kunlun_jsc_status) -> Result<(), JscError> {
     if status == sys::KUNLUN_JSC_STATUS_OK {
         Ok(())
@@ -48,6 +51,19 @@ impl ContextInner {
     }
 
     fn value_to_string(&self, value: ValueRef) -> Result<String, JscError> {
+        match self.value_to_string_once(value) {
+            Ok(string) => Ok(string),
+            Err(ValueToStringError::Exception(exception)) => {
+                let message = self
+                    .value_to_string_once(exception)
+                    .unwrap_or_else(|_| EXCEPTION_STRINGIFICATION_FALLBACK.to_owned());
+                Err(JscError::Exception(message))
+            }
+            Err(ValueToStringError::Conversion(error)) => Err(error),
+        }
+    }
+
+    fn value_to_string_once(&self, value: ValueRef) -> Result<String, ValueToStringError> {
         let mut string = ptr::null_mut();
         let mut exception = ptr::null();
         // SAFETY: `value` belongs to this live context. The returned JS string
@@ -56,13 +72,20 @@ impl ContextInner {
             sys::kunlun_jsc_value_to_string(self.as_context(), value, &mut string, &mut exception)
         };
         if status == sys::KUNLUN_JSC_STATUS_JS_EXCEPTION && !exception.is_null() {
-            return Err(JscError::Exception(self.value_to_string(exception)?));
+            return Err(ValueToStringError::Exception(exception));
         }
         if status != sys::KUNLUN_JSC_STATUS_OK || !exception.is_null() || string.is_null() {
-            return Err(JscError::ValueConversion);
+            return Err(ValueToStringError::Conversion(JscError::ValueConversion));
         }
-        OwnedJsString { raw: string }.to_utf8()
+        OwnedJsString { raw: string }
+            .to_utf8()
+            .map_err(ValueToStringError::Conversion)
     }
+}
+
+enum ValueToStringError {
+    Exception(ValueRef),
+    Conversion(JscError),
 }
 
 impl Drop for ContextInner {
@@ -768,6 +791,21 @@ mod tests {
             .unwrap_err();
         assert!(
             matches!(error, JscError::Exception(message) if message.contains("conversion boom"))
+        );
+    }
+
+    #[test]
+    fn falls_back_when_stringifying_a_conversion_exception_fails() {
+        let mut vm = JscVm::new("kunlun-test").expect("create VM");
+        let error = vm
+            .evaluate(
+                "({ toString() { throw this; } })",
+                "test:///recursive-string-conversion-exception.js",
+            )
+            .unwrap_err();
+        assert_eq!(
+            error,
+            JscError::Exception(EXCEPTION_STRINGIFICATION_FALLBACK.to_owned())
         );
     }
 

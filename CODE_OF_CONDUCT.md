@@ -33,7 +33,7 @@ The following are not acceptable in project spaces:
 ## Scope
 
 This policy applies to repositories, issues, pull requests, reviews, discussions, community events,
-and other Kunlun Engine spaces. It also applies when someone officially represents the project,
+and other Kunlun Runtime spaces. It also applies when someone officially represents the project,
 including through an official account or at an event.
 
 ## Reporting
@@ -63,4 +63,4 @@ in the original decision. Retaliation or repeated violations may result in stron
 ## Attribution
 
 This policy is informed by [Contributor Covenant 3.0](https://www.contributor-covenant.org/version/3/0/)
-and its community enforcement guidance. It is written for the needs of the Kunlun Engine community.
+and its community enforcement guidance. It is written for the needs of the Kunlun Runtime community.

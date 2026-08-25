@@ -23,8 +23,12 @@ do not replace a process, container, or microVM boundary.
 Do not open a public issue, discussion, or pull request for a suspected vulnerability.
 
 Email **kunlunengine@zixiaolabs.com** with the subject
-`[SECURITY] kunlunengine/runtime: <short summary>`. Encrypt sensitive attachments before sending and
-coordinate the transfer method in the initial email when necessary.
+`[SECURITY] kunlunengine/runtime: <short summary>`. Do not attach sensitive files to the initial
+email. Instead, include your GitHub username and ask the maintainers to invite you to a private
+GitHub Security Advisory. Verify that the resulting advisory URL is under
+`https://github.com/kunlunengine/runtime/security/advisories/` before transferring sensitive
+material through it, and coordinate a different encrypted transfer method before sending if that
+channel is unsuitable.
 
 Include as much of the following as is safe to share:
 

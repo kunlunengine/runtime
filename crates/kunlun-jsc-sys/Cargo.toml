@@ -12,5 +12,9 @@ publish = false
 name = "kunlun_jsc_sys"
 path = "src/lib.rs"
 
+[build-dependencies]
+bindgen = "0.72.1"
+cc = "1.4.4"
+
 [lints]
 workspace = true

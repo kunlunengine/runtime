@@ -56,16 +56,39 @@ This is an engineering and supply-chain boundary, not a claim that existing crat
 
 ### `kunlun_jsc` shim
 
-The C/C++ shim is versioned with the pinned WebKit source and provides the smallest API needed for:
+[`crates/kunlun-jsc-sys/include/kunlun_jsc.h`](../crates/kunlun-jsc-sys/include/kunlun_jsc.h) is the
+authoritative public ABI. ABI v1 wraps the context, string, evaluation, property, callback, Deferred
+Promise, conversion, and rooting primitives already used by the bootstrap safe wrapper. Keeping the
+public JSC calls behind the same boundary means Rust declarations cannot drift from either the shim
+or the eventual pinned engine build.
+
+The header exposes only C-compatible opaque handles. Counts and sizes use fixed-width integers,
+booleans use `uint8_t`, and every operation returns a fixed-width `kunlun_jsc_status`. Successful
+context and string outputs are owned and released exactly once. Value and object outputs are
+borrowed from their context unless paired with `kunlun_jsc_value_protect` and
+`kunlun_jsc_value_unprotect`; no handle may be used after its context is released.
+
+Every exported C++ entry point translates `std::bad_alloc` to `KUNLUN_JSC_STATUS_OUT_OF_MEMORY` and
+all other C++ exceptions to `KUNLUN_JSC_STATUS_CPP_EXCEPTION`. The C++ callback bridge is also a
+catch-all boundary. Rust callbacks catch panics before returning and report a JavaScript exception
+plus `KUNLUN_JSC_STATUS_CALLBACK_ERROR`; unwinding across either ABI direction is forbidden.
+
+Later versions of the shim will provide the smallest additional API needed for:
 
 - module resolve/fetch/link/evaluate and `import.meta`;
 - microtask checkpoints and unhandled-rejection notification;
 - execution deadlines, termination, and memory telemetry;
 - Inspector frontend/backend message callbacks and pause-loop events;
-- host-function creation and external ArrayBuffer lifetime hooks.
+- external ArrayBuffer lifetime hooks.
 
 It returns status codes and explicit exception/result handles. It does not leak WebKit C++ types into
 the Rust ABI.
+
+`kunlun-jsc-sys/build.rs` generates bindings only from the authoritative header with allowlists for
+the `kunlun_jsc_` functions/types and `KUNLUN_JSC_` constants. The same build compiles the header as
+both C and C++, compiles the bootstrap shim on macOS, and links the already-installed system
+framework. It invokes no downloader and performs no manifest-driven network or native-artifact
+fetch. The pinned distribution and fail-closed backend selection remain separate M1 work.
 
 ## Distribution modes
 

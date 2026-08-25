@@ -2,7 +2,6 @@ use crate::{BackendInfo, HostCall, JscError};
 use kunlun_jsc_sys as sys;
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::ffi::{CStr, CString, c_char};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::ptr;
 use std::rc::Rc;
@@ -10,6 +9,20 @@ use std::time::Duration;
 
 type SleepScheduler = dyn Fn(Duration, DeferredPromise);
 type HostScheduler = dyn Fn(HostCall, DeferredPromise);
+type ContextRef = *mut sys::kunlun_jsc_context;
+type ObjectRef = *mut sys::kunlun_jsc_object;
+type ValueRef = *const sys::kunlun_jsc_value;
+
+const EXCEPTION_STRINGIFICATION_FALLBACK: &str =
+    "JavaScript exception could not be converted to a string";
+
+fn expect_status(operation: &'static str, status: sys::kunlun_jsc_status) -> Result<(), JscError> {
+    if status == sys::KUNLUN_JSC_STATUS_OK {
+        Ok(())
+    } else {
+        Err(JscError::NativeStatus { operation, status })
+    }
+}
 
 #[derive(Clone)]
 struct SleepHook {
@@ -29,31 +42,57 @@ thread_local! {
 }
 
 struct ContextInner {
-    raw: sys::JSGlobalContextRef,
+    raw: ContextRef,
 }
 
 impl ContextInner {
-    fn as_context(&self) -> sys::JSContextRef {
-        self.raw.cast_const()
+    fn as_context(&self) -> ContextRef {
+        self.raw
     }
 
-    fn value_to_string(&self, value: sys::JSValueRef) -> Result<String, JscError> {
+    fn value_to_string(&self, value: ValueRef) -> Result<String, JscError> {
+        match self.value_to_string_once(value) {
+            Ok(string) => Ok(string),
+            Err(ValueToStringError::Exception(exception)) => {
+                let message = self
+                    .value_to_string_once(exception)
+                    .unwrap_or_else(|_| EXCEPTION_STRINGIFICATION_FALLBACK.to_owned());
+                Err(JscError::Exception(message))
+            }
+            Err(ValueToStringError::Conversion(error)) => Err(error),
+        }
+    }
+
+    fn value_to_string_once(&self, value: ValueRef) -> Result<String, ValueToStringError> {
+        let mut string = ptr::null_mut();
         let mut exception = ptr::null();
         // SAFETY: `value` belongs to this live context. The returned JS string
         // is owned by `OwnedJsString` and released exactly once.
-        let string = unsafe { sys::JSValueToStringCopy(self.as_context(), value, &mut exception) };
-        if !exception.is_null() || string.is_null() {
-            return Err(JscError::ValueConversion);
+        let status = unsafe {
+            sys::kunlun_jsc_value_to_string(self.as_context(), value, &mut string, &mut exception)
+        };
+        if status == sys::KUNLUN_JSC_STATUS_JS_EXCEPTION && !exception.is_null() {
+            return Err(ValueToStringError::Exception(exception));
         }
-        OwnedJsString { raw: string }.to_utf8()
+        if status != sys::KUNLUN_JSC_STATUS_OK || !exception.is_null() || string.is_null() {
+            return Err(ValueToStringError::Conversion(JscError::ValueConversion));
+        }
+        OwnedJsString { raw: string }
+            .to_utf8()
+            .map_err(ValueToStringError::Conversion)
     }
+}
+
+enum ValueToStringError {
+    Exception(ValueRef),
+    Conversion(JscError),
 }
 
 impl Drop for ContextInner {
     fn drop(&mut self) {
         // SAFETY: `raw` was created by `JSGlobalContextCreate`, and the Rc
         // ownership model ensures this is its final release.
-        unsafe { sys::JSGlobalContextRelease(self.raw) };
+        let _ = unsafe { sys::kunlun_jsc_context_release(self.raw) };
     }
 }
 
@@ -76,8 +115,11 @@ impl JscVm {
     }
 
     pub fn new(name: &str) -> Result<Self, JscError> {
-        // SAFETY: passing a null class requests JSC's default global object.
-        let raw = unsafe { sys::JSGlobalContextCreate(ptr::null()) };
+        let mut raw = ptr::null_mut();
+        // SAFETY: `raw` is writable output storage and the shim creates the
+        // default global context without exposing JSC implementation types.
+        let status = unsafe { sys::kunlun_jsc_context_create(&mut raw) };
+        expect_status("context_create", status)?;
         if raw.is_null() {
             return Err(JscError::ContextCreation);
         }
@@ -93,18 +135,25 @@ impl JscVm {
         let name = OwnedJsString::new(name)?;
         // SAFETY: both the context and name are live for the duration of the
         // call; JSC copies the context name.
-        unsafe { sys::JSGlobalContextSetName(self.context.raw, name.raw) };
-        Ok(())
+        let status = unsafe { sys::kunlun_jsc_context_set_name(self.context.raw, name.raw) };
+        expect_status("context_set_name", status)
     }
 
     pub fn set_inspectable(&self, inspectable: bool) {
         // SAFETY: the owned context is live and accessed only on this thread.
-        unsafe { sys::JSGlobalContextSetInspectable(self.context.raw, inspectable) };
+        let status = unsafe {
+            sys::kunlun_jsc_context_set_inspectable(self.context.raw, u8::from(inspectable))
+        };
+        debug_assert_eq!(status, sys::KUNLUN_JSC_STATUS_OK);
     }
 
     pub fn is_inspectable(&self) -> bool {
+        let mut inspectable = 0;
         // SAFETY: the owned context is live and accessed only on this thread.
-        unsafe { sys::JSGlobalContextIsInspectable(self.context.raw) }
+        let status =
+            unsafe { sys::kunlun_jsc_context_is_inspectable(self.context.raw, &mut inspectable) };
+        debug_assert_eq!(status, sys::KUNLUN_JSC_STATUS_OK);
+        status == sys::KUNLUN_JSC_STATUS_OK && inspectable != 0
     }
 
     /// Installs `sleep(milliseconds)` as a Promise-returning host function.
@@ -120,12 +169,28 @@ impl JscVm {
 
         // SAFETY: the callback uses only the context-local registry below, and
         // the global object retains the created function.
-        let global = unsafe { sys::JSContextGetGlobalObject(context) };
+        let mut global = ptr::null_mut();
+        let status = unsafe { sys::kunlun_jsc_context_get_global_object(context, &mut global) };
+        expect_status("context_get_global_object", status)?;
         // SAFETY: `name` and `context` are live. The callback has the exact C
         // ABI expected by JavaScriptCore.
-        let function = unsafe {
-            sys::JSObjectMakeFunctionWithCallback(context, name.raw, Some(sleep_callback))
+        let mut function = ptr::null_mut();
+        let mut function_exception = ptr::null();
+        let status = unsafe {
+            sys::kunlun_jsc_object_make_function(
+                context,
+                name.raw,
+                Some(sleep_callback),
+                &mut function,
+                &mut function_exception,
+            )
         };
+        if status == sys::KUNLUN_JSC_STATUS_JS_EXCEPTION && !function_exception.is_null() {
+            return Err(JscError::Exception(
+                self.context.value_to_string(function_exception)?,
+            ));
+        }
+        expect_status("object_make_function", status)?;
         if global.is_null() || function.is_null() {
             return Err(JscError::HostFunction(
                 "could not create the global sleep function".to_owned(),
@@ -135,21 +200,22 @@ impl JscVm {
         let mut exception = ptr::null();
         // SAFETY: all handles belong to the same context, and no attribute bits
         // are requested.
-        unsafe {
-            sys::JSObjectSetProperty(
+        let status = unsafe {
+            sys::kunlun_jsc_object_set_property(
                 context,
                 global,
                 name.raw,
                 function.cast_const(),
-                sys::K_JS_PROPERTY_ATTRIBUTE_NONE,
+                sys::KUNLUN_JSC_PROPERTY_ATTRIBUTE_NONE,
                 &mut exception,
             )
         };
-        if !exception.is_null() {
+        if status == sys::KUNLUN_JSC_STATUS_JS_EXCEPTION && !exception.is_null() {
             return Err(JscError::Exception(
                 self.context.value_to_string(exception)?,
             ));
         }
+        expect_status("object_set_property", status)?;
 
         let hook = SleepHook {
             context: Rc::clone(&self.context),
@@ -171,12 +237,28 @@ impl JscVm {
         let context = self.context.as_context();
 
         // SAFETY: the global object belongs to this live context.
-        let global = unsafe { sys::JSContextGetGlobalObject(context) };
+        let mut global = ptr::null_mut();
+        let status = unsafe { sys::kunlun_jsc_context_get_global_object(context, &mut global) };
+        expect_status("context_get_global_object", status)?;
         // SAFETY: the callback has JSC's exact C ABI and dispatches only
         // through the context-local registry.
-        let function = unsafe {
-            sys::JSObjectMakeFunctionWithCallback(context, name.raw, Some(host_call_callback))
+        let mut function = ptr::null_mut();
+        let mut function_exception = ptr::null();
+        let status = unsafe {
+            sys::kunlun_jsc_object_make_function(
+                context,
+                name.raw,
+                Some(host_call_callback),
+                &mut function,
+                &mut function_exception,
+            )
         };
+        if status == sys::KUNLUN_JSC_STATUS_JS_EXCEPTION && !function_exception.is_null() {
+            return Err(JscError::Exception(
+                self.context.value_to_string(function_exception)?,
+            ));
+        }
+        expect_status("object_make_function", status)?;
         if global.is_null() || function.is_null() {
             return Err(JscError::HostFunction(
                 "could not create the generic Kunlun host-call function".to_owned(),
@@ -185,21 +267,22 @@ impl JscVm {
 
         let mut exception = ptr::null();
         // SAFETY: all handles belong to the same context.
-        unsafe {
-            sys::JSObjectSetProperty(
+        let status = unsafe {
+            sys::kunlun_jsc_object_set_property(
                 context,
                 global,
                 name.raw,
                 function.cast_const(),
-                sys::K_JS_PROPERTY_ATTRIBUTE_NONE,
+                sys::KUNLUN_JSC_PROPERTY_ATTRIBUTE_NONE,
                 &mut exception,
             )
         };
-        if !exception.is_null() {
+        if status == sys::KUNLUN_JSC_STATUS_JS_EXCEPTION && !exception.is_null() {
             return Err(JscError::Exception(
                 self.context.value_to_string(exception)?,
             ));
         }
+        expect_status("object_set_property", status)?;
 
         let hook = HostHook {
             context: Rc::clone(&self.context),
@@ -215,24 +298,27 @@ impl JscVm {
         let source = OwnedJsString::new(source)?;
         let source_url = OwnedJsString::new(source_url)?;
         let mut exception = ptr::null();
+        let mut value = ptr::null();
         // SAFETY: all handles belong to this live context; null `thisObject`
         // requests the global object and JSC writes at most one exception.
-        let value = unsafe {
-            sys::JSEvaluateScript(
+        let status = unsafe {
+            sys::kunlun_jsc_evaluate(
                 self.context.as_context(),
                 source.raw,
                 ptr::null_mut(),
                 source_url.raw,
                 1,
+                &mut value,
                 &mut exception,
             )
         };
 
-        if !exception.is_null() {
+        if status == sys::KUNLUN_JSC_STATUS_JS_EXCEPTION && !exception.is_null() {
             return Err(JscError::Exception(
                 self.context.value_to_string(exception)?,
             ));
         }
+        expect_status("evaluate", status)?;
         if value.is_null() {
             return Err(JscError::ValueConversion);
         }
@@ -258,37 +344,48 @@ impl Drop for JscVm {
 /// drops the Promise. This type is deliberately `!Send + !Sync`.
 pub struct DeferredPromise {
     context: Rc<ContextInner>,
-    resolve: sys::JSObjectRef,
-    reject: sys::JSObjectRef,
+    resolve: ObjectRef,
+    reject: ObjectRef,
 }
 
 impl DeferredPromise {
-    fn new(context: Rc<ContextInner>) -> Result<(sys::JSObjectRef, Self), JscError> {
+    fn new(context: Rc<ContextInner>) -> Result<(ObjectRef, Self), JscError> {
+        let mut promise = ptr::null_mut();
         let mut resolve = ptr::null_mut();
         let mut reject = ptr::null_mut();
         let mut exception = ptr::null();
         // SAFETY: JSC initializes the promise and resolver outputs for this
         // live context. The resolver functions are protected below.
-        let promise = unsafe {
-            sys::JSObjectMakeDeferredPromise(
+        let status = unsafe {
+            sys::kunlun_jsc_object_make_deferred_promise(
                 context.as_context(),
+                &mut promise,
                 &mut resolve,
                 &mut reject,
                 &mut exception,
             )
         };
-        if !exception.is_null() {
+        if status == sys::KUNLUN_JSC_STATUS_JS_EXCEPTION && !exception.is_null() {
             return Err(JscError::Exception(context.value_to_string(exception)?));
         }
+        expect_status("object_make_deferred_promise", status)?;
         if promise.is_null() || resolve.is_null() || reject.is_null() {
             return Err(JscError::PromiseCreation);
         }
 
         // SAFETY: both functions belong to this context. Protection is paired
         // with `JSValueUnprotect` in Drop.
-        unsafe {
-            sys::JSValueProtect(context.as_context(), resolve.cast_const());
-            sys::JSValueProtect(context.as_context(), reject.cast_const());
+        let status =
+            unsafe { sys::kunlun_jsc_value_protect(context.as_context(), resolve.cast_const()) };
+        expect_status("value_protect", status)?;
+        let status =
+            unsafe { sys::kunlun_jsc_value_protect(context.as_context(), reject.cast_const()) };
+        if let Err(error) = expect_status("value_protect", status) {
+            // SAFETY: the first resolver was protected immediately above.
+            let _ = unsafe {
+                sys::kunlun_jsc_value_unprotect(context.as_context(), resolve.cast_const())
+            };
+            return Err(error);
         }
         Ok((
             promise,
@@ -301,46 +398,59 @@ impl DeferredPromise {
     }
 
     pub fn resolve_undefined(self) -> Result<(), JscError> {
+        let mut value = ptr::null();
         // SAFETY: undefined is created in the same live context.
-        let value = unsafe { sys::JSValueMakeUndefined(self.context.as_context()) };
+        let status =
+            unsafe { sys::kunlun_jsc_value_make_undefined(self.context.as_context(), &mut value) };
+        expect_status("value_make_undefined", status)?;
         self.settle(self.resolve, value)
     }
 
     pub fn resolve_string(self, value: &str) -> Result<(), JscError> {
         let value = OwnedJsString::new(value)?;
+        let mut raw_value = ptr::null();
         // SAFETY: the JS string and resulting value belong to the same context.
-        let value = unsafe { sys::JSValueMakeString(self.context.as_context(), value.raw) };
-        self.settle(self.resolve, value)
+        let status = unsafe {
+            sys::kunlun_jsc_value_make_string(self.context.as_context(), value.raw, &mut raw_value)
+        };
+        expect_status("value_make_string", status)?;
+        self.settle(self.resolve, raw_value)
     }
 
     pub fn reject_message(self, message: &str) -> Result<(), JscError> {
         let message = OwnedJsString::new(message)?;
+        let mut value = ptr::null();
         // SAFETY: the JS string and resulting value belong to the same context.
-        let value = unsafe { sys::JSValueMakeString(self.context.as_context(), message.raw) };
+        let status = unsafe {
+            sys::kunlun_jsc_value_make_string(self.context.as_context(), message.raw, &mut value)
+        };
+        expect_status("value_make_string", status)?;
         self.settle(self.reject, value)
     }
 
-    fn settle(&self, function: sys::JSObjectRef, value: sys::JSValueRef) -> Result<(), JscError> {
+    fn settle(&self, function: ObjectRef, value: ValueRef) -> Result<(), JscError> {
         let arguments = [value];
+        let mut result = ptr::null();
         let mut exception = ptr::null();
         // SAFETY: the protected resolver and argument belong to the same live
         // context. JSC invokes the Promise reactions before returning control.
-        unsafe {
-            sys::JSObjectCallAsFunction(
+        let status = unsafe {
+            sys::kunlun_jsc_object_call_as_function(
                 self.context.as_context(),
                 function,
                 ptr::null_mut(),
-                arguments.len(),
+                u32::try_from(arguments.len()).expect("one Promise settlement argument"),
                 arguments.as_ptr(),
+                &mut result,
                 &mut exception,
             )
         };
-        if !exception.is_null() {
+        if status == sys::KUNLUN_JSC_STATUS_JS_EXCEPTION && !exception.is_null() {
             return Err(JscError::Exception(
                 self.context.value_to_string(exception)?,
             ));
         }
-        Ok(())
+        expect_status("object_call_as_function", status)
     }
 }
 
@@ -349,167 +459,264 @@ impl Drop for DeferredPromise {
         // SAFETY: protection was established in `new`, and the retained Rc
         // guarantees the context is still alive.
         unsafe {
-            sys::JSValueUnprotect(self.context.as_context(), self.resolve.cast_const());
-            sys::JSValueUnprotect(self.context.as_context(), self.reject.cast_const());
+            let _ = sys::kunlun_jsc_value_unprotect(
+                self.context.as_context(),
+                self.resolve.cast_const(),
+            );
+            let _ = sys::kunlun_jsc_value_unprotect(
+                self.context.as_context(),
+                self.reject.cast_const(),
+            );
         }
     }
 }
 
 unsafe extern "C" fn sleep_callback(
-    context: sys::JSContextRef,
-    _function: sys::JSObjectRef,
-    _this_object: sys::JSObjectRef,
-    argument_count: usize,
-    arguments: *const sys::JSValueRef,
-    exception: *mut sys::JSValueRef,
-) -> sys::JSValueRef {
+    context: ContextRef,
+    _function: ObjectRef,
+    _this_object: ObjectRef,
+    argument_count: u32,
+    arguments: *const ValueRef,
+    out_result: *mut ValueRef,
+    out_exception: *mut ValueRef,
+) -> sys::kunlun_jsc_status {
+    match catch_unwind(AssertUnwindSafe(|| {
+        sleep_callback_impl(
+            context,
+            argument_count,
+            arguments,
+            out_result,
+            out_exception,
+        )
+    })) {
+        Ok(status) => status,
+        Err(_) => callback_error(context, out_exception, "Kunlun timer callback panicked"),
+    }
+}
+
+fn sleep_callback_impl(
+    context: ContextRef,
+    argument_count: u32,
+    arguments: *const ValueRef,
+    out_result: *mut ValueRef,
+    out_exception: *mut ValueRef,
+) -> sys::kunlun_jsc_status {
+    if out_result.is_null() || out_exception.is_null() {
+        return sys::KUNLUN_JSC_STATUS_INVALID_ARGUMENT;
+    }
+    // SAFETY: the shim supplies writable callback output storage.
+    unsafe {
+        *out_result = ptr::null();
+        *out_exception = ptr::null();
+    }
+
     let hook = SLEEP_HOOKS.with(|hooks| hooks.borrow().get(&(context as usize)).cloned());
     let Some(hook) = hook else {
-        set_callback_exception(
+        return callback_error(
             context,
-            exception,
+            out_exception,
             "sleep() called outside a Kunlun event loop",
         );
-        return ptr::null();
     };
 
     let milliseconds = if argument_count == 0 {
         0.0
     } else if arguments.is_null() {
-        set_callback_exception(
+        return callback_error(
             context,
-            exception,
+            out_exception,
             "sleep() received an invalid argument list",
         );
-        return ptr::null();
     } else {
+        let mut number = 0.0;
         let mut conversion_exception = ptr::null();
         // SAFETY: JSC guarantees at least `argument_count` entries when the
         // argument pointer is non-null.
         let argument = unsafe { *arguments };
         // SAFETY: the argument belongs to the callback context.
-        let number = unsafe { sys::JSValueToNumber(context, argument, &mut conversion_exception) };
-        if !conversion_exception.is_null() {
-            if !exception.is_null() {
-                // SAFETY: the caller provided writable exception storage.
-                unsafe { *exception = conversion_exception };
-            }
-            return ptr::null();
+        let status = unsafe {
+            sys::kunlun_jsc_value_to_number(
+                context,
+                argument,
+                &mut number,
+                &mut conversion_exception,
+            )
+        };
+        if status == sys::KUNLUN_JSC_STATUS_JS_EXCEPTION && !conversion_exception.is_null() {
+            // SAFETY: the shim supplies writable callback exception storage.
+            unsafe { *out_exception = conversion_exception };
+            return status;
+        }
+        if status != sys::KUNLUN_JSC_STATUS_OK {
+            return callback_error(
+                context,
+                out_exception,
+                "Kunlun could not convert the sleep duration",
+            );
         }
         number
     };
 
     let Ok(duration) = Duration::try_from_secs_f64(milliseconds / 1_000.0) else {
-        set_callback_exception(
+        return callback_error(
             context,
-            exception,
+            out_exception,
             "sleep(milliseconds) requires a finite, non-negative duration",
         );
-        return ptr::null();
     };
 
     let (promise, deferred) = match DeferredPromise::new(Rc::clone(&hook.context)) {
         Ok(result) => result,
         Err(error) => {
-            set_callback_exception(context, exception, &error.to_string());
-            return ptr::null();
+            return callback_error(context, out_exception, &error.to_string());
         }
     };
 
     if catch_unwind(AssertUnwindSafe(|| (hook.schedule)(duration, deferred))).is_err() {
-        set_callback_exception(context, exception, "Kunlun timer scheduler panicked");
-        return ptr::null();
+        return callback_error(context, out_exception, "Kunlun timer scheduler panicked");
     }
 
-    promise.cast_const()
+    // SAFETY: the shim supplies writable callback result storage, and the
+    // Promise is borrowed from the live callback context.
+    unsafe { *out_result = promise.cast_const() };
+    sys::KUNLUN_JSC_STATUS_OK
 }
 
 unsafe extern "C" fn host_call_callback(
-    context: sys::JSContextRef,
-    _function: sys::JSObjectRef,
-    _this_object: sys::JSObjectRef,
-    argument_count: usize,
-    arguments: *const sys::JSValueRef,
-    exception: *mut sys::JSValueRef,
-) -> sys::JSValueRef {
+    context: ContextRef,
+    _function: ObjectRef,
+    _this_object: ObjectRef,
+    argument_count: u32,
+    arguments: *const ValueRef,
+    out_result: *mut ValueRef,
+    out_exception: *mut ValueRef,
+) -> sys::kunlun_jsc_status {
+    match catch_unwind(AssertUnwindSafe(|| {
+        host_call_callback_impl(
+            context,
+            argument_count,
+            arguments,
+            out_result,
+            out_exception,
+        )
+    })) {
+        Ok(status) => status,
+        Err(_) => callback_error(context, out_exception, "Kunlun host callback panicked"),
+    }
+}
+
+fn host_call_callback_impl(
+    context: ContextRef,
+    argument_count: u32,
+    arguments: *const ValueRef,
+    out_result: *mut ValueRef,
+    out_exception: *mut ValueRef,
+) -> sys::kunlun_jsc_status {
+    if out_result.is_null() || out_exception.is_null() {
+        return sys::KUNLUN_JSC_STATUS_INVALID_ARGUMENT;
+    }
+    // SAFETY: the shim supplies writable callback output storage.
+    unsafe {
+        *out_result = ptr::null();
+        *out_exception = ptr::null();
+    }
+
     let hook = HOST_HOOKS.with(|hooks| hooks.borrow().get(&(context as usize)).cloned());
     let Some(hook) = hook else {
-        set_callback_exception(
+        return callback_error(
             context,
-            exception,
+            out_exception,
             "Kunlun host call used outside a registered runtime",
         );
-        return ptr::null();
     };
     if argument_count < 2 || arguments.is_null() {
-        set_callback_exception(
+        return callback_error(
             context,
-            exception,
+            out_exception,
             "Kunlun host call requires operation and JSON payload strings",
         );
-        return ptr::null();
     }
 
     // SAFETY: JSC guarantees `argument_count` callback arguments.
-    let values = unsafe { std::slice::from_raw_parts(arguments, argument_count) };
+    let values = unsafe { std::slice::from_raw_parts(arguments, argument_count as usize) };
     let operation = match hook.context.value_to_string(values[0]) {
         Ok(value) => value,
         Err(error) => {
-            set_callback_exception(context, exception, &error.to_string());
-            return ptr::null();
+            return callback_error(context, out_exception, &error.to_string());
         }
     };
     let payload = match hook.context.value_to_string(values[1]) {
         Ok(value) => value,
         Err(error) => {
-            set_callback_exception(context, exception, &error.to_string());
-            return ptr::null();
+            return callback_error(context, out_exception, &error.to_string());
         }
     };
 
     let (promise, deferred) = match DeferredPromise::new(Rc::clone(&hook.context)) {
         Ok(result) => result,
         Err(error) => {
-            set_callback_exception(context, exception, &error.to_string());
-            return ptr::null();
+            return callback_error(context, out_exception, &error.to_string());
         }
     };
     let call = HostCall { operation, payload };
     if catch_unwind(AssertUnwindSafe(|| (hook.schedule)(call, deferred))).is_err() {
-        set_callback_exception(context, exception, "Kunlun host scheduler panicked");
-        return ptr::null();
+        return callback_error(context, out_exception, "Kunlun host scheduler panicked");
     }
 
-    promise.cast_const()
+    // SAFETY: the shim supplies writable callback result storage, and the
+    // Promise is borrowed from the live callback context.
+    unsafe { *out_result = promise.cast_const() };
+    sys::KUNLUN_JSC_STATUS_OK
 }
 
-fn set_callback_exception(
-    context: sys::JSContextRef,
-    exception: *mut sys::JSValueRef,
+fn callback_error(
+    context: ContextRef,
+    out_exception: *mut ValueRef,
     message: &str,
-) {
-    if exception.is_null() {
+) -> sys::kunlun_jsc_status {
+    set_callback_exception(context, out_exception, message);
+    sys::KUNLUN_JSC_STATUS_CALLBACK_ERROR
+}
+
+fn set_callback_exception(context: ContextRef, out_exception: *mut ValueRef, message: &str) {
+    if out_exception.is_null() {
         return;
     }
     let Ok(message) = OwnedJsString::new(message) else {
         return;
     };
+    let mut error = ptr::null_mut();
+    let mut creation_exception = ptr::null();
     // SAFETY: the caller supplied writable exception storage and the string is
-    // live for the value creation call.
-    unsafe {
-        *exception = sys::JSValueMakeString(context, message.raw);
+    // live for the Error creation call.
+    let status = unsafe {
+        sys::kunlun_jsc_object_make_error(context, message.raw, &mut error, &mut creation_exception)
+    };
+    if status == sys::KUNLUN_JSC_STATUS_OK && !error.is_null() {
+        // SAFETY: the shim supplied writable callback exception storage.
+        unsafe { *out_exception = error.cast_const() };
+    } else if status == sys::KUNLUN_JSC_STATUS_JS_EXCEPTION && !creation_exception.is_null() {
+        // SAFETY: the shim supplied writable callback exception storage.
+        unsafe { *out_exception = creation_exception };
     }
 }
 
 struct OwnedJsString {
-    raw: sys::JSStringRef,
+    raw: *mut sys::kunlun_jsc_string,
 }
 
 impl OwnedJsString {
     fn new(value: &str) -> Result<Self, JscError> {
-        let value = CString::new(value).map_err(|_| JscError::InvalidString)?;
-        // SAFETY: CString guarantees a valid NUL-terminated input.
-        let raw = unsafe { sys::JSStringCreateWithUTF8CString(value.as_ptr()) };
+        if value.as_bytes().contains(&0) {
+            return Err(JscError::InvalidString);
+        }
+        let length = u64::try_from(value.len()).map_err(|_| JscError::InvalidString)?;
+        let mut raw = ptr::null_mut();
+        // SAFETY: the byte slice is live for the call and `raw` is writable
+        // output storage. The shim copies the UTF-8 bytes.
+        let status =
+            unsafe { sys::kunlun_jsc_string_create_utf8(value.as_ptr(), length, &mut raw) };
+        expect_status("string_create_utf8", status)?;
         if raw.is_null() {
             return Err(JscError::ValueConversion);
         }
@@ -517,34 +724,40 @@ impl OwnedJsString {
     }
 
     fn to_utf8(&self) -> Result<String, JscError> {
+        let mut capacity = 0_u64;
         // SAFETY: `raw` is a live owned JS string.
-        let capacity = unsafe { sys::JSStringGetMaximumUTF8CStringSize(self.raw) };
+        let status = unsafe { sys::kunlun_jsc_string_get_max_utf8_size(self.raw, &mut capacity) };
+        expect_status("string_get_max_utf8_size", status)?;
         if capacity == 0 {
             return Err(JscError::ValueConversion);
         }
 
+        let capacity = usize::try_from(capacity).map_err(|_| JscError::ValueConversion)?;
         let mut buffer = vec![0_u8; capacity];
+        let mut written = 0_u64;
         // SAFETY: the buffer has the capacity reported by JSC and is writable.
-        let written = unsafe {
-            sys::JSStringGetUTF8CString(self.raw, buffer.as_mut_ptr().cast::<c_char>(), capacity)
+        let status = unsafe {
+            sys::kunlun_jsc_string_write_utf8(
+                self.raw,
+                buffer.as_mut_ptr(),
+                u64::try_from(capacity).map_err(|_| JscError::ValueConversion)?,
+                &mut written,
+            )
         };
-        if written == 0 {
+        expect_status("string_write_utf8", status)?;
+        let written = usize::try_from(written).map_err(|_| JscError::ValueConversion)?;
+        if written == 0 || written > buffer.len() || buffer[written - 1] != 0 {
             return Err(JscError::ValueConversion);
         }
 
-        // SAFETY: a successful JSC conversion writes a terminating NUL.
-        let c_string = unsafe { CStr::from_ptr(buffer.as_ptr().cast::<c_char>()) };
-        c_string
-            .to_str()
-            .map(str::to_owned)
-            .map_err(|_| JscError::ValueConversion)
+        String::from_utf8(buffer[..written - 1].to_vec()).map_err(|_| JscError::ValueConversion)
     }
 }
 
 impl Drop for OwnedJsString {
     fn drop(&mut self) {
         // SAFETY: `raw` is owned by this wrapper and released exactly once.
-        unsafe { sys::JSStringRelease(self.raw) };
+        let _ = unsafe { sys::kunlun_jsc_string_release(self.raw) };
     }
 }
 
@@ -568,6 +781,35 @@ mod tests {
     }
 
     #[test]
+    fn returns_javascript_exceptions_from_string_conversion() {
+        let mut vm = JscVm::new("kunlun-test").expect("create VM");
+        let error = vm
+            .evaluate(
+                "({ toString() { throw new Error('conversion boom'); } })",
+                "test:///string-conversion-exception.js",
+            )
+            .unwrap_err();
+        assert!(
+            matches!(error, JscError::Exception(message) if message.contains("conversion boom"))
+        );
+    }
+
+    #[test]
+    fn falls_back_when_stringifying_a_conversion_exception_fails() {
+        let mut vm = JscVm::new("kunlun-test").expect("create VM");
+        let error = vm
+            .evaluate(
+                "({ toString() { throw this; } })",
+                "test:///recursive-string-conversion-exception.js",
+            )
+            .unwrap_err();
+        assert_eq!(
+            error,
+            JscError::Exception(EXCEPTION_STRINGIFICATION_FALLBACK.to_owned())
+        );
+    }
+
+    #[test]
     fn toggles_web_inspector_visibility() {
         let vm = JscVm::new("kunlun-inspector-test").expect("create VM");
         assert!(!vm.is_inspectable());
@@ -575,5 +817,20 @@ mod tests {
         assert!(vm.is_inspectable());
         vm.set_inspectable(false);
         assert!(!vm.is_inspectable());
+    }
+
+    #[test]
+    fn contains_rust_panics_in_host_callbacks() {
+        let mut vm = JscVm::new("kunlun-panic-test").expect("create VM");
+        vm.install_sleep_scheduler(|_, _| panic!("test scheduler panic"))
+            .expect("install sleep callback");
+
+        let caught = vm
+            .evaluate(
+                "try { sleep(1); } catch (error) { [error instanceof Error, error.message, typeof error.stack === 'string' && error.stack.length > 0].join('|'); }",
+                "test:///callback-panic.js",
+            )
+            .expect("callback panic can be caught as a JavaScript Error");
+        assert_eq!(caught, "true|Kunlun timer scheduler panicked|true");
     }
 }

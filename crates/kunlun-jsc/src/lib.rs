@@ -39,6 +39,10 @@ pub enum JscError {
     ValueConversion,
     PromiseCreation,
     HostFunction(String),
+    NativeStatus {
+        operation: &'static str,
+        status: u32,
+    },
 }
 
 impl Display for JscError {
@@ -55,6 +59,12 @@ impl Display for JscError {
             }
             Self::PromiseCreation => formatter.write_str("JavaScriptCore did not create a Promise"),
             Self::HostFunction(message) => write!(formatter, "host function error: {message}"),
+            Self::NativeStatus { operation, status } => {
+                write!(
+                    formatter,
+                    "Kunlun JSC operation {operation} failed with status {status}"
+                )
+            }
         }
     }
 }

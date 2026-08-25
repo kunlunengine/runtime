@@ -1,97 +1,33 @@
-//! Raw JavaScriptCore C API declarations used by Kunlun.
+//! Raw bindings generated from Kunlun's authoritative C ABI header.
 //!
 //! This crate is intentionally unsafe and contains no ownership abstractions.
-//! The allowlisted declarations will later be generated from Kunlun's pinned C
-//! ABI shim; the macOS system framework is the M0/M1 bootstrap backend.
+//! Ordinary builds generate only from `include/kunlun_jsc.h` and never fetch a
+//! native engine artifact.
 
-#![allow(non_camel_case_types, non_snake_case)]
+#![allow(non_camel_case_types, non_snake_case, non_upper_case_globals)]
 
-#[cfg(target_os = "macos")]
-use std::ffi::{c_char, c_int};
-use std::ffi::{c_uint, c_void};
+include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 
-pub type JSContextRef = *const c_void;
-pub type JSGlobalContextRef = *mut c_void;
-pub type JSObjectRef = *mut c_void;
-pub type JSStringRef = *mut c_void;
-pub type JSValueRef = *const c_void;
-pub type JSPropertyAttributes = c_uint;
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    unsafe extern "C" {
+        fn kunlun_jsc_internal_test_bad_alloc_boundary() -> super::kunlun_jsc_status;
+        fn kunlun_jsc_internal_test_unknown_exception_boundary() -> super::kunlun_jsc_status;
+    }
 
-pub const K_JS_PROPERTY_ATTRIBUTE_NONE: JSPropertyAttributes = 0;
-
-pub type JSObjectCallAsFunctionCallback = Option<
-    unsafe extern "C" fn(
-        context: JSContextRef,
-        function: JSObjectRef,
-        this_object: JSObjectRef,
-        argument_count: usize,
-        arguments: *const JSValueRef,
-        exception: *mut JSValueRef,
-    ) -> JSValueRef,
->;
-
-#[cfg(target_os = "macos")]
-#[link(name = "JavaScriptCore", kind = "framework")]
-unsafe extern "C" {
-    pub fn JSGlobalContextCreate(global_object_class: *const c_void) -> JSGlobalContextRef;
-    pub fn JSContextGetGlobalObject(context: JSContextRef) -> JSObjectRef;
-    pub fn JSGlobalContextIsInspectable(context: JSGlobalContextRef) -> bool;
-    pub fn JSGlobalContextRelease(context: JSGlobalContextRef);
-    pub fn JSGlobalContextSetInspectable(context: JSGlobalContextRef, inspectable: bool);
-    pub fn JSGlobalContextSetName(context: JSGlobalContextRef, name: JSStringRef);
-
-    pub fn JSStringCreateWithUTF8CString(string: *const c_char) -> JSStringRef;
-    pub fn JSStringGetMaximumUTF8CStringSize(string: JSStringRef) -> usize;
-    pub fn JSStringGetUTF8CString(string: JSStringRef, buffer: *mut c_char, size: usize) -> usize;
-    pub fn JSStringRelease(string: JSStringRef);
-
-    pub fn JSEvaluateScript(
-        context: JSContextRef,
-        script: JSStringRef,
-        this_object: JSObjectRef,
-        source_url: JSStringRef,
-        starting_line_number: c_int,
-        exception: *mut JSValueRef,
-    ) -> JSValueRef;
-    pub fn JSObjectCallAsFunction(
-        context: JSContextRef,
-        object: JSObjectRef,
-        this_object: JSObjectRef,
-        argument_count: usize,
-        arguments: *const JSValueRef,
-        exception: *mut JSValueRef,
-    ) -> JSValueRef;
-    pub fn JSObjectMakeDeferredPromise(
-        context: JSContextRef,
-        resolve: *mut JSObjectRef,
-        reject: *mut JSObjectRef,
-        exception: *mut JSValueRef,
-    ) -> JSObjectRef;
-    pub fn JSObjectMakeFunctionWithCallback(
-        context: JSContextRef,
-        name: JSStringRef,
-        callback: JSObjectCallAsFunctionCallback,
-    ) -> JSObjectRef;
-    pub fn JSObjectSetProperty(
-        context: JSContextRef,
-        object: JSObjectRef,
-        property_name: JSStringRef,
-        value: JSValueRef,
-        attributes: JSPropertyAttributes,
-        exception: *mut JSValueRef,
-    );
-    pub fn JSValueMakeString(context: JSContextRef, string: JSStringRef) -> JSValueRef;
-    pub fn JSValueMakeUndefined(context: JSContextRef) -> JSValueRef;
-    pub fn JSValueProtect(context: JSContextRef, value: JSValueRef);
-    pub fn JSValueToNumber(
-        context: JSContextRef,
-        value: JSValueRef,
-        exception: *mut JSValueRef,
-    ) -> f64;
-    pub fn JSValueToStringCopy(
-        context: JSContextRef,
-        value: JSValueRef,
-        exception: *mut JSValueRef,
-    ) -> JSStringRef;
-    pub fn JSValueUnprotect(context: JSContextRef, value: JSValueRef);
+    #[test]
+    fn contains_cpp_exceptions() {
+        // SAFETY: these private test probes take no inputs and execute the same
+        // non-throwing exception guard used by every public shim entry point.
+        unsafe {
+            assert_eq!(
+                kunlun_jsc_internal_test_bad_alloc_boundary(),
+                super::KUNLUN_JSC_STATUS_OUT_OF_MEMORY
+            );
+            assert_eq!(
+                kunlun_jsc_internal_test_unknown_exception_boundary(),
+                super::KUNLUN_JSC_STATUS_CPP_EXCEPTION
+            );
+        }
+    }
 }

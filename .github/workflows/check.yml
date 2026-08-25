@@ -29,12 +29,14 @@ jobs:
               with:
                   path: ~/.cargo/git
                   key: ${{ runner.os }}-cargo-git-${{ hashFiles('**/Cargo.lock') }}
+            - name: Validate JSC distribution manifest
+              run: cargo xtask jsc-manifest validate
             - name: Build
               run: cargo build
             - name: Check code formatting
               run: cargo fmt --all -- --check
             - name: Check code linting
-              run: cargo clippy --all-targets --all-features -- -D warnings
+              run: cargo clippy --workspace --all-targets --all-features -- -D warnings
             - name: Run tests
               run: cargo test --workspace
 
@@ -75,4 +77,3 @@ jobs:
               run: cargo test --workspace
             - name: Run runtime doctor
               run: cargo run -p kunlun-runtime -- doctor
-

@@ -1,0 +1,24 @@
+# Default owners. Replace area entries with visible @kunlunengine teams once those teams have
+# explicit write access to this repository.
+* @Amiya167 @zhuangfangyi-0807
+
+# Repository governance and automation. Keep CODEOWNERS itself protected by this rule.
+/.github/ @Amiya167 @zhuangfangyi-0807
+/CONTRIBUTING.md @Amiya167 @zhuangfangyi-0807
+/SECURITY.md @Amiya167 @zhuangfangyi-0807
+/CODE_OF_CONDUCT.md @Amiya167 @zhuangfangyi-0807
+
+# Native engine distribution, raw bindings, and build inputs.
+/crates/kunlun-jsc-sys/ @Amiya167 @zhuangfangyi-0807
+/Cargo.toml @Amiya167 @zhuangfangyi-0807
+/Cargo.lock @Amiya167 @zhuangfangyi-0807
+
+# Safe JSC ownership and runtime host layers.
+/crates/kunlun-jsc/ @Amiya167 @zhuangfangyi-0807
+/crates/kunlun-runtime/ @Amiya167 @zhuangfangyi-0807
+
+# Architecture, public declarations, and contributor-facing documentation.
+/docs/ @Amiya167 @zhuangfangyi-0807
+/types/ @Amiya167 @zhuangfangyi-0807
+/README.md @Amiya167 @zhuangfangyi-0807
+/ROADMAP.md @Amiya167 @zhuangfangyi-0807

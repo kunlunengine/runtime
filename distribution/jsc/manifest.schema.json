@@ -51,6 +51,7 @@
     },
     "patches": {
       "type": "array",
+      "uniqueItems": true,
       "items": {
         "$ref": "#/$defs/patch"
       }
@@ -127,11 +128,19 @@
           "$ref": "#/$defs/relativePath"
         },
         "arguments": {
-          "type": "array",
-          "minItems": 1,
-          "items": {
-            "type": "string",
-            "minLength": 1
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "macos",
+            "linux"
+          ],
+          "properties": {
+            "macos": {
+              "$ref": "#/$defs/buildArguments"
+            },
+            "linux": {
+              "$ref": "#/$defs/buildArguments"
+            }
           }
         },
         "environment": {
@@ -166,6 +175,14 @@
             "USE_LIBBACKTRACE"
           ]
         }
+      }
+    },
+    "buildArguments": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 1
       }
     },
     "toolchain": {

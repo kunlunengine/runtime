@@ -2,9 +2,10 @@
 
 [`distribution/jsc/manifest.json`](../distribution/jsc/manifest.json) is the reviewable source of
 truth for the WebKit revision and every input that can change a Kunlun JavaScriptCore artifact. Its
-shape is documented by
-[`distribution/jsc/manifest.schema.json`](../distribution/jsc/manifest.schema.json), while the
-repository validator enforces cross-field and local-file integrity rules that JSON Schema cannot.
+shape is documented for editors and review tooling by
+[`distribution/jsc/manifest.schema.json`](../distribution/jsc/manifest.schema.json). The repository
+does not execute that schema: the Rust validator is the sole enforced source of manifest acceptance
+and additionally checks cross-field and local-file integrity rules.
 
 The manifest is metadata and policy. It does not make a target available to Cargo. In particular,
 ordinary Cargo builds continue to use the existing explicit backend and perform no manifest-driven
@@ -28,8 +29,8 @@ toolchains, and local patch or license inputs whose contents do not match their 
 The v1 manifest contains these review boundaries:
 
 - `source` pins the canonical WebKit repository, full 40-character commit, and commit URL.
-- `build` records the configuration, upstream build driver, ordered arguments, deterministic
-  environment, and feature flags.
+- `build` records the configuration, upstream build driver, ordered arguments for each host,
+  deterministic environment, and feature flags.
 - `toolchains` assigns exact tool versions to reusable macOS and Linux profiles. Linux additionally
   pins a multi-architecture OCI image index by digest; macOS pins the Xcode build and SDK directly.
 - `targets` carries all four supported target triples, deployment baseline, archive layout, runtime

@@ -10,9 +10,15 @@
   "build": {
     "configuration": "Release",
     "driver": "Tools/Scripts/build-jsc",
-    "arguments": [
-      "--release"
-    ],
+    "arguments": {
+      "macos": [
+        "--release"
+      ],
+      "linux": [
+        "--release",
+        "--jsc-only"
+      ]
+    },
     "environment": {
       "LC_ALL": "C",
       "SOURCE_DATE_EPOCH": "1787637908",

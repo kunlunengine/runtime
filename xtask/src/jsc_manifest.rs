@@ -58,7 +58,7 @@ struct Source {
 struct Build {
     configuration: String,
     driver: String,
-    arguments: Vec<String>,
+    arguments: BTreeMap<String, Vec<String>>,
     environment: BTreeMap<String, String>,
     feature_flags: BTreeMap<String, Value>,
 }
@@ -230,11 +230,27 @@ fn validate_source(source: &Source, errors: &mut Vec<String>) {
 fn validate_build(build: &Build, errors: &mut Vec<String>) {
     require_nonempty("build.configuration", &build.configuration, errors);
     validate_relative_path("build.driver", &build.driver, errors);
-    if build.arguments.is_empty() {
-        errors.push("build.arguments must not be empty".into());
+    for host in ["macos", "linux"] {
+        match build.arguments.get(host) {
+            Some(arguments) if arguments.is_empty() => {
+                errors.push(format!("build.arguments.{host} must not be empty"));
+            }
+            Some(arguments) => {
+                for (index, argument) in arguments.iter().enumerate() {
+                    require_nonempty(
+                        &format!("build.arguments.{host}[{index}]"),
+                        argument,
+                        errors,
+                    );
+                }
+            }
+            None => errors.push(format!("build.arguments is missing {host}")),
+        }
     }
-    for (index, argument) in build.arguments.iter().enumerate() {
-        require_nonempty(&format!("build.arguments[{index}]"), argument, errors);
+    for host in build.arguments.keys() {
+        if !["macos", "linux"].contains(&host.as_str()) {
+            errors.push(format!("build.arguments has unsupported host {host:?}"));
+        }
     }
     if build.environment.is_empty() {
         errors.push("build.environment must not be empty".into());
@@ -331,6 +347,8 @@ fn validate_targets(
 ) {
     let mut triples = BTreeSet::new();
     let mut archive_paths = HashSet::new();
+    let mut sbom_paths = HashSet::new();
+    let mut provenance_paths = HashSet::new();
     for target in targets {
         if !triples.insert(target.triple.as_str()) {
             errors.push(format!("duplicate target triple: {}", target.triple));
@@ -351,6 +369,18 @@ fn validate_targets(
             errors.push(format!(
                 "duplicate artifact archive path: {}",
                 target.artifact.archive_path
+            ));
+        }
+        if !sbom_paths.insert(target.artifact.sbom.path.as_str()) {
+            errors.push(format!(
+                "duplicate artifact SBOM path: {}",
+                target.artifact.sbom.path
+            ));
+        }
+        if !provenance_paths.insert(target.artifact.provenance.path.as_str()) {
+            errors.push(format!(
+                "duplicate artifact provenance path: {}",
+                target.artifact.provenance.path
             ));
         }
         validate_artifact(&target.triple, &target.artifact, errors);
@@ -738,6 +768,26 @@ mod tests {
             errors
                 .iter()
                 .any(|error| error.contains("duplicate patch digest"))
+        );
+    }
+
+    #[test]
+    fn rejects_duplicate_evidence_paths_across_targets() {
+        let mut value = manifest_value();
+        value["targets"][1]["artifact"]["sbom"]["path"] =
+            value["targets"][0]["artifact"]["sbom"]["path"].clone();
+        value["targets"][1]["artifact"]["provenance"]["path"] =
+            value["targets"][0]["artifact"]["provenance"]["path"].clone();
+        let errors = errors_for(value);
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("duplicate artifact SBOM path"))
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("duplicate artifact provenance path"))
         );
     }
 

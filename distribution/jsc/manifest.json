@@ -1,0 +1,311 @@
+{
+  "$schema": "./manifest.schema.json",
+  "schema_version": 1,
+  "distribution": "kunlun-jsc",
+  "source": {
+    "repository": "https://github.com/WebKit/WebKit.git",
+    "revision": "4b62d53ec6c16753020dbe69e59bf761ed0948e3",
+    "commit_url": "https://github.com/WebKit/WebKit/commit/4b62d53ec6c16753020dbe69e59bf761ed0948e3"
+  },
+  "build": {
+    "configuration": "Release",
+    "driver": "Tools/Scripts/build-jsc",
+    "arguments": {
+      "macos": [
+        "--release"
+      ],
+      "linux": [
+        "--release",
+        "--jsc-only"
+      ]
+    },
+    "environment": {
+      "LC_ALL": "C",
+      "SOURCE_DATE_EPOCH": "1787637908",
+      "TZ": "UTC"
+    },
+    "feature_flags": {
+      "ENABLE_DFG_JIT": true,
+      "ENABLE_FTL_JIT": true,
+      "ENABLE_JSC_GLIB_API": false,
+      "ENABLE_JIT": true,
+      "ENABLE_REMOTE_INSPECTOR": false,
+      "ENABLE_SAMPLING_PROFILER": false,
+      "ENABLE_STATIC_JSC": false,
+      "ENABLE_WEBASSEMBLY": true,
+      "ENABLE_WEBASSEMBLY_BBQJIT": true,
+      "ENABLE_WEBASSEMBLY_OMGJIT": true,
+      "EVENT_LOOP_TYPE": "Generic",
+      "USE_LIBBACKTRACE": false
+    }
+  },
+  "toolchains": [
+    {
+      "id": "apple-xcode-27.0",
+      "host": "macos",
+      "container_image": null,
+      "tools": [
+        {
+          "name": "xcode",
+          "version": "27.0 (27A5194q)"
+        },
+        {
+          "name": "apple-clang",
+          "version": "21.0.0 (clang-2100.3.20.102)"
+        },
+        {
+          "name": "macos-sdk",
+          "version": "27.0"
+        },
+        {
+          "name": "cmake",
+          "version": "4.4.1"
+        },
+        {
+          "name": "python",
+          "version": "3.9.6"
+        },
+        {
+          "name": "perl",
+          "version": "5.34.1"
+        },
+        {
+          "name": "ruby",
+          "version": "2.6.10p210"
+        },
+        {
+          "name": "git",
+          "version": "2.54.0 (Apple Git-156)"
+        }
+      ]
+    },
+    {
+      "id": "ubuntu-24.04-clang-18",
+      "host": "linux",
+      "container_image": "docker.io/library/ubuntu@sha256:33ceb71981b602c1a7443a53469e4dba065f7503eab3078a2d7a57a2ab987517",
+      "tools": [
+        {
+          "name": "ubuntu-sysroot",
+          "version": "24.04.3"
+        },
+        {
+          "name": "clang",
+          "version": "18.1.3"
+        },
+        {
+          "name": "cmake",
+          "version": "3.28.3"
+        },
+        {
+          "name": "ninja",
+          "version": "1.11.1"
+        },
+        {
+          "name": "python",
+          "version": "3.12.3"
+        },
+        {
+          "name": "icu",
+          "version": "74.2"
+        },
+        {
+          "name": "perl",
+          "version": "5.38.2"
+        },
+        {
+          "name": "ruby",
+          "version": "3.2.3"
+        },
+        {
+          "name": "git",
+          "version": "2.43.0"
+        }
+      ]
+    }
+  ],
+  "targets": [
+    {
+      "triple": "aarch64-apple-darwin",
+      "os": "macos",
+      "arch": "arm64",
+      "libc": null,
+      "toolchain": "apple-xcode-27.0",
+      "deployment_target": {
+        "kind": "macos",
+        "minimum": "14.0"
+      },
+      "artifact": {
+        "status": "planned",
+        "archive_path": "artifacts/kunlun-jsc-4b62d53e-aarch64-apple-darwin.tar.zst",
+        "sha256": null,
+        "library_paths": [
+          "lib/libJavaScriptCore.dylib",
+          "lib/libkunlun_jsc.dylib"
+        ],
+        "sbom": {
+          "format": "SPDX-2.3-json",
+          "path": "artifacts/kunlun-jsc-4b62d53e-aarch64-apple-darwin.spdx.json",
+          "sha256": null
+        },
+        "provenance": {
+          "format": "SLSA-provenance-v1",
+          "path": "artifacts/kunlun-jsc-4b62d53e-aarch64-apple-darwin.intoto.jsonl",
+          "sha256": null
+        }
+      }
+    },
+    {
+      "triple": "x86_64-apple-darwin",
+      "os": "macos",
+      "arch": "x64",
+      "libc": null,
+      "toolchain": "apple-xcode-27.0",
+      "deployment_target": {
+        "kind": "macos",
+        "minimum": "14.0"
+      },
+      "artifact": {
+        "status": "planned",
+        "archive_path": "artifacts/kunlun-jsc-4b62d53e-x86_64-apple-darwin.tar.zst",
+        "sha256": null,
+        "library_paths": [
+          "lib/libJavaScriptCore.dylib",
+          "lib/libkunlun_jsc.dylib"
+        ],
+        "sbom": {
+          "format": "SPDX-2.3-json",
+          "path": "artifacts/kunlun-jsc-4b62d53e-x86_64-apple-darwin.spdx.json",
+          "sha256": null
+        },
+        "provenance": {
+          "format": "SLSA-provenance-v1",
+          "path": "artifacts/kunlun-jsc-4b62d53e-x86_64-apple-darwin.intoto.jsonl",
+          "sha256": null
+        }
+      }
+    },
+    {
+      "triple": "aarch64-unknown-linux-gnu",
+      "os": "linux",
+      "arch": "arm64",
+      "libc": "glibc",
+      "toolchain": "ubuntu-24.04-clang-18",
+      "deployment_target": {
+        "kind": "glibc",
+        "minimum": "2.39"
+      },
+      "artifact": {
+        "status": "planned",
+        "archive_path": "artifacts/kunlun-jsc-4b62d53e-aarch64-unknown-linux-gnu.tar.zst",
+        "sha256": null,
+        "library_paths": [
+          "lib/libJavaScriptCore.so",
+          "lib/libkunlun_jsc.so"
+        ],
+        "sbom": {
+          "format": "SPDX-2.3-json",
+          "path": "artifacts/kunlun-jsc-4b62d53e-aarch64-unknown-linux-gnu.spdx.json",
+          "sha256": null
+        },
+        "provenance": {
+          "format": "SLSA-provenance-v1",
+          "path": "artifacts/kunlun-jsc-4b62d53e-aarch64-unknown-linux-gnu.intoto.jsonl",
+          "sha256": null
+        }
+      }
+    },
+    {
+      "triple": "x86_64-unknown-linux-gnu",
+      "os": "linux",
+      "arch": "x64",
+      "libc": "glibc",
+      "toolchain": "ubuntu-24.04-clang-18",
+      "deployment_target": {
+        "kind": "glibc",
+        "minimum": "2.39"
+      },
+      "artifact": {
+        "status": "planned",
+        "archive_path": "artifacts/kunlun-jsc-4b62d53e-x86_64-unknown-linux-gnu.tar.zst",
+        "sha256": null,
+        "library_paths": [
+          "lib/libJavaScriptCore.so",
+          "lib/libkunlun_jsc.so"
+        ],
+        "sbom": {
+          "format": "SPDX-2.3-json",
+          "path": "artifacts/kunlun-jsc-4b62d53e-x86_64-unknown-linux-gnu.spdx.json",
+          "sha256": null
+        },
+        "provenance": {
+          "format": "SLSA-provenance-v1",
+          "path": "artifacts/kunlun-jsc-4b62d53e-x86_64-unknown-linux-gnu.intoto.jsonl",
+          "sha256": null
+        }
+      }
+    }
+  ],
+  "patches": [],
+  "licenses": [
+    {
+      "component": "Kunlun JSC shim",
+      "spdx_expression": "MIT",
+      "source": {
+        "kind": "local",
+        "path": "LICENSE"
+      },
+      "sha256": "25dd5c0c1fcdb9005335f5e9f538a73b9a3c82eaa8420c4e505fe821bfe5e14f"
+    },
+    {
+      "component": "WebKit JavaScriptCore",
+      "spdx_expression": "LGPL-2.1-or-later",
+      "source": {
+        "kind": "upstream",
+        "path": "Source/JavaScriptCore/COPYING.LIB"
+      },
+      "sha256": "5094ecb9c9dcd0eadc34f3c11511d9b5535063032bc150164ecd1a5d5a445547"
+    },
+    {
+      "component": "WebKit WTF LLVM-derived sources",
+      "spdx_expression": "Apache-2.0 WITH LLVM-exception",
+      "source": {
+        "kind": "upstream",
+        "path": "Source/WTF/LICENSE-LLVM.txt"
+      },
+      "sha256": "f72b120d1385408e9e380acc020756eb6ba1b461d66c328ea67327ba08d7dcfd"
+    },
+    {
+      "component": "WebKit WTF Dragonbox",
+      "spdx_expression": "Apache-2.0",
+      "source": {
+        "kind": "upstream",
+        "path": "Source/WTF/LICENSE-dragonbox.txt"
+      },
+      "sha256": "9bb1036ef8dcb42c59e2a23c9e465f43e75003e06898faf0edd18de662f3ecb8"
+    },
+    {
+      "component": "WebKit WTF libc++ derived sources",
+      "spdx_expression": "NCSA OR MIT",
+      "source": {
+        "kind": "upstream",
+        "path": "Source/WTF/LICENSE-libc++.txt"
+      },
+      "sha256": "c1938c0e9e90639d1e8f5a7f6bebaab83a3642e0ee44295a4c69934686d0bda8"
+    },
+    {
+      "component": "WebKit WTF SIMDe",
+      "spdx_expression": "MIT",
+      "source": {
+        "kind": "upstream",
+        "path": "Source/WTF/LICENSE-simde.txt"
+      },
+      "sha256": "75ce0a8c5a7bff42fbd6f8f3b469b518132132c4f4948fb8d02b1ccb5d0df9d8"
+    }
+  ],
+  "abi": {
+    "shim_version": 1,
+    "public_headers": [
+      "include/kunlun_jsc.h"
+    ]
+  }
+}

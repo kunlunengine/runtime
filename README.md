@@ -46,6 +46,8 @@ async classic-script host is already an ESM/Fetch-compatible application runtime
 - [ROADMAP.md](./ROADMAP.md) — ordered milestones, gates, and cross-repository work.
 - [docs/architecture.md](./docs/architecture.md) — runtime boundaries and artifact protocol.
 - [docs/jsc-binding.md](./docs/jsc-binding.md) — how WebKit/JSC is built and bound to Rust.
+- [docs/jsc-distribution.md](./docs/jsc-distribution.md) — pinned engine inputs, artifact metadata,
+  validation, and revision review procedure.
 - [docs/devtools.md](./docs/devtools.md) — Web Inspector backend, web frontend, and IDE strategy.
 - [docs/builtins.md](./docs/builtins.md) — built-in module ABI, permissions, and TypeScript types.
 - [docs/kunlun-cli.md](./docs/kunlun-cli.md) — the Vite+-class `kunlun` command surface and generator model.

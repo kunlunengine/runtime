@@ -337,10 +337,10 @@
           }
         },
         "sbom": {
-          "$ref": "#/$defs/evidence"
+          "$ref": "#/$defs/sbomEvidence"
         },
         "provenance": {
-          "$ref": "#/$defs/evidence"
+          "$ref": "#/$defs/provenanceEvidence"
         }
       },
       "allOf": [
@@ -401,6 +401,34 @@
           "$ref": "#/$defs/nullableSha256"
         }
       }
+    },
+    "sbomEvidence": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/evidence"
+        },
+        {
+          "properties": {
+            "format": {
+              "const": "SPDX-2.3-json"
+            }
+          }
+        }
+      ]
+    },
+    "provenanceEvidence": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/evidence"
+        },
+        {
+          "properties": {
+            "format": {
+              "const": "SLSA-provenance-v1"
+            }
+          }
+        }
+      ]
     },
     "plannedEvidence": {
       "allOf": [

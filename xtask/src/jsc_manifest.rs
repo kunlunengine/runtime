@@ -8,6 +8,8 @@ use std::path::{Component, Path};
 
 const SCHEMA_LOCATION: &str = "./manifest.schema.json";
 const CANONICAL_REPOSITORY: &str = "https://github.com/WebKit/WebKit.git";
+const SBOM_FORMAT: &str = "SPDX-2.3-json";
+const PROVENANCE_FORMAT: &str = "SLSA-provenance-v1";
 const REQUIRED_TARGETS: [&str; 4] = [
     "aarch64-apple-darwin",
     "aarch64-unknown-linux-gnu",
@@ -437,8 +439,13 @@ fn validate_artifact(target: &str, artifact: &Artifact, errors: &mut Vec<String>
             ));
         }
     }
-    validate_evidence("sbom", &artifact.sbom, errors);
-    validate_evidence("provenance", &artifact.provenance, errors);
+    validate_evidence("sbom", SBOM_FORMAT, &artifact.sbom, errors);
+    validate_evidence(
+        "provenance",
+        PROVENANCE_FORMAT,
+        &artifact.provenance,
+        errors,
+    );
 
     match artifact.status {
         ArtifactStatus::Planned => {
@@ -474,10 +481,16 @@ fn validate_artifact(target: &str, artifact: &Artifact, errors: &mut Vec<String>
     }
 }
 
-fn validate_evidence(label: &str, evidence: &Evidence, errors: &mut Vec<String>) {
-    require_nonempty(
+fn validate_evidence(
+    label: &str,
+    expected_format: &str,
+    evidence: &Evidence,
+    errors: &mut Vec<String>,
+) {
+    require_equal(
         &format!("artifact.{label}.format"),
         &evidence.format,
+        expected_format,
         errors,
     );
     validate_relative_path(&format!("artifact.{label}.path"), &evidence.path, errors);
@@ -789,6 +802,22 @@ mod tests {
                 .iter()
                 .any(|error| error.contains("duplicate artifact provenance path"))
         );
+    }
+
+    #[test]
+    fn rejects_unsupported_evidence_formats() {
+        let mut value = manifest_value();
+        value["targets"][0]["artifact"]["sbom"]["format"] = json!("CycloneDX");
+        value["targets"][0]["artifact"]["provenance"]["format"] = json!("custom");
+        let errors = errors_for(value);
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("artifact.sbom.format must be \"SPDX-2.3-json\""))
+        );
+        assert!(errors.iter().any(|error| {
+            error.contains("artifact.provenance.format must be \"SLSA-provenance-v1\"")
+        }));
     }
 
     #[test]

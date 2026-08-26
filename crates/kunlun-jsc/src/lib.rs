@@ -2,6 +2,7 @@
 
 #[cfg(target_os = "macos")]
 mod macos;
+#[cfg(any(target_os = "macos", test))]
 mod ownership;
 #[cfg(not(target_os = "macos"))]
 mod unsupported;
@@ -154,18 +155,22 @@ impl JscError {
         Self::exception(operation, source_url, exception_text)
     }
 
+    #[cfg(target_os = "macos")]
     pub(crate) fn invalid_input(operation: &'static str, detail: impl Into<String>) -> Self {
         Self::new(JscErrorKind::InvalidInput, operation).with_detail(detail)
     }
 
+    #[cfg(target_os = "macos")]
     pub(crate) fn missing_value(operation: &'static str, detail: impl Into<String>) -> Self {
         Self::new(JscErrorKind::MissingValue, operation).with_detail(detail)
     }
 
+    #[cfg(target_os = "macos")]
     pub(crate) fn host_function(operation: &'static str, detail: impl Into<String>) -> Self {
         Self::new(JscErrorKind::HostFunction, operation).with_detail(detail)
     }
 
+    #[cfg(target_os = "macos")]
     pub(crate) fn native(operation: &'static str, status: u32) -> Self {
         Self::new(JscErrorKind::NativeFailure, operation).with_status(JscStatus::from_raw(status))
     }

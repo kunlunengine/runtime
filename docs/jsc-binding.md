@@ -62,9 +62,10 @@ Every successful protection creates exactly one guard; cloning adds one protecti
 removes exactly one protection on drop. A failed protection creates no release obligation.
 
 `JscError` records a stable operation name, typed error kind, typed native status when applicable,
-source URL for evaluation failures, and exception text without exposing a JSC pointer. The opaque
-raw handles remain private to the platform module and the deliberately unsafe `kunlun-jsc-sys`
-crate.
+source URL for evaluation failures, exception text, and optional detail text without exposing a JSC
+pointer. The `detail()` accessor provides the readable message for `InvalidInput`, `MissingValue`,
+`HostFunction`, and `UnsupportedPlatform` errors when `exception_text()` is absent. The opaque raw
+handles remain private to the platform module and the deliberately unsafe `kunlun-jsc-sys` crate.
 
 ### `kunlun_jsc` shim
 

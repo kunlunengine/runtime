@@ -94,4 +94,4 @@ jobs:
             - name: Prepare Miri sysroot
               run: cargo +nightly miri setup
             - name: Check wrapper-owned invariants
-              run: cargo +nightly miri test -p kunlun-jsc --lib ownership::tests
+              run: cargo +nightly miri test -p kunlun-jsc --lib

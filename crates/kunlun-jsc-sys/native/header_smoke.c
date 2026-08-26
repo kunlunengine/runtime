@@ -7,8 +7,10 @@ _Static_assert(
 
 kunlun_jsc_status kunlun_jsc_c_header_smoke(void)
 {
+    kunlun_jsc_context_group *group = 0;
     kunlun_jsc_context *context = 0;
     kunlun_jsc_function_callback callback = 0;
+    (void)group;
     (void)context;
     (void)callback;
     return KUNLUN_JSC_STATUS_OK;

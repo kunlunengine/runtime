@@ -45,7 +45,7 @@ fn eval_command(args: &[String]) -> Result<(), String> {
     let source = args
         .first()
         .ok_or_else(|| "usage: kunlun-runtime eval <source>".to_owned())?;
-    let mut vm = JscVm::new("kunlun-runtime eval").map_err(|error| error.to_string())?;
+    let vm = JscVm::new("kunlun-runtime eval").map_err(|error| error.to_string())?;
     println!(
         "{}",
         vm.evaluate(source, "kunlun:eval")
@@ -66,7 +66,7 @@ fn eval_async_command(args: &[String]) -> Result<(), String> {
 
 fn run_command(args: &[String]) -> Result<(), String> {
     let (source, source_url, display_name) = read_script(args, "run")?;
-    let mut vm = JscVm::new(&display_name).map_err(|error| error.to_string())?;
+    let vm = JscVm::new(&display_name).map_err(|error| error.to_string())?;
     println!(
         "{}",
         vm.evaluate(&source, &source_url)
@@ -179,13 +179,15 @@ fn doctor_command() -> Result<(), String> {
     println!("event loop: {EVENT_LOOP_BACKEND}");
     println!("built-in modules: kunlun:fs, kunlun:http (capability-gated)");
 
-    let mut vm = JscVm::new("kunlun-runtime doctor").map_err(|error| error.to_string())?;
+    let vm = JscVm::new("kunlun-runtime doctor").map_err(|error| error.to_string())?;
     if backend.supports_inspection {
-        vm.set_inspectable(true);
-        if !vm.is_inspectable() {
+        vm.set_inspectable(true)
+            .map_err(|error| error.to_string())?;
+        if !vm.is_inspectable().map_err(|error| error.to_string())? {
             return Err("JavaScriptCore did not make the context inspectable".to_owned());
         }
-        vm.set_inspectable(false);
+        vm.set_inspectable(false)
+            .map_err(|error| error.to_string())?;
     }
     let result = vm
         .evaluate("'jsc-ok'", "kunlun:doctor")

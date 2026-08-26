@@ -29,6 +29,7 @@ impl<T> OwnedHandle<T> {
         })
     }
 
+    #[cfg(target_os = "macos")]
     pub(crate) fn as_ptr(&self) -> *mut T {
         self.raw.as_ptr()
     }
@@ -84,10 +85,12 @@ impl<T, C> ProtectedHandle<T, C> {
         })
     }
 
+    #[cfg(target_os = "macos")]
     pub(crate) fn as_ptr(&self) -> *const T {
         self.raw.as_ptr().cast_const()
     }
 
+    #[cfg(target_os = "macos")]
     pub(crate) fn context(&self) -> &Rc<C> {
         &self.context
     }

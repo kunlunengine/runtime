@@ -40,13 +40,16 @@ typedef uint32_t kunlun_jsc_property_attributes;
 /*
  * All handles are opaque and thread-affine.
  *
- * A context is owned after a successful context_create and must be released
- * exactly once. A string is owned after string_create_utf8 or
+ * A context group is owned after context_group_create and must be released
+ * after all of its contexts. A context is owned after a successful
+ * context_create/context_create_in_group and must be released exactly once.
+ * A string is owned after string_create_utf8 or
  * value_to_string and must be released exactly once. Values and objects are
  * borrowed from their context; callers that retain them beyond the current
  * native call must pair value_protect with value_unprotect before releasing
  * the context.
  */
+typedef struct kunlun_jsc_context_group kunlun_jsc_context_group;
 typedef struct kunlun_jsc_context kunlun_jsc_context;
 typedef struct kunlun_jsc_string kunlun_jsc_string;
 typedef struct kunlun_jsc_value kunlun_jsc_value;
@@ -68,7 +71,15 @@ typedef kunlun_jsc_status (*kunlun_jsc_function_callback)(
     const kunlun_jsc_value **out_exception);
 
 KUNLUN_JSC_API kunlun_jsc_status
+kunlun_jsc_context_group_create(kunlun_jsc_context_group **out_group);
+KUNLUN_JSC_API kunlun_jsc_status
+kunlun_jsc_context_group_release(kunlun_jsc_context_group *group);
+/* Creates an independent default group for bootstrap compatibility. */
+KUNLUN_JSC_API kunlun_jsc_status
 kunlun_jsc_context_create(kunlun_jsc_context **out_context);
+KUNLUN_JSC_API kunlun_jsc_status kunlun_jsc_context_create_in_group(
+    kunlun_jsc_context_group *group,
+    kunlun_jsc_context **out_context);
 KUNLUN_JSC_API kunlun_jsc_status
 kunlun_jsc_context_release(kunlun_jsc_context *context);
 KUNLUN_JSC_API kunlun_jsc_status kunlun_jsc_context_get_global_object(

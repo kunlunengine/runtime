@@ -296,7 +296,13 @@ async fn run_async_body(
                 .vm()
                 .evaluate(&error_source, "kunlun:async-result")
                 .map_err(RuntimeError::Jsc)
-                .and_then(|message| Err(RuntimeError::Jsc(JscError::Exception(message))))
+                .and_then(|message| {
+                    Err(RuntimeError::Jsc(JscError::javascript_exception(
+                        "evaluate_async_body",
+                        Some(source_url),
+                        message,
+                    )))
+                })
         } else {
             let value_source = format!("globalThis.{}.value", cleanup.state);
             cleanup
@@ -535,7 +541,7 @@ mod tests {
             ))
             .unwrap_err();
         assert!(
-            matches!(&error, RuntimeError::Jsc(JscError::Exception(message)) if message.contains("async boom")),
+            matches!(&error, RuntimeError::Jsc(error) if error.exception_text().is_some_and(|message| message.contains("async boom"))),
             "unexpected error: {error:?}"
         );
     }
@@ -589,7 +595,7 @@ mod tests {
             ))
             .unwrap_err();
         assert!(
-            matches!(&error, RuntimeError::Jsc(JscError::Exception(message)) if message.contains("file exceeds")),
+            matches!(&error, RuntimeError::Jsc(error) if error.exception_text().is_some_and(|message| message.contains("file exceeds"))),
             "unexpected error: {error:?}"
         );
         std::fs::remove_dir_all(root).unwrap();
@@ -661,7 +667,7 @@ mod tests {
             ))
             .unwrap_err();
         assert!(
-            matches!(&error, RuntimeError::Jsc(JscError::Exception(message)) if message.contains("read access denied")),
+            matches!(&error, RuntimeError::Jsc(error) if error.exception_text().is_some_and(|message| message.contains("read access denied"))),
             "unexpected error: {error:?}"
         );
     }
@@ -697,7 +703,7 @@ mod tests {
             ))
             .unwrap_err();
         assert!(
-            matches!(&error, RuntimeError::Jsc(JscError::Exception(message)) if message.contains("cannot read")),
+            matches!(&error, RuntimeError::Jsc(error) if error.exception_text().is_some_and(|message| message.contains("cannot read"))),
             "unexpected error: {error:?}"
         );
         std::fs::remove_dir_all(base).unwrap();

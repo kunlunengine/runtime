@@ -44,7 +44,7 @@ This is an engineering and supply-chain boundary, not a claim that existing crat
 
 ### `kunlun-jsc`
 
-- Owns context groups, global contexts, protected values, strings, modules, exceptions, and callbacks.
+- Owns explicit context groups, global contexts, protected values, strings, modules, exceptions, and callbacks.
 - Uses RAII for `JSGlobalContextRelease`, `JSStringRelease`, and `JSValueProtect/Unprotect` pairs.
 - Protects Deferred Promise resolver/rejector functions until the owning Tokio local task settles or
   drops them.
@@ -53,6 +53,19 @@ This is an engineering and supply-chain boundary, not a claim that existing crat
 - Makes all context-bound values `!Send + !Sync`.
 - Converts Rust panics inside callbacks to JS exceptions; no unwind crosses the C boundary.
 - Does not expose raw handles except in narrowly scoped `unsafe` extension points.
+
+The safe layer represents context groups and contexts as nested RAII owners. Every context retains
+its group until after `JSGlobalContextRelease`, and public rooted values carry a lifetime tied to the
+context that created them. Internally retained Promise resolvers use the same protection guard but
+retain shared context ownership because the host scheduler must store them beyond the callback.
+Every successful protection creates exactly one guard; cloning adds one protection, and each guard
+removes exactly one protection on drop. A failed protection creates no release obligation.
+
+`JscError` records a stable operation name, typed error kind, typed native status when applicable,
+source URL for evaluation failures, exception text, and optional detail text without exposing a JSC
+pointer. The `detail()` accessor provides the readable message for `InvalidInput`, `MissingValue`,
+`HostFunction`, and `UnsupportedPlatform` errors when `exception_text()` is absent. The opaque raw
+handles remain private to the platform module and the deliberately unsafe `kunlun-jsc-sys` crate.
 
 ### `kunlun_jsc` shim
 
@@ -114,6 +127,10 @@ binary distribution.
    does not assume a terminated VM is reusable.
 
 Each invariant needs a targeted test, not only a code comment.
+
+The platform-independent ownership guards are tested under Miri with fake opaque resources. These
+tests cover exact-once release, protect/clone/unprotect balance, failed-protection cleanup, and the
+required child-context-before-group teardown order without invoking the native engine.
 
 ## Validation ladder
 

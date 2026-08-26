@@ -129,6 +129,30 @@ void callback_finalize(JSObjectRef function)
 
 extern "C" {
 
+kunlun_jsc_status kunlun_jsc_context_group_create(kunlun_jsc_context_group **out_group)
+{
+    return guard([&] {
+        if (!out_group)
+            return KUNLUN_JSC_STATUS_INVALID_ARGUMENT;
+        *out_group = nullptr;
+        JSContextGroupRef group = JSContextGroupCreate();
+        if (!group)
+            return KUNLUN_JSC_STATUS_OUT_OF_MEMORY;
+        *out_group = mutable_opaque_cast<kunlun_jsc_context_group *>(group);
+        return KUNLUN_JSC_STATUS_OK;
+    });
+}
+
+kunlun_jsc_status kunlun_jsc_context_group_release(kunlun_jsc_context_group *group)
+{
+    return guard([&] {
+        if (!group)
+            return KUNLUN_JSC_STATUS_INVALID_ARGUMENT;
+        JSContextGroupRelease(opaque_cast<JSContextGroupRef>(group));
+        return KUNLUN_JSC_STATUS_OK;
+    });
+}
+
 kunlun_jsc_status kunlun_jsc_context_create(kunlun_jsc_context **out_context)
 {
     return guard([&] {
@@ -136,6 +160,23 @@ kunlun_jsc_status kunlun_jsc_context_create(kunlun_jsc_context **out_context)
             return KUNLUN_JSC_STATUS_INVALID_ARGUMENT;
         *out_context = nullptr;
         JSGlobalContextRef context = JSGlobalContextCreate(nullptr);
+        if (!context)
+            return KUNLUN_JSC_STATUS_OUT_OF_MEMORY;
+        *out_context = opaque_cast<kunlun_jsc_context *>(context);
+        return KUNLUN_JSC_STATUS_OK;
+    });
+}
+
+kunlun_jsc_status kunlun_jsc_context_create_in_group(
+    kunlun_jsc_context_group *group,
+    kunlun_jsc_context **out_context)
+{
+    return guard([&] {
+        if (!group || !out_context)
+            return KUNLUN_JSC_STATUS_INVALID_ARGUMENT;
+        *out_context = nullptr;
+        JSGlobalContextRef context = JSGlobalContextCreateInGroup(
+            opaque_cast<JSContextGroupRef>(group), nullptr);
         if (!context)
             return KUNLUN_JSC_STATUS_OUT_OF_MEMORY;
         *out_context = opaque_cast<kunlun_jsc_context *>(context);

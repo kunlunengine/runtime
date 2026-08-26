@@ -20,7 +20,10 @@ fn generated_layout_matches_fixed_width_abi() {
 #[test]
 fn links_every_allowlisted_symbol() {
     let symbols = [
+        sys::kunlun_jsc_context_group_create as *const (),
+        sys::kunlun_jsc_context_group_release as *const (),
         sys::kunlun_jsc_context_create as *const (),
+        sys::kunlun_jsc_context_create_in_group as *const (),
         sys::kunlun_jsc_context_release as *const (),
         sys::kunlun_jsc_context_get_global_object as *const (),
         sys::kunlun_jsc_context_set_name as *const (),
@@ -44,8 +47,8 @@ fn links_every_allowlisted_symbol() {
         sys::kunlun_jsc_value_unprotect as *const (),
     ];
 
-    assert_eq!(symbols.len(), 22);
-    assert_eq!(size_of_val(&symbols), 22 * size_of::<usize>());
+    assert_eq!(symbols.len(), 25);
+    assert_eq!(size_of_val(&symbols), 25 * size_of::<usize>());
     assert!(symbols.iter().all(|symbol| !symbol.is_null()));
 }
 
@@ -127,6 +130,37 @@ fn compiles_calls_and_releases_the_c_abi() {
 
 #[cfg(target_os = "macos")]
 #[test]
+fn creates_context_in_an_explicit_group_and_releases_in_order() {
+    use std::ptr;
+
+    let mut group = ptr::null_mut();
+    let mut context = ptr::null_mut();
+    // SAFETY: outputs are writable, and the context is released before the
+    // group that owns the underlying JavaScriptCore VM.
+    unsafe {
+        assert_eq!(
+            sys::kunlun_jsc_context_group_create(&mut group),
+            sys::KUNLUN_JSC_STATUS_OK
+        );
+        assert!(!group.is_null());
+        assert_eq!(
+            sys::kunlun_jsc_context_create_in_group(group, &mut context),
+            sys::KUNLUN_JSC_STATUS_OK
+        );
+        assert!(!context.is_null());
+        assert_eq!(
+            sys::kunlun_jsc_context_release(context),
+            sys::KUNLUN_JSC_STATUS_OK
+        );
+        assert_eq!(
+            sys::kunlun_jsc_context_group_release(group),
+            sys::KUNLUN_JSC_STATUS_OK
+        );
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[test]
 fn reports_invalid_inputs_with_status_values() {
     use std::ptr;
 
@@ -135,6 +169,14 @@ fn reports_invalid_inputs_with_status_values() {
     unsafe {
         assert_eq!(
             sys::kunlun_jsc_context_create(ptr::null_mut()),
+            sys::KUNLUN_JSC_STATUS_INVALID_ARGUMENT
+        );
+        assert_eq!(
+            sys::kunlun_jsc_context_group_create(ptr::null_mut()),
+            sys::KUNLUN_JSC_STATUS_INVALID_ARGUMENT
+        );
+        assert_eq!(
+            sys::kunlun_jsc_context_create_in_group(ptr::null_mut(), ptr::null_mut()),
             sys::KUNLUN_JSC_STATUS_INVALID_ARGUMENT
         );
         assert_eq!(

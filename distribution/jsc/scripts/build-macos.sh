@@ -61,6 +61,10 @@ if [[ "$actual_revision" != "$expected_revision" ]]; then
     echo "error: WebKit revision mismatch: expected $expected_revision, observed $actual_revision" >&2
     exit 1
 fi
+if [[ -n "$(/usr/bin/git -C "$webkit_root" status --porcelain=v1 --untracked-files=all)" ]]; then
+    echo "error: WebKit worktree must be clean before applying reviewed patches" >&2
+    exit 1
+fi
 
 while IFS=$'\t' read -r patch_path patch_digest; do
     [[ -n "$patch_path" ]] || continue
@@ -91,7 +95,7 @@ while IFS=$'\t' read -r name value; do
     xcode_settings+=("$name=$value")
 done < <(jq -r '.build.feature_flags | to_entries[] | [.key, (if (.value | type) == "boolean" then (if .value then "1" else "0" end) else (.value | tostring) end)] | @tsv' "$manifest")
 xcode_settings+=("ARCHS=$architecture")
-xcode_settings+=("ONLY_ACTIVE_ARCH=YES")
+xcode_settings+=("ONLY_ACTIVE_ARCH=NO")
 xcode_settings+=("MACOSX_DEPLOYMENT_TARGET=$deployment_target")
 build_arguments+=("ARGS=${xcode_settings[*]}")
 

@@ -509,8 +509,8 @@ def verify_spdx(sbom: dict[str, Any], extract_root: Path, target: str) -> None:
         for path in iter_regular_files(extract_root)
     }
     if expected != actual:
-        missing = sorted(actual.keys() - expected.keys())
-        extra = sorted(expected.keys() - actual.keys())
+        missing = sorted(expected.keys() - actual.keys())
+        extra = sorted(actual.keys() - expected.keys())
         mismatched = sorted(
             path for path in actual.keys() & expected.keys() if actual[path] != expected[path]
         )

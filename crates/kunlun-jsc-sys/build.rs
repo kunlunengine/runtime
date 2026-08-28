@@ -17,7 +17,8 @@ fn main() {
     generate_bindings();
     compile_header_smoke_tests();
 
-    let verified_distribution = if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
+    let target_is_macos = env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos");
+    let verified_distribution = if target_is_macos {
         compile_exception_smoke();
         match env::var_os("KUNLUN_JSC_DIST_DIR").filter(|path| !path.is_empty()) {
             Some(distribution) => {
@@ -38,7 +39,7 @@ fn main() {
     } else {
         false
     };
-    write_backend_info(verified_distribution);
+    write_backend_info(verified_distribution, target_is_macos);
 }
 
 fn generate_bindings() {
@@ -136,11 +137,11 @@ fn link_verified_distribution(distribution: &Path) {
     println!("cargo:rustc-link-lib=dylib=kunlun_jsc");
 }
 
-fn write_backend_info(verified_distribution: bool) {
-    let distribution = if verified_distribution {
-        "pinned Kunlun JSC artifact"
-    } else {
-        "macOS system framework (bootstrap only)"
+fn write_backend_info(verified_distribution: bool, target_is_macos: bool) {
+    let distribution = match (verified_distribution, target_is_macos) {
+        (true, _) => "pinned Kunlun JSC artifact",
+        (false, true) => "macOS system framework (bootstrap only)",
+        (false, false) => "unsupported non-macOS stub",
     };
     let output = PathBuf::from(env::var_os("OUT_DIR").expect("Cargo sets OUT_DIR"));
     let source = format!(

@@ -196,6 +196,29 @@ class ArtifactTests(unittest.TestCase):
         with self.assertRaisesRegex(jsc_artifact.ArtifactError, "SBOM inventory mismatch"):
             jsc_artifact.verify(arguments)
 
+    def test_spdx_inventory_reports_missing_and_extra_in_the_expected_direction(self) -> None:
+        extract_root = Path(self.temporary.name) / "inventory"
+        extract_root.mkdir()
+        (extract_root / "actual.txt").write_text("actual\n", encoding="utf-8")
+        sbom = {
+            "spdxVersion": "SPDX-2.3",
+            "name": f"kunlun-jsc-{self.fixture.target}",
+            "files": [
+                {
+                    "fileName": "./expected.txt",
+                    "checksums": [
+                        {"algorithm": "SHA1", "checksumValue": "0" * 40},
+                        {"algorithm": "SHA256", "checksumValue": "0" * 64},
+                    ],
+                }
+            ],
+        }
+        with self.assertRaisesRegex(
+            jsc_artifact.ArtifactError,
+            r"missing=\['expected\.txt'\], extra=\['actual\.txt'\]",
+        ):
+            jsc_artifact.verify_spdx(sbom, extract_root, self.fixture.target)
+
     def test_rejects_license_digest_mismatch(self) -> None:
         self.fixture.manifest["licenses"][0]["sha256"] = "0" * 64
         self.fixture.manifest_path.write_text(json.dumps(self.fixture.manifest), encoding="utf-8")

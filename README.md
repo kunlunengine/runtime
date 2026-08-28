@@ -25,8 +25,9 @@ kunlun-runtime -> kunlun-jsc -> kunlun-jsc-sys -> JavaScriptCore
 
 ## Bootstrap
 
-Requires Rust 1.85 or newer. The current spike uses the macOS system JavaScriptCore framework; the
-hermetic WebKit distribution in Milestone 1 will add Linux and make engine versions reproducible.
+Requires Rust 1.85 or newer. Ordinary development builds use the macOS system JavaScriptCore
+framework. The controlled M1 pipeline can now build and verify pinned macOS arm64/x64 artifacts;
+Linux artifacts and product-backend feature selection remain milestone work.
 
 ```bash
 cargo test

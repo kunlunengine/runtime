@@ -1,0 +1,6 @@
+# xcode-27 is an official hosted public-preview label. actionlint 1.7.12's
+# built-in runner catalog predates it, so suppress only that exact diagnostic.
+paths:
+  .github/workflows/jsc-macos.yml:
+    ignore:
+      - 'label "xcode-27" is unknown'

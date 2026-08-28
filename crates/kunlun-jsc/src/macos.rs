@@ -239,8 +239,8 @@ impl JscVm {
     pub const fn backend_info() -> BackendInfo {
         BackendInfo {
             name: "JavaScriptCore",
-            distribution: "macOS system framework (bootstrap only)",
-            hermetic: false,
+            distribution: sys::BACKEND_DISTRIBUTION,
+            hermetic: sys::BACKEND_HERMETIC,
             supports_inspection: true,
             supports_deferred_promises: true,
             supports_native_modules: false,

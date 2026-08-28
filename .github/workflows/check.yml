@@ -31,6 +31,10 @@ jobs:
                   key: ${{ runner.os }}-cargo-git-${{ hashFiles('**/Cargo.lock') }}
             - name: Validate JSC distribution manifest
               run: cargo xtask jsc-manifest validate
+            - name: Test JSC artifact tooling
+              run: |
+                  bash -n distribution/jsc/scripts/*.sh
+                  python3 -m unittest discover -s distribution/jsc/scripts/tests -v
             - name: Build
               run: cargo build
             - name: Check code formatting

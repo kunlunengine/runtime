@@ -1,0 +1,191 @@
+name: Build pinned JSC for macOS
+
+on:
+  workflow_dispatch:
+    inputs:
+      compare_rebuild:
+        description: Build each target twice and require byte-identical archives
+        required: true
+        type: boolean
+        default: true
+
+concurrency:
+  group: jsc-macos-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - aarch64-apple-darwin
+          - x86_64-apple-darwin
+    runs-on: xcode-27
+    timeout-minutes: 480
+    permissions:
+      attestations: write
+      artifact-metadata: write
+      contents: read
+      id-token: write
+    env:
+      CARGO_TERM_COLOR: always
+      TARGET: ${{ matrix.target }}
+    steps:
+      - name: Check out runtime inputs
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
+
+      - name: Validate distribution and hosted image
+        run: |
+          test "$(uname -m)" = arm64
+          rustup target add "$TARGET"
+          if [[ "$TARGET" == x86_64-apple-darwin ]]; then
+            arch -x86_64 /usr/bin/true
+          fi
+          cargo xtask jsc-manifest validate
+          distribution/jsc/scripts/verify-macos-toolchain.sh
+          /usr/bin/python3 -m unittest discover -s distribution/jsc/scripts/tests -v
+
+      - name: Check out pinned WebKit source
+        id: source
+        shell: bash
+        run: |
+          revision=$(jq -er '.source.revision' distribution/jsc/manifest.json)
+          repository=$(jq -er '.source.repository' distribution/jsc/manifest.json)
+          source_root=$(mktemp -d "$RUNNER_TEMP/kunlun-webkit-${TARGET}-XXXXXX")
+          /usr/bin/git -C "$source_root" init
+          /usr/bin/git -C "$source_root" remote add origin "$repository"
+          /usr/bin/git -C "$source_root" fetch --depth=1 --filter=blob:none origin "$revision"
+          /usr/bin/git -C "$source_root" sparse-checkout init --cone
+          /usr/bin/git -C "$source_root" sparse-checkout set \
+            Configurations Source/JavaScriptCore Source/WTF Source/bmalloc Source/cmake \
+            Tools/Profiling Tools/Scripts Tools/ccache Tools/clangd WebKitLibraries \
+            WebKit.xcworkspace
+          /usr/bin/git -C "$source_root" checkout --detach FETCH_HEAD
+          mkdir -p "$source_root/Source/WebCore"
+          test "$(/usr/bin/git -C "$source_root" rev-parse HEAD)" = "$revision"
+          echo "source_root=$source_root" >> "$GITHUB_OUTPUT"
+
+      - name: Build, package, and verify
+        id: build
+        shell: bash
+        run: |
+          output_root=$(mktemp -d "$RUNNER_TEMP/kunlun-output-${TARGET}-XXXXXX")
+          distribution/jsc/scripts/build-macos.sh \
+            --target "$TARGET" \
+            --webkit-root "${{ steps.source.outputs.source_root }}" \
+            --output "$output_root"
+
+      - name: Run binding corpus against pinned artifact
+        shell: bash
+        env:
+          KUNLUN_JSC_DIST_DIR: ${{ steps.build.outputs.staging }}
+          DYLD_LIBRARY_PATH: ${{ steps.build.outputs.staging }}/lib
+          MACOSX_DEPLOYMENT_TARGET: ${{ steps.build.outputs.deployment_target }}
+        run: |
+          cargo test --workspace --target "$TARGET"
+          cargo run -p kunlun-runtime --target "$TARGET" -- doctor \
+            | tee "$RUNNER_TEMP/doctor-${TARGET}.txt"
+          grep -Fqx 'distribution: pinned Kunlun JSC artifact' "$RUNNER_TEMP/doctor-${TARGET}.txt"
+          grep -Fqx 'hermetic: true' "$RUNNER_TEMP/doctor-${TARGET}.txt"
+
+      - name: Reclaim first-build intermediates
+        if: ${{ inputs.compare_rebuild }}
+        shell: bash
+        env:
+          OUTPUT_ROOT: ${{ steps.build.outputs.output_root }}
+          SOURCE_ROOT: ${{ steps.source.outputs.source_root }}
+        run: |
+          case "$OUTPUT_ROOT" in "$RUNNER_TEMP"/*) ;; *) exit 1 ;; esac
+          case "$SOURCE_ROOT" in "$RUNNER_TEMP"/*) ;; *) exit 1 ;; esac
+          rm -rf -- \
+            "$OUTPUT_ROOT/webkit-build" \
+            "$OUTPUT_ROOT/native" \
+            "$OUTPUT_ROOT/staging" \
+            "$SOURCE_ROOT"
+
+      - name: Check independent rebuild
+        if: ${{ inputs.compare_rebuild }}
+        shell: bash
+        run: |
+          revision=$(jq -er '.source.revision' distribution/jsc/manifest.json)
+          repository=$(jq -er '.source.repository' distribution/jsc/manifest.json)
+          source_root=$(mktemp -d "$RUNNER_TEMP/kunlun-webkit-rebuild-${TARGET}-XXXXXX")
+          /usr/bin/git -C "$source_root" init
+          /usr/bin/git -C "$source_root" remote add origin "$repository"
+          /usr/bin/git -C "$source_root" fetch --depth=1 --filter=blob:none origin "$revision"
+          /usr/bin/git -C "$source_root" sparse-checkout init --cone
+          /usr/bin/git -C "$source_root" sparse-checkout set \
+            Configurations Source/JavaScriptCore Source/WTF Source/bmalloc Source/cmake \
+            Tools/Profiling Tools/Scripts Tools/ccache Tools/clangd WebKitLibraries \
+            WebKit.xcworkspace
+          /usr/bin/git -C "$source_root" checkout --detach FETCH_HEAD
+          mkdir -p "$source_root/Source/WebCore"
+          output_root=$(mktemp -d "$RUNNER_TEMP/kunlun-rebuild-${TARGET}-XXXXXX")
+          distribution/jsc/scripts/build-macos.sh \
+            --target "$TARGET" \
+            --webkit-root "$source_root" \
+            --output "$output_root"
+          archive_name=$(basename "${{ steps.build.outputs.archive }}")
+          report="$(dirname "${{ steps.build.outputs.archive }}")/${archive_name%.tar.zst}.rebuild.json"
+          /usr/bin/python3 distribution/jsc/scripts/jsc_artifact.py compare \
+            --first "${{ steps.build.outputs.archive }}" \
+            --second "$output_root/artifacts/$archive_name" \
+            --output "$report" \
+            --require-identical
+          echo "rebuild_report=$report" >> "$GITHUB_ENV"
+          case "$output_root" in "$RUNNER_TEMP"/*) ;; *) exit 1 ;; esac
+          case "$source_root" in "$RUNNER_TEMP"/*) ;; *) exit 1 ;; esac
+          rm -rf -- "$output_root" "$source_root"
+
+      - name: Generate signed SLSA provenance
+        id: provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
+        with:
+          subject-path: ${{ steps.build.outputs.archive }}
+
+      - name: Preserve provenance bundle and checksums
+        id: evidence
+        shell: bash
+        run: |
+          provenance_name=$(jq -er --arg target "$TARGET" \
+            '.targets[] | select(.triple == $target) | .artifact.provenance.path | split("/")[-1]' \
+            distribution/jsc/manifest.json)
+          evidence_dir=$(dirname "${{ steps.build.outputs.archive }}")
+          provenance="$evidence_dir/$provenance_name"
+          cp "${{ steps.provenance.outputs.bundle-path }}" "$provenance"
+          checksums="$evidence_dir/SHA256SUMS"
+          (
+            cd "$evidence_dir"
+            shasum -a 256 \
+              "$(basename "${{ steps.build.outputs.archive }}")" \
+              "$(basename "${{ steps.build.outputs.sbom }}")" \
+              "$provenance_name" > SHA256SUMS
+          )
+          echo "provenance=$provenance" >> "$GITHUB_OUTPUT"
+          echo "checksums=$checksums" >> "$GITHUB_OUTPUT"
+
+      - name: Attest SPDX SBOM
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
+        with:
+          subject-path: ${{ steps.build.outputs.archive }}
+          sbom-path: ${{ steps.build.outputs.sbom }}
+
+      - name: Upload audited artifact set
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: kunlun-jsc-${{ matrix.target }}
+          if-no-files-found: error
+          retention-days: 30
+          path: |
+            ${{ steps.build.outputs.archive }}
+            ${{ steps.build.outputs.sbom }}
+            ${{ steps.evidence.outputs.provenance }}
+            ${{ steps.evidence.outputs.checksums }}
+            ${{ env.rebuild_report }}

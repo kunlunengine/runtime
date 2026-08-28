@@ -9,7 +9,9 @@ and additionally checks cross-field and local-file integrity rules.
 
 The manifest is metadata and policy. It does not make a target available to Cargo. In particular,
 ordinary Cargo builds continue to use the existing explicit backend and perform no manifest-driven
-download.
+download. `KUNLUN_JSC_DIST_DIR` is a verification-only escape hatch used by the controlled artifact
+job to run the workspace corpus against a freshly assembled, local staging directory; it never
+resolves or downloads an artifact.
 
 ## Validate the manifest
 
@@ -55,7 +57,75 @@ repository and a Cargo build must never download them implicitly. The planned ar
 include/kunlun_jsc.h
 lib/libJavaScriptCore.{dylib,so}
 lib/libkunlun_jsc.{dylib,so}
+licenses/<reviewed license inputs>
+metadata/build.json
 ```
+
+The metadata records the source revision, effective build arguments and feature flags, deployment
+target, observed tool versions, runner image identity, ABI, license inventory, and logical SBOM and
+provenance paths. The separate SPDX document inventories every regular file in the archive by
+SHA-1 and SHA-256. Archives contain no symlinks, build directories, private WebKit headers, or
+unrelated tools.
+
+## Controlled macOS builds
+
+[`distribution/jsc/scripts/build-macos.sh`](../distribution/jsc/scripts/build-macos.sh) is the only
+supported macOS artifact entry point. It fails before compilation unless the checked-out WebKit
+commit, patch digests, Xcode build, Apple Clang, macOS SDK, CMake, Python, Perl, Ruby, and Git match
+the manifest exactly. Both Apple Silicon and Intel artifacts are built independently by passing an
+explicit architecture to the pinned upstream `Tools/Scripts/build-jsc` driver. The Intel artifact
+is cross-built on the same Apple Silicon toolchain, avoiding an unrecorded second Xcode image.
+
+The script then:
+
+1. builds the WebKit `JavaScriptCore.framework` with the recorded feature flags and macOS deployment
+   target;
+2. extracts its engine dylib, gives it the stable `@rpath/libJavaScriptCore.dylib` install name, and
+   builds the Kunlun C ABI shim against that exact framework;
+3. copies only the public Kunlun header, two dylibs, reviewed licenses, and generated build metadata
+   into a clean staging tree;
+4. generates an SPDX 2.3 JSON inventory and a deterministic ustar+zstd archive with normalized
+   order, ownership, modes, timestamps, and single-threaded compression; and
+5. verifies the archive layout, SPDX checksums, target architecture, Mach-O install names,
+   dependencies, and the shim export allowlist.
+
+Run it from an exact toolchain host with a detached checkout of the manifest revision:
+
+```bash
+distribution/jsc/scripts/build-macos.sh \
+  --target aarch64-apple-darwin \
+  --webkit-root /absolute/path/to/WebKit \
+  --output /absolute/path/to/output
+```
+
+Use `x86_64-apple-darwin` for the Intel build. The output directory is build-specific and contains
+large intermediate WebKit products in addition to `artifacts/` and `staging/`.
+
+### CI evidence and independent rebuilds
+
+The manually dispatched `Build pinned JSC for macOS` workflow uses GitHub's real, Apple Silicon
+`xcode-27` hosted-runner label. This public-preview label is deliberately not treated as a toolchain
+pin: GitHub updates the image in place. The workflow therefore verifies every recorded tool version
+before compilation and fails closed when the hosted image no longer matches the manifest. A toolchain
+refresh requires a separate reviewed manifest update; the build must never accept a newer image
+implicitly. The image includes Rosetta 2 for the Intel corpus.
+
+For both target triples the workflow checks out the pinned source inputs, builds and verifies the
+artifact, and runs `cargo test --workspace` plus `kunlun-runtime doctor` with
+`KUNLUN_JSC_DIST_DIR` and `DYLD_LIBRARY_PATH` pointing only at the new staging tree. `doctor` must
+report `pinned Kunlun JSC artifact` and `hermetic: true`; the system framework is not a release
+fallback.
+
+Release-candidate runs build each target twice from independent source checkouts by default. The
+comparison report lists every differing archive member and fails publication unless both archives
+are byte-identical. If a future toolchain introduces unavoidable nondeterminism, its member-level
+cause must be documented and reviewed before changing this gate.
+
+GitHub's `actions/attest` action binds the archive digest to signed SLSA v1 build provenance and
+also attests the SPDX document. Each uploaded artifact set contains the archive, SPDX SBOM, Sigstore
+attestation bundle at the manifest's `.intoto.jsonl` path, `SHA256SUMS`, and rebuild report. After
+the files are copied to durable release storage, update the target atomically to `published` with
+the three reviewed digests; temporary workflow-artifact URLs alone are not a publication record.
 
 ## Updating WebKit or another build input
 
@@ -93,6 +163,8 @@ Use one focused pull request for a revision or build-input update:
       dependencies and generated license material.
 - [ ] Every target changed to `published` has matching archive, SPDX SBOM, and SLSA provenance
       SHA-256 values.
+- [ ] The macOS artifact was produced on the controlled runner, passed the workspace corpus and
+      `doctor`, and has a byte-identical independent-rebuild report.
 - [ ] The public-header set and `abi.shim_version` match the shim compatibility decision.
 - [ ] The manifest validator, workspace tests, formatting, and lints pass.
 - [ ] No ordinary Cargo build gained a network fetch or an implicit native artifact download.

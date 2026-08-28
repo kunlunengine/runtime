@@ -21,10 +21,10 @@ Milestone 1 is the current focus. Good starting points are issues labeled `m1` a
 
 ## Development Setup
 
-The workspace requires Rust 1.85 or newer. The current implementation links Apple's system
-`JavaScriptCore.framework` on macOS; a pinned, bundled JSC distribution has not yet been
-implemented. Non-macOS targets currently use an unsupported stub and do not have a working JSC
-backend.
+The workspace requires Rust 1.85 or newer. Ordinary development builds link Apple's system
+`JavaScriptCore.framework` on macOS. A controlled pipeline builds pinned macOS arm64/x64 artifacts,
+but product-backend feature selection is not yet implemented. Non-macOS targets currently use an
+unsupported stub and do not have a working JSC backend.
 
 Run the baseline checks before opening a pull request:
 

@@ -99,7 +99,7 @@ if [[ ! -f "$jsc_binary" ]]; then
     }
     jsc_binary=$candidate
 fi
-headers=$product_dir/include
+headers=$product_dir/JavaScriptCore/Headers
 [[ -f "$headers/JavaScriptCore/JavaScript.h" ]] || {
     echo "error: JavaScriptCore public headers were not produced below $headers" >&2
     exit 1

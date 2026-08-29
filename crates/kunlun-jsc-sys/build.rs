@@ -5,6 +5,7 @@ use std::path::PathBuf;
 const HEADER: &str = "include/kunlun_jsc.h";
 
 fn main() {
+    println!("cargo:rustc-check-cfg=cfg(kunlun_jsc_native)");
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed={HEADER}");
     println!("cargo:rerun-if-changed=native/header_smoke.c");
@@ -17,29 +18,29 @@ fn main() {
     generate_bindings();
     compile_header_smoke_tests();
 
-    let target_is_macos = env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos");
-    let verified_distribution = if target_is_macos {
-        compile_exception_smoke();
-        match env::var_os("KUNLUN_JSC_DIST_DIR").filter(|path| !path.is_empty()) {
-            Some(distribution) => {
-                link_verified_distribution(Path::new(&distribution));
-                true
-            }
-            None => {
-                compile_macos_shim();
-                println!("cargo:rustc-link-lib=framework=JavaScriptCore");
-                false
-            }
+    let target_os = env::var("CARGO_CFG_TARGET_OS").expect("Cargo sets CARGO_CFG_TARGET_OS");
+    let distribution = env::var_os("KUNLUN_JSC_DIST_DIR").filter(|path| !path.is_empty());
+    let verified_distribution = match (target_os.as_str(), distribution) {
+        ("macos" | "linux", Some(distribution)) => {
+            compile_exception_smoke();
+            link_verified_distribution(Path::new(&distribution), &target_os);
+            true
         }
-    } else if env::var_os("KUNLUN_JSC_DIST_DIR")
-        .filter(|path| !path.is_empty())
-        .is_some()
-    {
-        panic!("KUNLUN_JSC_DIST_DIR currently supports only macOS artifact verification");
-    } else {
-        false
+        ("macos", None) => {
+            compile_exception_smoke();
+            compile_macos_shim();
+            println!("cargo:rustc-link-lib=framework=JavaScriptCore");
+            false
+        }
+        (_, Some(_)) => {
+            panic!("KUNLUN_JSC_DIST_DIR supports only macOS and Linux artifact verification")
+        }
+        (_, None) => false,
     };
-    write_backend_info(verified_distribution, target_is_macos);
+    if verified_distribution || target_os == "macos" {
+        println!("cargo:rustc-cfg=kunlun_jsc_native");
+    }
+    write_backend_info(verified_distribution, &target_os);
 }
 
 fn generate_bindings() {
@@ -106,20 +107,22 @@ fn compile_exception_smoke() {
         .compile("kunlun_jsc_exception_smoke");
 }
 
-fn link_verified_distribution(distribution: &Path) {
+fn link_verified_distribution(distribution: &Path, target_os: &str) {
     let distribution = distribution.canonicalize().unwrap_or_else(|error| {
         panic!(
             "KUNLUN_JSC_DIST_DIR {} is not a readable artifact staging directory: {error}",
             distribution.display()
         )
     });
-    let required = [
-        "include/kunlun_jsc.h",
-        "lib/libJavaScriptCore.dylib",
-        "lib/libkunlun_jsc.dylib",
-        "metadata/build.json",
-    ];
-    for relative in required {
+    let libraries = match target_os {
+        "macos" => ["lib/libJavaScriptCore.dylib", "lib/libkunlun_jsc.dylib"],
+        "linux" => ["lib/libJavaScriptCore.so", "lib/libkunlun_jsc.so"],
+        _ => unreachable!("caller validates the artifact platform"),
+    };
+    for relative in ["include/kunlun_jsc.h", "metadata/build.json"]
+        .into_iter()
+        .chain(libraries)
+    {
         let path = distribution.join(relative);
         if !path.is_file() {
             panic!(
@@ -135,13 +138,14 @@ fn link_verified_distribution(distribution: &Path) {
         distribution.join("lib").display()
     );
     println!("cargo:rustc-link-lib=dylib=kunlun_jsc");
+    println!("cargo:rustc-link-lib=dylib=JavaScriptCore");
 }
 
-fn write_backend_info(verified_distribution: bool, target_is_macos: bool) {
-    let distribution = match (verified_distribution, target_is_macos) {
+fn write_backend_info(verified_distribution: bool, target_os: &str) {
+    let distribution = match (verified_distribution, target_os) {
         (true, _) => "pinned Kunlun JSC artifact",
-        (false, true) => "macOS system framework (bootstrap only)",
-        (false, false) => "unsupported non-macOS stub",
+        (false, "macos") => "macOS system framework (bootstrap only)",
+        (false, _) => "unsupported non-macOS stub",
     };
     let output = PathBuf::from(env::var_os("OUT_DIR").expect("Cargo sets OUT_DIR"));
     let source = format!(

@@ -26,8 +26,8 @@ kunlun-runtime -> kunlun-jsc -> kunlun-jsc-sys -> JavaScriptCore
 ## Bootstrap
 
 Requires Rust 1.85 or newer. Ordinary development builds use the macOS system JavaScriptCore
-framework. The controlled M1 pipeline can now build and verify pinned macOS arm64/x64 artifacts;
-Linux artifacts and product-backend feature selection remain milestone work.
+framework. The controlled M1 pipelines can build and verify pinned macOS and Linux glibc arm64/x64
+artifacts; product-backend feature selection remains milestone work.
 
 ```bash
 cargo test

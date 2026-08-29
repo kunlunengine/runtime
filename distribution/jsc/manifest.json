@@ -16,7 +16,8 @@
       ],
       "linux": [
         "--release",
-        "--jsc-only"
+        "--jsc-only",
+        "--no-use-ccache"
       ]
     },
     "environment": {
@@ -44,6 +45,7 @@
       "id": "apple-xcode-27.0",
       "host": "macos",
       "container_image": null,
+      "package_snapshot": null,
       "tools": [
         {
           "name": "xcode",
@@ -83,6 +85,7 @@
       "id": "ubuntu-24.04-clang-18",
       "host": "linux",
       "container_image": "docker.io/library/ubuntu@sha256:33ceb71981b602c1a7443a53469e4dba065f7503eab3078a2d7a57a2ab987517",
+      "package_snapshot": "20260810T000000Z",
       "tools": [
         {
           "name": "ubuntu-sysroot",
@@ -90,6 +93,10 @@
         },
         {
           "name": "clang",
+          "version": "18.1.3"
+        },
+        {
+          "name": "lld",
           "version": "18.1.3"
         },
         {
@@ -109,6 +116,10 @@
           "version": "74.2"
         },
         {
+          "name": "libstdc++-abi",
+          "version": "GLIBCXX_3.4.32,CXXABI_1.3.14"
+        },
+        {
           "name": "perl",
           "version": "5.38.2"
         },
@@ -119,6 +130,18 @@
         {
           "name": "git",
           "version": "2.43.0"
+        },
+        {
+          "name": "binutils",
+          "version": "2.42"
+        },
+        {
+          "name": "patchelf",
+          "version": "0.18.0"
+        },
+        {
+          "name": "zstd",
+          "version": "1.5.5"
         }
       ]
     }

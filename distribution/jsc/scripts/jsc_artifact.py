@@ -19,10 +19,15 @@ import tempfile
 from typing import Any, Iterable
 
 
-SUPPORTED_TARGETS = {
+MACOS_TARGETS = {
     "aarch64-apple-darwin": "arm64",
     "x86_64-apple-darwin": "x86_64",
 }
+LINUX_TARGETS = {
+    "aarch64-unknown-linux-gnu": "AArch64",
+    "x86_64-unknown-linux-gnu": "Advanced Micro Devices X86-64",
+}
+SUPPORTED_TARGETS = MACOS_TARGETS.keys() | LINUX_TARGETS.keys()
 ALLOWED_TOP_LEVEL = {"include", "lib", "licenses", "metadata"}
 
 
@@ -71,11 +76,32 @@ def sha1_file(path: Path) -> str:
 def manifest_target(manifest: dict[str, Any], target: str) -> dict[str, Any]:
     """Return the unique target entry from the distribution manifest."""
     if target not in SUPPORTED_TARGETS:
-        raise ArtifactError(f"unsupported macOS target: {target}")
+        raise ArtifactError(f"unsupported JSC distribution target: {target}")
     matches = [entry for entry in manifest.get("targets", []) if entry.get("triple") == target]
     if len(matches) != 1:
         raise ArtifactError(f"manifest must contain exactly one target entry for {target}")
     return matches[0]
+
+
+def toolchain_tool_version(
+    manifest: dict[str, Any], target_entry: dict[str, Any], name: str
+) -> str:
+    """Return one required tool version from the target's manifest toolchain."""
+    toolchains = [
+        entry
+        for entry in manifest.get("toolchains", [])
+        if entry.get("id") == target_entry.get("toolchain")
+    ]
+    if len(toolchains) != 1:
+        raise ArtifactError("target must reference exactly one distribution toolchain")
+    versions = [
+        tool.get("version")
+        for tool in toolchains[0].get("tools", [])
+        if tool.get("name") == name
+    ]
+    if len(versions) != 1 or not isinstance(versions[0], str):
+        raise ArtifactError(f"target toolchain must contain exactly one {name} version")
+    return versions[0]
 
 
 def checked_relative_path(value: str, label: str) -> PurePosixPath:
@@ -108,18 +134,44 @@ def copy_exact(source: Path, destination: Path, expected_digest: str | None = No
     shutil.copyfile(source, destination)
 
 
-def collect_tool_versions() -> dict[str, str]:
-    """Capture the native tool versions that can affect a macOS artifact."""
-    commands = {
-        "xcode": ["xcodebuild", "-version"],
-        "apple-clang": ["xcrun", "clang", "--version"],
-        "macos-sdk": ["xcrun", "--sdk", "macosx", "--show-sdk-version"],
-        "cmake": ["cmake", "--version"],
-        "python": ["/usr/bin/python3", "--version"],
-        "perl": ["/usr/bin/perl", "-e", "printf qq{%vd\\n}, $^V"],
-        "ruby": ["/usr/bin/ruby", "--version"],
-        "git": ["/usr/bin/git", "--version"],
-    }
+def collect_tool_versions(target: str) -> dict[str, str]:
+    """Capture the native tool versions that can affect an artifact."""
+    if target in MACOS_TARGETS:
+        commands = {
+            "xcode": ["xcodebuild", "-version"],
+            "apple-clang": ["xcrun", "clang", "--version"],
+            "macos-sdk": ["xcrun", "--sdk", "macosx", "--show-sdk-version"],
+            "cmake": ["cmake", "--version"],
+            "python": ["/usr/bin/python3", "--version"],
+            "perl": ["/usr/bin/perl", "-e", "printf qq{%vd\\n}, $^V"],
+            "ruby": ["/usr/bin/ruby", "--version"],
+            "git": ["/usr/bin/git", "--version"],
+        }
+    else:
+        commands = {
+            "ubuntu-sysroot": ["sh", "-c", ". /etc/os-release; printf '%s\\n' \"$VERSION\""],
+            "clang": ["clang-18", "--version"],
+            "lld": ["ld.lld-18", "--version"],
+            "cmake": ["cmake", "--version"],
+            "ninja": ["ninja", "--version"],
+            "python": ["python3", "--version"],
+            "icu": ["pkg-config", "--modversion", "icu-uc"],
+            "glibc": ["ldd", "--version"],
+            "libstdc++-abi": [
+                "sh",
+                "-c",
+                "library=$(clang++-18 -print-file-name=libstdc++.so.6); "
+                "printf 'GLIBCXX=%s CXXABI=%s\\n' "
+                "\"$(strings \"$library\" | sed -n '/^GLIBCXX_[0-9][0-9.]*$/p' | sort -V | tail -n 1)\" "
+                "\"$(strings \"$library\" | sed -n '/^CXXABI_[0-9][0-9.]*$/p' | sort -V | tail -n 1)\"",
+            ],
+            "perl": ["perl", "-e", "printf qq{%vd\\n}, $^V"],
+            "ruby": ["ruby", "--version"],
+            "git": ["git", "--version"],
+            "binutils": ["ld", "--version"],
+            "patchelf": ["patchelf", "--version"],
+            "zstd": ["zstd", "--version"],
+        }
     versions: dict[str, str] = {}
     for name, command in commands.items():
         try:
@@ -147,6 +199,8 @@ def runner_metadata() -> dict[str, Any]:
         "workflow_ref": os.environ.get("GITHUB_WORKFLOW_REF"),
         "run_id": os.environ.get("GITHUB_RUN_ID"),
         "run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT"),
+        "apt_snapshot": os.environ.get("KUNLUN_APT_SNAPSHOT"),
+        "container_image": os.environ.get("KUNLUN_CONTAINER_IMAGE"),
     }
 
 
@@ -161,12 +215,14 @@ def create_build_metadata(
         "source": manifest["source"],
         "target": {
             "triple": target,
+            "os": target_entry.get("os"),
             "arch": target_entry["arch"],
+            "libc": target_entry.get("libc"),
             "deployment_target": target_entry["deployment_target"],
         },
         "build": manifest["build"],
         "toolchain_id": target_entry["toolchain"],
-        "observed_tools": collect_tool_versions(),
+        "observed_tools": collect_tool_versions(target),
         "runner": runner_metadata(),
         "abi": manifest["abi"],
         "artifact": {
@@ -363,15 +419,23 @@ def create_archive(staging: Path, output: Path, epoch: int, zstd: str) -> None:
 
 
 def assemble(args: argparse.Namespace) -> None:
-    """Assemble licenses, metadata, SBOM, and archive from built dylibs."""
+    """Assemble licenses, metadata, SBOM, and archive from built libraries."""
     manifest = read_json(args.manifest)
     target_entry = manifest_target(manifest, args.target)
     expected_libraries = [PurePosixPath(path) for path in target_entry["artifact"]["library_paths"]]
-    if expected_libraries != [
-        PurePosixPath("lib/libJavaScriptCore.dylib"),
-        PurePosixPath("lib/libkunlun_jsc.dylib"),
-    ]:
-        raise ArtifactError(f"unexpected macOS library layout for {args.target}")
+    expected_layout = (
+        [
+            PurePosixPath("lib/libJavaScriptCore.dylib"),
+            PurePosixPath("lib/libkunlun_jsc.dylib"),
+        ]
+        if args.target in MACOS_TARGETS
+        else [
+            PurePosixPath("lib/libJavaScriptCore.so"),
+            PurePosixPath("lib/libkunlun_jsc.so"),
+        ]
+    )
+    if expected_libraries != expected_layout:
+        raise ArtifactError(f"unexpected library layout for {args.target}")
 
     output_root = args.output.resolve()
     staging_root = args.staging.resolve()
@@ -390,7 +454,7 @@ def assemble(args: argparse.Namespace) -> None:
     webkit_root = args.webkit_root.resolve()
     public_headers = manifest["abi"]["public_headers"]
     if public_headers != ["include/kunlun_jsc.h"]:
-        raise ArtifactError("macOS artifacts must expose only include/kunlun_jsc.h")
+        raise ArtifactError("JSC artifacts must expose only include/kunlun_jsc.h")
     copy_exact(
         repository_root / "crates/kunlun-jsc-sys/include/kunlun_jsc.h",
         args.staging / public_headers[0],
@@ -416,6 +480,14 @@ def assemble(args: argparse.Namespace) -> None:
 
     metadata = create_build_metadata(manifest, target_entry, args.target)
     metadata["licenses"] = packaged_licenses
+    if args.target in LINUX_TARGETS:
+        runtime_dependencies_path = args.staging / "metadata/runtime-dependencies.json"
+        runtime_dependencies = generate_elf_metadata(args.staging, args.target)
+        write_json(runtime_dependencies_path, runtime_dependencies)
+        metadata["runtime_dependencies"] = {
+            "path": "metadata/runtime-dependencies.json",
+            "sha256": sha256_file(runtime_dependencies_path),
+        }
     write_json(args.staging / "metadata/build.json", metadata)
 
     sbom_relative = checked_relative_path(
@@ -533,9 +605,129 @@ def command_output(command: list[str]) -> str:
         raise ArtifactError(f"inspection command failed ({' '.join(command)}): {error}") from error
 
 
+def inspect_elf(library: Path, include_exports: bool = False) -> dict[str, Any]:
+    """Return stable ELF identity, dependency, and symbol-version metadata."""
+    header = command_output(["readelf", "-hW", str(library)])
+    machine_match = re.search(r"^\s*Machine:\s*(.+?)\s*$", header, re.MULTILINE)
+    if machine_match is None:
+        raise ArtifactError(f"could not determine ELF machine for {library.name}")
+
+    dynamic = command_output(["readelf", "-dW", str(library)])
+    needed = sorted(re.findall(r"\(NEEDED\).*Shared library: \[([^]]+)\]", dynamic))
+    sonames = re.findall(r"\(SONAME\).*Library soname: \[([^]]+)\]", dynamic)
+    if len(sonames) != 1:
+        raise ArtifactError(f"{library.name} must contain exactly one ELF SONAME")
+    runpaths = sorted(
+        re.findall(r"\((?:RPATH|RUNPATH)\).*Library (?:rpath|runpath): \[([^]]+)\]", dynamic)
+    )
+
+    version_info = command_output(["readelf", "--version-info", "-W", str(library)])
+    required_versions = sorted(
+        set(re.findall(r"\bName: ((?:GLIBC|GLIBCXX|CXXABI)_[0-9.]+)\b", version_info))
+    )
+    result: dict[str, Any] = {
+        "machine": machine_match.group(1),
+        "soname": sonames[0],
+        "needed": needed,
+        "runpaths": runpaths,
+        "required_versions": required_versions,
+    }
+    if include_exports:
+        symbols = command_output(
+            ["nm", "-D", "--defined-only", "--extern-only", "--format=posix", str(library)]
+        )
+        result["exports"] = sorted(
+            line.split()[0] for line in symbols.splitlines() if line.split()
+        )
+    return result
+
+
+def generate_elf_metadata(staging: Path, target: str) -> dict[str, Any]:
+    """Enumerate the exact Linux runtime dependency and symbol-version surface."""
+    if target not in LINUX_TARGETS:
+        raise ArtifactError(f"ELF metadata is unsupported for {target}")
+    return {
+        "schema_version": 1,
+        "target": target,
+        "libraries": {
+            "lib/libJavaScriptCore.so": inspect_elf(
+                staging / "lib/libJavaScriptCore.so"
+            ),
+            "lib/libkunlun_jsc.so": inspect_elf(
+                staging / "lib/libkunlun_jsc.so", include_exports=True
+            ),
+        },
+    }
+
+
+def version_tuple(value: str) -> tuple[int, ...]:
+    """Return the numeric suffix of an ELF symbol-version name."""
+    suffix = value.split("_", 1)[-1]
+    if not re.fullmatch(r"[0-9]+(?:\.[0-9]+)*", suffix):
+        raise ArtifactError(f"unsupported ELF symbol version: {value}")
+    return tuple(int(component) for component in suffix.split("."))
+
+
+def verify_elf(
+    extract_root: Path, target: str, glibc_baseline: str, cxx_abi_baseline: str
+) -> None:
+    """Enforce Linux architecture, dependency, symbol-version, and export boundaries."""
+    metadata_path = extract_root / "metadata/runtime-dependencies.json"
+    recorded = read_json(metadata_path)
+    observed = generate_elf_metadata(extract_root, target)
+    if recorded != observed:
+        raise ArtifactError("ELF runtime dependency metadata does not match the packaged libraries")
+
+    libraries = observed["libraries"]
+    expected_machine = LINUX_TARGETS[target]
+    allowed_dependencies = re.compile(
+        r"^(?:libJavaScriptCore\.so|lib(?:c|dl|m|pthread|rt|atomic|gcc_s|stdc\+\+)\.so(?:\.[0-9]+)*|libicu(?:data|i18n|uc)\.so\.74)$"
+    )
+    cxx_versions = cxx_abi_baseline.split(",")
+    if len(cxx_versions) != 2 or not cxx_versions[0].startswith("GLIBCXX_") or not cxx_versions[
+        1
+    ].startswith("CXXABI_"):
+        raise ArtifactError(f"invalid libstdc++ ABI baseline: {cxx_abi_baseline}")
+    version_limits = {
+        "GLIBC": version_tuple(f"GLIBC_{glibc_baseline}"),
+        "GLIBCXX": version_tuple(cxx_versions[0]),
+        "CXXABI": version_tuple(cxx_versions[1]),
+    }
+    for relative, identity in libraries.items():
+        name = PurePosixPath(relative).name
+        if identity["machine"] != expected_machine:
+            raise ArtifactError(
+                f"{name} ELF machine is {identity['machine']}, expected {expected_machine}"
+            )
+        if identity["soname"] != name:
+            raise ArtifactError(f"{name} has unexpected ELF SONAME {identity['soname']}")
+        if identity["runpaths"] != ["$ORIGIN"]:
+            raise ArtifactError(f"{name} must use only the $ORIGIN ELF runpath")
+        unexpected = sorted(
+            dependency
+            for dependency in identity["needed"]
+            if allowed_dependencies.fullmatch(dependency) is None
+        )
+        if unexpected:
+            raise ArtifactError(f"{name} has unsupported runtime dependencies: {unexpected}")
+        for version in identity["required_versions"]:
+            family = version.split("_", 1)[0]
+            if version_tuple(version) > version_limits[family]:
+                raise ArtifactError(
+                    f"{name} requires {version}, beyond the recorded Linux ABI baseline"
+                )
+
+    shim = libraries["lib/libkunlun_jsc.so"]
+    if "libJavaScriptCore.so" not in shim["needed"]:
+        raise ArtifactError("libkunlun_jsc.so does not depend on the packaged JavaScriptCore SONAME")
+    exports = shim.get("exports", [])
+    if not exports or any(not symbol.startswith("kunlun_jsc_") for symbol in exports):
+        raise ArtifactError("shim exports symbols outside the kunlun_jsc_* allowlist")
+
+
 def verify_macho(extract_root: Path, target: str, deployment_target: str) -> None:
     """Enforce architecture, install-name, dependency, and shim-symbol boundaries."""
-    expected_arch = SUPPORTED_TARGETS[target]
+    expected_arch = MACOS_TARGETS[target]
     libraries = [
         extract_root / "lib/libJavaScriptCore.dylib",
         extract_root / "lib/libkunlun_jsc.dylib",
@@ -574,7 +766,7 @@ def verify_macho(extract_root: Path, target: str, deployment_target: str) -> Non
 
 
 def verify(args: argparse.Namespace) -> None:
-    """Verify archive structure, reproducibility metadata, SBOM, and Mach-O files."""
+    """Verify archive structure, reproducibility metadata, SBOM, and native libraries."""
     manifest = read_json(args.manifest)
     target_entry = manifest_target(manifest, args.target)
     expected_archive = PurePosixPath(target_entry["artifact"]["archive_path"]).name
@@ -595,12 +787,14 @@ def verify(args: argparse.Namespace) -> None:
                 raise ArtifactError(f"non-normalized archive metadata for {member.name}")
             if stat.S_IMODE(member.mode) != expected_mode:
                 raise ArtifactError(f"unexpected archive mode for {member.name}")
-        required = {
-            "include/kunlun_jsc.h",
-            "lib/libJavaScriptCore.dylib",
-            "lib/libkunlun_jsc.dylib",
-            "metadata/build.json",
-        }
+        libraries = (
+            {"lib/libJavaScriptCore.dylib", "lib/libkunlun_jsc.dylib"}
+            if args.target in MACOS_TARGETS
+            else {"lib/libJavaScriptCore.so", "lib/libkunlun_jsc.so"}
+        )
+        required = {"include/kunlun_jsc.h", "metadata/build.json"} | libraries
+        if args.target in LINUX_TARGETS:
+            required.add("metadata/runtime-dependencies.json")
         actual_files = {
             path.relative_to(extract_root).as_posix() for path in iter_regular_files(extract_root)
         }
@@ -633,7 +827,9 @@ def verify(args: argparse.Namespace) -> None:
             raise ArtifactError("archive source metadata does not match the manifest")
         expected_target = {
             "triple": args.target,
+            "os": target_entry.get("os"),
             "arch": target_entry["arch"],
+            "libc": target_entry.get("libc"),
             "deployment_target": target_entry["deployment_target"],
         }
         if metadata.get("target") != expected_target:
@@ -653,13 +849,36 @@ def verify(args: argparse.Namespace) -> None:
         }
         if metadata.get("artifact") != expected_artifact:
             raise ArtifactError("archive artifact metadata does not match the manifest")
+        if args.target in LINUX_TARGETS:
+            runtime_path = extract_root / "metadata/runtime-dependencies.json"
+            expected_runtime_dependencies = {
+                "path": "metadata/runtime-dependencies.json",
+                "sha256": sha256_file(runtime_path),
+            }
+            if metadata.get("runtime_dependencies") != expected_runtime_dependencies:
+                raise ArtifactError(
+                    "archive runtime dependency metadata digest does not match the inventory"
+                )
+        elif "runtime_dependencies" in metadata:
+            raise ArtifactError("macOS archive unexpectedly contains Linux dependency metadata")
         verify_spdx(read_json(args.sbom), extract_root, args.target)
         if not args.skip_macho:
-            verify_macho(
-                extract_root,
-                args.target,
-                target_entry["deployment_target"]["minimum"],
-            )
+            if args.target in MACOS_TARGETS:
+                verify_macho(
+                    extract_root,
+                    args.target,
+                    target_entry["deployment_target"]["minimum"],
+                )
+            else:
+                cxx_abi_baseline = toolchain_tool_version(
+                    manifest, target_entry, "libstdc++-abi"
+                )
+                verify_elf(
+                    extract_root,
+                    args.target,
+                    target_entry["deployment_target"]["minimum"],
+                    cxx_abi_baseline,
+                )
 
     print(
         json.dumps(
@@ -723,7 +942,7 @@ def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description=__doc__)
     subcommands = result.add_subparsers(dest="command", required=True)
 
-    assemble_parser = subcommands.add_parser("assemble", help="assemble a macOS artifact")
+    assemble_parser = subcommands.add_parser("assemble", help="assemble a native JSC artifact")
     assemble_parser.add_argument("--manifest", type=Path, required=True)
     assemble_parser.add_argument("--repository-root", type=Path, required=True)
     assemble_parser.add_argument("--webkit-root", type=Path, required=True)
@@ -735,13 +954,19 @@ def parser() -> argparse.ArgumentParser:
     assemble_parser.add_argument("--zstd", default="zstd")
     assemble_parser.set_defaults(function=assemble)
 
-    verify_parser = subcommands.add_parser("verify", help="verify a macOS artifact")
+    verify_parser = subcommands.add_parser("verify", help="verify a native JSC artifact")
     verify_parser.add_argument("--manifest", type=Path, required=True)
     verify_parser.add_argument("--target", required=True)
     verify_parser.add_argument("--archive", type=Path, required=True)
     verify_parser.add_argument("--sbom", type=Path, required=True)
     verify_parser.add_argument("--zstd", default="zstd")
-    verify_parser.add_argument("--skip-macho", action="store_true", help=argparse.SUPPRESS)
+    verify_parser.add_argument(
+        "--skip-native",
+        "--skip-macho",
+        dest="skip_macho",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
     verify_parser.set_defaults(function=verify)
 
     compare_parser = subcommands.add_parser("compare", help="compare independent rebuilds")

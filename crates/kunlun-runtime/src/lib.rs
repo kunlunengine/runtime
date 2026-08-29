@@ -323,7 +323,7 @@ fn cleanup_state(vm: &mut JscVm, state: &str) {
     );
 }
 
-#[cfg(all(test, target_os = "macos"))]
+#[cfg(all(test, kunlun_jsc_native))]
 mod tests {
     use super::*;
     use std::io::{Read, Write};

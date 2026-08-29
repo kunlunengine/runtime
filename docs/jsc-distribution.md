@@ -153,8 +153,8 @@ rebuilds without embedding Docker's build timestamp in the artifact identity.
 Inside the container,
 [`distribution/jsc/scripts/build-linux.sh`](../distribution/jsc/scripts/build-linux.sh):
 
-1. verifies the native architecture, Ubuntu point release, Clang, LLD, CMake, Ninja, Python, ICU,
-   Perl, Ruby, Git, binutils, patchelf, and zstd versions against the manifest;
+1. verifies the native architecture, Ubuntu point release, Clang, LLD, CMake, ccache, Ninja,
+   Python, ICU, Perl, Ruby, Git, binutils, patchelf, and zstd versions against the manifest;
 2. checks the exact clean WebKit revision and reviewed patches, then invokes the upstream
    `Tools/Scripts/build-jsc --jsc-only` path with the manifest feature flags and LLD;
 3. normalizes the engine and shim to the stable `libJavaScriptCore.so` and `libkunlun_jsc.so`
@@ -171,17 +171,21 @@ revision:
 distribution/jsc/scripts/run-linux-container.sh \
   --target aarch64-unknown-linux-gnu \
   --webkit-root /absolute/path/to/WebKit \
-  --output /absolute/path/to/output
+  --output /absolute/path/to/output \
+  --ccache-dir /absolute/path/to/ccache
 ```
 
 Use `x86_64-unknown-linux-gnu` on an x86_64 host. The manually dispatched
 `Build pinned JSC for Linux` workflow runs both native architectures, executes the same workspace
 test corpus and `kunlun-runtime doctor` against the staged libraries with `KUNLUN_JSC_DIST_DIR`,
 requires a byte-identical second build by default, and uploads the archive, SPDX inventory, signed
-SLSA provenance, checksums, and member-level rebuild report. Pull-request build jobs have only
-read access to repository contents; OIDC and attestation write permissions are isolated to the
-manual release-evidence jobs after the verified outputs cross the job boundary as workflow
-artifacts.
+SLSA provenance, checksums, and member-level rebuild report. It is intentionally manual, like the
+macOS artifact workflow, rather than a per-pull-request job. Each architecture restores a bounded
+ccache whose key covers the target, manifest, patches, Linux toolchain definition, and build entry
+points. A changed input may reuse only compiler-validated entries from an older key. The independent
+second build does not mount the persisted cache, so rebuild evidence is produced from freshly
+compiled objects. OIDC and attestation write permissions remain isolated to the release-evidence
+jobs after verified outputs cross the job boundary as workflow artifacts.
 
 ## Updating WebKit or another build input
 

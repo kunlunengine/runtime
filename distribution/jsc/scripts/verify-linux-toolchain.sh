@@ -40,7 +40,7 @@ require_version() {
     fi
 }
 
-for command in clang-18 clang++-18 ld.lld-18 cmake ninja python3 pkg-config perl ruby git \
+for command in clang-18 clang++-18 ld.lld-18 cmake ccache ninja python3 pkg-config perl ruby git \
     ld ldd patchelf zstd readelf nm jq strings; do
     command -v "$command" >/dev/null || {
         echo "error: required command is unavailable: $command" >&2
@@ -66,6 +66,7 @@ fi
 require_version clang "$(clang-18 --version | sed -n '1s/.*clang version \([0-9][0-9.]*\).*/\1/p')"
 require_version lld "$(ld.lld-18 --version | sed -n '1s/.*LLD \([0-9][0-9.]*\).*/\1/p')"
 require_version cmake "$(cmake --version | sed -n '1s/^cmake version //p')"
+require_version ccache "$(ccache --version | sed -n '1s/^ccache version //p')"
 require_version ninja "$(ninja --version)"
 require_version python "$(python3 --version | sed 's/^Python //')"
 require_version icu "$(pkg-config --modversion icu-uc)"

@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
     cat >&2 <<'EOF'
-usage: run-linux-container.sh --target <triple> --webkit-root <path> --output <path> [--repository-root <path>]
+usage: run-linux-container.sh --target <triple> --webkit-root <path> --output <path> [--repository-root <path>] [--ccache-dir <path>]
 
 Builds the pinned Linux toolchain image from an Ubuntu archive snapshot, then runs the JSC build
 without network access. The host architecture must match the requested target.
@@ -15,12 +15,14 @@ target=
 webkit_root=
 output=
 repository_root=
+ccache_dir=
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --target) target=${2:-}; shift 2 ;;
         --webkit-root) webkit_root=${2:-}; shift 2 ;;
         --output) output=${2:-}; shift 2 ;;
         --repository-root) repository_root=${2:-}; shift 2 ;;
+        --ccache-dir) ccache_dir=${2:-}; shift 2 ;;
         *) usage ;;
     esac
 done
@@ -35,6 +37,16 @@ fi
 webkit_root=$(cd "$webkit_root" && pwd)
 mkdir -p "$output"
 output=$(cd "$output" && pwd)
+
+ccache_args=()
+if [[ -n "$ccache_dir" ]]; then
+    mkdir -p "$ccache_dir"
+    ccache_dir=$(cd "$ccache_dir" && pwd)
+    ccache_args+=(
+        --env CCACHE_DIR=/workspace/ccache
+        --mount "type=bind,src=$ccache_dir,dst=/workspace/ccache"
+    )
+fi
 
 case "$target" in
     aarch64-unknown-linux-gnu) platform=linux/arm64; expected_machine=aarch64 ;;
@@ -89,6 +101,7 @@ docker run --rm \
     --mount "type=bind,src=$repository_root,dst=/workspace/runtime,readonly" \
     --mount "type=bind,src=$webkit_root,dst=/workspace/webkit" \
     --mount "type=bind,src=$output,dst=/workspace/output" \
+    "${ccache_args[@]}" \
     --workdir /workspace/runtime \
     "$builder_image_id" \
     distribution/jsc/scripts/build-linux.sh \

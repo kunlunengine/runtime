@@ -24,6 +24,7 @@ RUN test -n "${APT_SNAPSHOT}" \
     && apt-get install -y --no-install-recommends \
         binutils \
         ca-certificates \
+        ccache \
         clang-18 \
         cmake \
         git \

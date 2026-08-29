@@ -70,6 +70,12 @@ export CXX=clang++-18
 export AR=ar
 export RANLIB=ranlib
 export WEBKIT_OUTPUTDIR=$output/webkit-build
+export CCACHE_BASEDIR=$webkit_root
+export CCACHE_COMPILERCHECK=content
+export CCACHE_COMPRESS=true
+export CCACHE_MAXSIZE=2G
+
+ccache --zero-stats
 
 build_arguments=()
 while IFS= read -r argument; do
@@ -88,6 +94,7 @@ echo "building WebKit JavaScriptCore $expected_revision for $target"
     cd "$webkit_root"
     Tools/Scripts/build-jsc "${build_arguments[@]}"
 )
+ccache --show-stats
 
 product_dir=$WEBKIT_OUTPUTDIR
 jsc_binary=$product_dir/lib/libJavaScriptCore.so

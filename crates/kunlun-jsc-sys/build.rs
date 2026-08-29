@@ -20,10 +20,10 @@ fn main() {
 
     let target_os = env::var("CARGO_CFG_TARGET_OS").expect("Cargo sets CARGO_CFG_TARGET_OS");
     let distribution = env::var_os("KUNLUN_JSC_DIST_DIR").filter(|path| !path.is_empty());
-    let verified_distribution = match (target_os.as_str(), distribution) {
+    let has_staged_distribution = match (target_os.as_str(), distribution) {
         ("macos" | "linux", Some(distribution)) => {
             compile_exception_smoke();
-            link_verified_distribution(Path::new(&distribution), &target_os);
+            link_staged_distribution(Path::new(&distribution), &target_os);
             true
         }
         ("macos", None) => {
@@ -33,14 +33,14 @@ fn main() {
             false
         }
         (_, Some(_)) => {
-            panic!("KUNLUN_JSC_DIST_DIR supports only macOS and Linux artifact verification")
+            panic!("KUNLUN_JSC_DIST_DIR supports only staged macOS and Linux artifacts")
         }
         (_, None) => false,
     };
-    if verified_distribution || target_os == "macos" {
+    if has_staged_distribution || target_os == "macos" {
         println!("cargo:rustc-cfg=kunlun_jsc_native");
     }
-    write_backend_info(verified_distribution, &target_os);
+    write_backend_info(has_staged_distribution, &target_os);
 }
 
 fn generate_bindings() {
@@ -107,7 +107,7 @@ fn compile_exception_smoke() {
         .compile("kunlun_jsc_exception_smoke");
 }
 
-fn link_verified_distribution(distribution: &Path, target_os: &str) {
+fn link_staged_distribution(distribution: &Path, target_os: &str) {
     let distribution = distribution.canonicalize().unwrap_or_else(|error| {
         panic!(
             "KUNLUN_JSC_DIST_DIR {} is not a readable artifact staging directory: {error}",
@@ -119,8 +119,13 @@ fn link_verified_distribution(distribution: &Path, target_os: &str) {
         "linux" => ["lib/libJavaScriptCore.so", "lib/libkunlun_jsc.so"],
         _ => unreachable!("caller validates the artifact platform"),
     };
-    for relative in ["include/kunlun_jsc.h", "metadata/build.json"]
+    let mut metadata = vec!["metadata/build.json"];
+    if target_os == "linux" {
+        metadata.push("metadata/runtime-dependencies.json");
+    }
+    for relative in ["include/kunlun_jsc.h"]
         .into_iter()
+        .chain(metadata.iter().copied())
         .chain(libraries)
     {
         let path = distribution.join(relative);
@@ -132,6 +137,7 @@ fn link_verified_distribution(distribution: &Path, target_os: &str) {
         }
         println!("cargo:rerun-if-changed={}", path.display());
     }
+    validate_staging_metadata(&distribution, target_os);
 
     println!(
         "cargo:rustc-link-search=native={}",
@@ -141,8 +147,46 @@ fn link_verified_distribution(distribution: &Path, target_os: &str) {
     println!("cargo:rustc-link-lib=dylib=JavaScriptCore");
 }
 
-fn write_backend_info(verified_distribution: bool, target_os: &str) {
-    let distribution = match (verified_distribution, target_os) {
+fn validate_staging_metadata(distribution: &Path, target_os: &str) {
+    let cargo_target = env::var("TARGET").expect("Cargo sets TARGET");
+    let build_path = distribution.join("metadata/build.json");
+    let build: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(&build_path)
+            .unwrap_or_else(|error| panic!("could not read {}: {error}", build_path.display())),
+    )
+    .unwrap_or_else(|error| panic!("could not parse {}: {error}", build_path.display()));
+    let staged_target = build
+        .pointer("/target/triple")
+        .and_then(serde_json::Value::as_str);
+    let staged_os = build
+        .pointer("/target/os")
+        .and_then(serde_json::Value::as_str);
+    if staged_target != Some(cargo_target.as_str()) || staged_os != Some(target_os) {
+        panic!(
+            "KUNLUN_JSC_DIST_DIR target mismatch: Cargo requested {cargo_target} ({target_os}), \
+             staging metadata records {staged_target:?} ({staged_os:?})"
+        );
+    }
+
+    if target_os == "linux" {
+        let runtime_path = distribution.join("metadata/runtime-dependencies.json");
+        let runtime: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&runtime_path).unwrap_or_else(|error| {
+                panic!("could not read {}: {error}", runtime_path.display())
+            }))
+            .unwrap_or_else(|error| panic!("could not parse {}: {error}", runtime_path.display()));
+        let runtime_target = runtime.get("target").and_then(serde_json::Value::as_str);
+        if runtime_target != Some(cargo_target.as_str()) {
+            panic!(
+                "KUNLUN_JSC_DIST_DIR runtime metadata target mismatch: Cargo requested \
+                 {cargo_target}, staging metadata records {runtime_target:?}"
+            );
+        }
+    }
+}
+
+fn write_backend_info(has_staged_distribution: bool, target_os: &str) {
+    let distribution = match (has_staged_distribution, target_os) {
         (true, _) => "pinned Kunlun JSC artifact",
         (false, "macos") => "macOS system framework (bootstrap only)",
         (false, _) => "unsupported non-macOS stub",
@@ -152,7 +196,7 @@ fn write_backend_info(verified_distribution: bool, target_os: &str) {
         "/// Human-readable backend selected by the build script.\n\
          pub const BACKEND_DISTRIBUTION: &str = {distribution:?};\n\
          /// Whether this build links a verified, locally staged distribution.\n\
-         pub const BACKEND_HERMETIC: bool = {verified_distribution};\n"
+         pub const BACKEND_HERMETIC: bool = {has_staged_distribution};\n"
     );
     std::fs::write(output.join("backend.rs"), source).expect("write selected JSC backend metadata");
 }

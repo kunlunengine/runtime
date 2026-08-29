@@ -39,10 +39,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 480
     permissions:
-      attestations: write
-      artifact-metadata: write
       contents: read
-      id-token: write
     env:
       CARGO_TERM_COLOR: always
       TARGET: ${{ matrix.target }}
@@ -151,52 +148,119 @@ jobs:
           case "$source_root" in "$RUNNER_TEMP"/*) ;; *) exit 1 ;; esac
           rm -rf -- "$output_root" "$source_root"
 
-      - name: Generate signed SLSA provenance
+      - name: Upload release inputs
         if: ${{ github.event_name == 'workflow_dispatch' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: kunlun-jsc-release-inputs-${{ matrix.target }}
+          if-no-files-found: error
+          retention-days: 1
+          path: |
+            ${{ steps.build.outputs.archive }}
+            ${{ steps.build.outputs.sbom }}
+            ${{ env.rebuild_report }}
+
+  release-evidence:
+    name: Attest ${{ matrix.target }}
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - aarch64-unknown-linux-gnu
+          - x86_64-unknown-linux-gnu
+    runs-on: ubuntu-24.04
+    permissions:
+      attestations: write
+      contents: read
+      id-token: write
+    env:
+      TARGET: ${{ matrix.target }}
+    steps:
+      - name: Check out release metadata
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Download verified build outputs
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          name: kunlun-jsc-release-inputs-${{ matrix.target }}
+          path: ${{ runner.temp }}/kunlun-release-${{ matrix.target }}
+
+      - name: Resolve release inputs
+        id: inputs
+        shell: bash
+        run: |
+          evidence_dir="$RUNNER_TEMP/kunlun-release-${TARGET}"
+          archive_name=$(jq -er --arg target "$TARGET" \
+            '.targets[] | select(.triple == $target) | .artifact.archive_path | split("/")[-1]' \
+            distribution/jsc/manifest.json)
+          sbom_name=$(jq -er --arg target "$TARGET" \
+            '.targets[] | select(.triple == $target) | .artifact.sbom.path | split("/")[-1]' \
+            distribution/jsc/manifest.json)
+          archive="$evidence_dir/$archive_name"
+          sbom="$evidence_dir/$sbom_name"
+          test -f "$archive"
+          test -f "$sbom"
+          rebuild_report="$evidence_dir/${archive_name%.tar.zst}.rebuild.json"
+          {
+            echo "evidence_dir=$evidence_dir"
+            echo "archive=$archive"
+            echo "sbom=$sbom"
+            if [[ -f "$rebuild_report" ]]; then
+              echo "rebuild_report=$rebuild_report"
+            fi
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Generate signed SLSA provenance
         id: provenance
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
         with:
-          subject-path: ${{ steps.build.outputs.archive }}
+          subject-path: ${{ steps.inputs.outputs.archive }}
 
       - name: Preserve provenance bundle and checksums
-        if: ${{ github.event_name == 'workflow_dispatch' }}
         id: evidence
         shell: bash
         run: |
           provenance_name=$(jq -er --arg target "$TARGET" \
             '.targets[] | select(.triple == $target) | .artifact.provenance.path | split("/")[-1]' \
             distribution/jsc/manifest.json)
-          evidence_dir=$(dirname "${{ steps.build.outputs.archive }}")
+          evidence_dir="${{ steps.inputs.outputs.evidence_dir }}"
           provenance="$evidence_dir/$provenance_name"
           cp "${{ steps.provenance.outputs.bundle-path }}" "$provenance"
           checksums="$evidence_dir/SHA256SUMS"
+          files=(
+            "$(basename "${{ steps.inputs.outputs.archive }}")"
+            "$(basename "${{ steps.inputs.outputs.sbom }}")"
+            "$provenance_name"
+          )
+          if [[ -n "${{ steps.inputs.outputs.rebuild_report }}" ]]; then
+            files+=("$(basename "${{ steps.inputs.outputs.rebuild_report }}")")
+          fi
           (
             cd "$evidence_dir"
-            sha256sum \
-              "$(basename "${{ steps.build.outputs.archive }}")" \
-              "$(basename "${{ steps.build.outputs.sbom }}")" \
-              "$provenance_name" > SHA256SUMS
+            sha256sum "${files[@]}" > SHA256SUMS
           )
           echo "provenance=$provenance" >> "$GITHUB_OUTPUT"
           echo "checksums=$checksums" >> "$GITHUB_OUTPUT"
 
       - name: Attest SPDX SBOM
-        if: ${{ github.event_name == 'workflow_dispatch' }}
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
         with:
-          subject-path: ${{ steps.build.outputs.archive }}
-          sbom-path: ${{ steps.build.outputs.sbom }}
+          subject-path: ${{ steps.inputs.outputs.archive }}
+          sbom-path: ${{ steps.inputs.outputs.sbom }}
 
       - name: Upload audited artifact set
-        if: ${{ github.event_name == 'workflow_dispatch' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: kunlun-jsc-${{ matrix.target }}
           if-no-files-found: error
           retention-days: 30
           path: |
-            ${{ steps.build.outputs.archive }}
-            ${{ steps.build.outputs.sbom }}
+            ${{ steps.inputs.outputs.archive }}
+            ${{ steps.inputs.outputs.sbom }}
             ${{ steps.evidence.outputs.provenance }}
             ${{ steps.evidence.outputs.checksums }}
-            ${{ env.rebuild_report }}
+            ${{ steps.inputs.outputs.rebuild_report }}

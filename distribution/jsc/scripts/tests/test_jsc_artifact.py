@@ -247,6 +247,7 @@ class ArtifactTests(unittest.TestCase):
             "-dW": """
  0x0000000000000001 (NEEDED) Shared library: [libc.so.6]
  0x000000000000000e (SONAME) Library soname: [libkunlun_jsc.so]
+ 0x000000000000000f (RPATH) Library rpath: [$ORIGIN]
  0x000000000000001d (RUNPATH) Library runpath: [$ORIGIN]
 """,
             "--version-info": "  0x0010:   Name: GLIBC_2.17  Flags: none  Version: 2\n",
@@ -303,6 +304,24 @@ class ArtifactTests(unittest.TestCase):
                 "GLIBCXX_3.4.32,CXXABI_1.3.14",
             )
 
+        x86_metadata = json.loads(json.dumps(metadata))
+        x86_metadata["target"] = "x86_64-unknown-linux-gnu"
+        for identity in x86_metadata["libraries"].values():
+            identity["machine"] = "Advanced Micro Devices X86-64"
+        x86_metadata["libraries"]["lib/libJavaScriptCore.so"]["needed"].append(
+            "ld-linux-x86-64.so.2"
+        )
+        runtime_metadata.write_text(json.dumps(x86_metadata), encoding="utf-8")
+        with mock.patch.object(
+            jsc_artifact, "generate_elf_metadata", return_value=x86_metadata
+        ):
+            jsc_artifact.verify_elf(
+                root,
+                "x86_64-unknown-linux-gnu",
+                "2.39",
+                "GLIBCXX_3.4.32,CXXABI_1.3.14",
+            )
+
         drifted = json.loads(json.dumps(metadata))
         drifted["libraries"]["lib/libJavaScriptCore.so"]["needed"].append("libcurl.so.4")
         runtime_metadata.write_text(json.dumps(drifted), encoding="utf-8")
@@ -316,12 +335,40 @@ class ArtifactTests(unittest.TestCase):
                 )
 
         drifted["libraries"]["lib/libJavaScriptCore.so"]["needed"].remove("libcurl.so.4")
+        drifted["libraries"]["lib/libJavaScriptCore.so"]["needed"].append(
+            "ld-linux-x86-64.so.2"
+        )
+        runtime_metadata.write_text(json.dumps(drifted), encoding="utf-8")
+        with mock.patch.object(jsc_artifact, "generate_elf_metadata", return_value=drifted):
+            with self.assertRaisesRegex(jsc_artifact.ArtifactError, "ld-linux-x86-64"):
+                jsc_artifact.verify_elf(
+                    root,
+                    "aarch64-unknown-linux-gnu",
+                    "2.39",
+                    "GLIBCXX_3.4.32,CXXABI_1.3.14",
+                )
+
+        drifted["libraries"]["lib/libJavaScriptCore.so"]["needed"].remove(
+            "ld-linux-x86-64.so.2"
+        )
         drifted["libraries"]["lib/libJavaScriptCore.so"]["required_versions"].append(
             "GLIBC_2.40"
         )
         runtime_metadata.write_text(json.dumps(drifted), encoding="utf-8")
         with mock.patch.object(jsc_artifact, "generate_elf_metadata", return_value=drifted):
             with self.assertRaisesRegex(jsc_artifact.ArtifactError, "beyond the recorded"):
+                jsc_artifact.verify_elf(
+                    root,
+                    "aarch64-unknown-linux-gnu",
+                    "2.39",
+                    "GLIBCXX_3.4.32,CXXABI_1.3.14",
+                )
+
+        drifted = json.loads(json.dumps(metadata))
+        drifted["libraries"]["lib/libkunlun_jsc.so"]["exports"].append("_init")
+        runtime_metadata.write_text(json.dumps(drifted), encoding="utf-8")
+        with mock.patch.object(jsc_artifact, "generate_elf_metadata", return_value=drifted):
+            with self.assertRaisesRegex(jsc_artifact.ArtifactError, "_init"):
                 jsc_artifact.verify_elf(
                     root,
                     "aarch64-unknown-linux-gnu",

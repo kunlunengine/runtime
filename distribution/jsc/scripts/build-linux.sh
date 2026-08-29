@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
     cat >&2 <<'EOF'
-usage: build-linux.sh --target <triple> --webkit-root <path> --output <path> [--repository-root <path>]
+usage: build-linux.sh --target <triple> --webkit-root <path> --output <path> --repository-root <path>
 
 Runs inside the controlled Linux builder image. It builds pinned JavaScriptCore and the Kunlun
 shim, normalizes their ELF identities, assembles the archive and SPDX SBOM, and verifies both.
@@ -117,6 +117,7 @@ echo "building Kunlun C ABI shim for $target"
 clang++-18 \
     -std=c++17 \
     -shared \
+    -fPIC \
     -fuse-ld=lld \
     -fvisibility=hidden \
     -Wall -Wextra -Werror \
@@ -127,6 +128,7 @@ clang++-18 \
     "$repository_root/crates/kunlun-jsc-sys/native/kunlun_jsc.cpp" \
     -L "$native_output" \
     -lJavaScriptCore \
+    -Wl,--version-script="$repository_root/distribution/jsc/linux/kunlun_jsc.map" \
     -Wl,-soname,libkunlun_jsc.so \
     -Wl,-rpath,"\$ORIGIN" \
     -o "$shim_so"

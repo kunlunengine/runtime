@@ -27,6 +27,10 @@ LINUX_TARGETS = {
     "aarch64-unknown-linux-gnu": "AArch64",
     "x86_64-unknown-linux-gnu": "Advanced Micro Devices X86-64",
 }
+LINUX_RUNTIME_LOADERS = {
+    "aarch64-unknown-linux-gnu": "ld-linux-aarch64.so.1",
+    "x86_64-unknown-linux-gnu": "ld-linux-x86-64.so.2",
+}
 SUPPORTED_TARGETS = MACOS_TARGETS.keys() | LINUX_TARGETS.keys()
 ALLOWED_TOP_LEVEL = {"include", "lib", "licenses", "metadata"}
 
@@ -619,7 +623,12 @@ def inspect_elf(library: Path, include_exports: bool = False) -> dict[str, Any]:
     if len(sonames) != 1:
         raise ArtifactError(f"{library.name} must contain exactly one ELF SONAME")
     runpaths = sorted(
-        re.findall(r"\((?:RPATH|RUNPATH)\).*Library (?:rpath|runpath): \[([^]]+)\]", dynamic)
+        set(
+            re.findall(
+                r"\((?:RPATH|RUNPATH)\).*Library (?:rpath|runpath): \[([^]]+)\]",
+                dynamic,
+            )
+        )
     )
 
     version_info = command_output(["readelf", "--version-info", "-W", str(library)])
@@ -681,6 +690,7 @@ def verify_elf(
 
     libraries = observed["libraries"]
     expected_machine = LINUX_TARGETS[target]
+    allowed_runtime_loader = LINUX_RUNTIME_LOADERS[target]
     allowed_dependencies = re.compile(
         r"^(?:libJavaScriptCore\.so|lib(?:c|dl|m|pthread|rt|atomic|gcc_s|stdc\+\+)\.so(?:\.[0-9]+)*|libicu(?:data|i18n|uc)\.so\.74)$"
     )
@@ -707,7 +717,8 @@ def verify_elf(
         unexpected = sorted(
             dependency
             for dependency in identity["needed"]
-            if allowed_dependencies.fullmatch(dependency) is None
+            if dependency != allowed_runtime_loader
+            and allowed_dependencies.fullmatch(dependency) is None
         )
         if unexpected:
             raise ArtifactError(f"{name} has unsupported runtime dependencies: {unexpected}")
@@ -722,8 +733,15 @@ def verify_elf(
     if "libJavaScriptCore.so" not in shim["needed"]:
         raise ArtifactError("libkunlun_jsc.so does not depend on the packaged JavaScriptCore SONAME")
     exports = shim.get("exports", [])
-    if not exports or any(not symbol.startswith("kunlun_jsc_") for symbol in exports):
-        raise ArtifactError("shim exports symbols outside the kunlun_jsc_* allowlist")
+    if not exports:
+        raise ArtifactError("shim exports no kunlun_jsc_* symbols")
+    unexpected_exports = sorted(
+        symbol for symbol in exports if not symbol.startswith("kunlun_jsc_")
+    )
+    if unexpected_exports:
+        raise ArtifactError(
+            f"shim exports symbols outside the kunlun_jsc_* allowlist: {unexpected_exports}"
+        )
 
 
 def verify_macho(extract_root: Path, target: str, deployment_target: str) -> None:

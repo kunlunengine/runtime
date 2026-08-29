@@ -9,9 +9,10 @@ and additionally checks cross-field and local-file integrity rules.
 
 The manifest is metadata and policy. It does not make a target available to Cargo. In particular,
 ordinary Cargo builds continue to use the existing explicit backend and perform no manifest-driven
-download. `KUNLUN_JSC_DIST_DIR` is a verification-only escape hatch used by the controlled artifact
-job to run the workspace corpus against a freshly assembled, local staging directory; it never
-resolves or downloads an artifact.
+download. `KUNLUN_JSC_DIST_DIR` is an explicit local-staging escape hatch used by the controlled
+artifact job only after the packager has verified the archive's native binary constraints. The
+Cargo build checks that the staging metadata matches its target and OS, but it never resolves,
+downloads, or establishes trust in an arbitrary local artifact.
 
 ## Validate the manifest
 
@@ -177,7 +178,10 @@ Use `x86_64-unknown-linux-gnu` on an x86_64 host. The manually dispatched
 `Build pinned JSC for Linux` workflow runs both native architectures, executes the same workspace
 test corpus and `kunlun-runtime doctor` against the staged libraries with `KUNLUN_JSC_DIST_DIR`,
 requires a byte-identical second build by default, and uploads the archive, SPDX inventory, signed
-SLSA provenance, checksums, and member-level rebuild report.
+SLSA provenance, checksums, and member-level rebuild report. Pull-request build jobs have only
+read access to repository contents; OIDC and attestation write permissions are isolated to the
+manual release-evidence jobs after the verified outputs cross the job boundary as workflow
+artifacts.
 
 ## Updating WebKit or another build input
 

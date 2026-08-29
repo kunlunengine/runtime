@@ -162,6 +162,9 @@ kunlun_jsc_status kunlun_jsc_context_create(kunlun_jsc_context **out_context)
         JSGlobalContextRef context = JSGlobalContextCreate(nullptr);
         if (!context)
             return KUNLUN_JSC_STATUS_OUT_OF_MEMORY;
+        // WebKit enables inspection by default on non-Cocoa platforms. Keep the
+        // Kunlun embedding contract secure and consistent across platforms.
+        JSGlobalContextSetInspectable(context, false);
         *out_context = opaque_cast<kunlun_jsc_context *>(context);
         return KUNLUN_JSC_STATUS_OK;
     });
@@ -179,6 +182,8 @@ kunlun_jsc_status kunlun_jsc_context_create_in_group(
             opaque_cast<JSContextGroupRef>(group), nullptr);
         if (!context)
             return KUNLUN_JSC_STATUS_OUT_OF_MEMORY;
+        // Match kunlun_jsc_context_create: inspection is always opt-in.
+        JSGlobalContextSetInspectable(context, false);
         *out_context = opaque_cast<kunlun_jsc_context *>(context);
         return KUNLUN_JSC_STATUS_OK;
     });

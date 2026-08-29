@@ -275,6 +275,11 @@
       "path": "distribution/jsc/patches/webkit-jsc-only-high-priority-nice-level.patch",
       "sha256": "df22573b8e7c882111c20c5b36522d5437144bafeed367830ee83671467a12be",
       "purpose": "Keep the GLib-only nice-level constant out of non-GLib JSC-only builds so WebKit's -Werror policy remains enabled."
+    },
+    {
+      "path": "distribution/jsc/patches/webkit-scoped-lambda-copy-constraint.patch",
+      "sha256": "3b6e604744e51b7f832c807e36d0c52f01a64d3fa8d63242b093b6a39f5d256a",
+      "purpose": "Exclude ScopedLambda itself from its forwarding constructor so Clang 18 selects the normal copy constructor without recursively instantiating Invocable."
     }
   ],
   "licenses": [

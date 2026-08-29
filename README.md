@@ -49,15 +49,14 @@ async classic-script host is already an ESM/Fetch-compatible application runtime
 - [docs/jsc-binding.md](./docs/jsc-binding.md) — how WebKit/JSC is built and bound to Rust.
 - [docs/jsc-distribution.md](./docs/jsc-distribution.md) — pinned engine inputs, artifact metadata,
   validation, and revision review procedure.
-- [docs/devtools.md](./docs/devtools.md) — Web Inspector backend, web frontend, and IDE strategy.
+- [docs/devtools.md](./docs/devtools.md) — Inspector backend and the standalone DevTools platform.
 - [docs/builtins.md](./docs/builtins.md) — built-in module ABI, permissions, and TypeScript types.
 - [docs/kunlun-cli.md](./docs/kunlun-cli.md) — the Vite+-class `kunlun` command surface and generator model.
 
 ## Non-goals
 
 - Claiming that a JavaScript realm is a security sandbox.
-- Reimplementing a package manager inside `kunlun`.
-- Maintaining separate debugger engines for a TUI, native GUI, and every IDE.
+- Building a different debugger product for every terminal, desktop shell, agent, and IDE.
 - Depending on the host's arbitrary JSC version in production releases.
 
 Kunlun Runtime is released under the [MIT License](./LICENSE).

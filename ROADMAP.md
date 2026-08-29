@@ -1,6 +1,6 @@
 # Kunlun Runtime Roadmap
 
-Status date: 2026-08-24
+Status date: 2026-08-29
 
 This roadmap starts from the actual repository state, not from the aspirations in the core README.
 Before this revision the repository contained only a `Hello, world!` binary and no runtime
@@ -12,12 +12,16 @@ protocol, tests, JSC ownership model, or development-tool decision.
    pinned, reproducible WebKit/JSC build. The OS framework is only a bootstrap/developer option.
 2. **A JSC realm is not a security boundary.** Capabilities restrict host authority. Hostile code
    additionally requires a process, container, or microVM boundary.
-3. **There is one Inspector backend.** The first full frontend is browser-hosted WebKit Web
-   Inspector. The CLI may render an operational TUI, but not a second debugger. IDEs connect
-   through a standalone Debug Adapter Protocol (DAP) bridge.
+3. **There is one debugger platform, not one debugger per shell.** This repository supplies the JSC
+   Inspector endpoint. A separately named DevTools product will reuse it from a standalone desktop
+   app, CLI/TUI, MCP and Skill integrations, a deeper Claude Code plugin, browser fallback, and DAP
+   clients. The platform may have multiple Web/native protocol adapters, but one session and tooling
+   model.
 4. **`kunlun` matches Vite+'s coherent workflow, not its internal implementation.** It presents
-   create/install/dev/check/test/build/run commands and delegates resolution to pnpm, building to
-   Nasti or another `BuildEngine`, tests to Lightning, and native execution to this repository.
+   create/install/dev/check/test/build/run commands. pnpm is the initial package-management provider,
+   not a permanent architectural boundary; an integrated provider remains in scope behind the same
+   contract. Building delegates to Nasti or another `BuildEngine`, tests to Lightning, and native
+   execution to this repository.
 5. **The native artifact is a built server module plus a versioned manifest.** The current core
    application manifest contains route metadata but no executable handlers, so it is insufficient
    for a native runtime on its own.
@@ -99,21 +103,32 @@ passes on Node and JSC without application-source changes.
 
 ### M4 — Inspector and developer tools
 
-Goal: source-level debugging without coupling the runtime to one IDE.
+Goal: source-level debugging for GUI, terminal, and agent-only environments without requiring an IDE.
 
 - Bridge JSC Inspector messages through an authenticated, loopback-only-by-default transport.
-- Serve target discovery, session multiplexing, sourcemap lookup, and a browser-hosted WebKit Web
-  Inspector frontend.
+- Serve target discovery, session multiplexing, sourcemap lookup, virtual sources, and structured
+  debugger events through a versioned DevTools service contract.
 - Integrate pause-loop pumping so breakpoints do not deadlock the host event loop.
-- Add `kunlun inspect`, `kunlun repl`, structured logs, request traces, capability audit events, and
-  heap/CPU diagnostic capture.
-- Add `kunlun debug-adapter --stdio` implementing DAP; ship a thin VS Code extension first and a
-  documented DAP endpoint for JetBrains and other clients.
+- Make `kunlun inspect` and `kunlun repl` discover or launch the standalone DevTools CLI/desktop
+  client; keep structured logs, request traces, capability audit events, and heap/CPU capture usable
+  headlessly.
+- Expose agent-safe semantic operations through MCP plus a companion Skill so Codex, Claude Code,
+  and other agents can debug without an installed IDE. Package the same service in a Claude Code
+  plugin with Skills, agents, hooks, and MCP integration where deeper lifecycle integration helps.
+- Build the desktop client as the first showcase for the prospective Kunlun Desktop framework
+  (Kunlun Engine plus CEF or a platform WebView), with an optional embedded agent using the same
+  public tool contract.
+- Add a DAP bridge for VS Code, JetBrains, Zed, and other compatible clients without making any IDE
+  the product boundary. Keep the browser-hosted WebKit Web Inspector as a bootstrap/fallback client.
+- Evolve the standalone DevTools platform beyond JSC into shared Web/native sessions, including
+  React, Vue, Nuxt, Kunlun state tooling, and Xcode/native-debug adapters. This is the replacement
+  path for Logos' embedded `vscode-js-debug`, not a fork of it in this runtime.
 - Require an explicit token and TLS/proxy policy for non-loopback inspection; default off in
   production.
 
 Exit gate: set breakpoint, step, inspect scopes, evaluate, map bundled sources, debug an awaited
-operation, and reconnect after HMR on macOS and Linux.
+operation, and reconnect after HMR on macOS and Linux from both the standalone client and an
+MCP-capable coding agent. The broader Web/native unification can continue after the JSC slice ships.
 
 ### M5 — Isolation and multi-tenant hardening
 

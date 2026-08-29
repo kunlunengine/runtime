@@ -32,11 +32,11 @@ The first coherent release needs `create`, `dev`, `check`, `test`, `build`, `sta
 Workspace caching and remote execution come later; command names and exit behavior should stabilize
 before those internals.
 
-## Delegation, not reimplementation
+## Package-management provider boundary
 
 | Concern | Default provider | CLI role |
 | --- | --- | --- |
-| dependency resolution/workspaces | pnpm through Corepack | pin, invoke, stream diagnostics |
+| dependency resolution/workspaces | pnpm through Corepack initially | select provider, pin/invoke it, stream diagnostics |
 | development/build | Nasti `BuildEngine` | select targets and orchestrate sessions |
 | alternative build | Vite/Webpack/Rspack adapters | capability negotiation and clear errors |
 | format/lint | Oxfmt/Oxlint | one `check` result and fix policy |
@@ -45,9 +45,12 @@ before those internals.
 | native server execution | `kunlun-runtime` | version selection, manifest handshake, lifecycle |
 | reference/fallback execution | `runtime-node` | compatibility and unsupported-host fallback |
 
-This revises the current "CLI never installs" wording narrowly: `kunlun install` may invoke the
-project's pinned pnpm, but pnpm still owns resolution, lockfiles, linking, registries, and lifecycle
-scripts. Kunlun does not embed another package-manager implementation.
+This revises the current "CLI never installs" wording: `kunlun install` initially invokes the
+project's pinned pnpm, which owns resolution, lockfiles, linking, registries, and lifecycle scripts
+for that provider. That is a bootstrap choice rather than a non-goal. A future integrated
+package-management provider may implement the same lifecycle and workspace contract without
+changing the top-level Kunlun commands or forcing the build/runtime layers to understand its
+internals.
 
 ## Generator protocol
 

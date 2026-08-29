@@ -14,8 +14,9 @@ capability declarations                runtime manifest                    Fetch
 
 `kunlunengine-core` owns public TypeScript application semantics, build adapters, and the user-facing
 `kunlun` CLI. This repository owns the native host, JSC lifecycle, native capability brokers,
-isolation, and Inspector backend. The CLI invokes the runtime; the runtime does not absorb project
-generation or bundler configuration.
+isolation, and the JSC Inspector endpoint. The standalone DevTools product owns cross-runtime debug
+sessions and user/agent clients. The CLI invokes the runtime; the runtime does not absorb project
+generation, bundler configuration, a desktop shell, or agent SDKs.
 
 ## Missing executable boundary in the current core
 

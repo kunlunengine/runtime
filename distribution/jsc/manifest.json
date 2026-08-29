@@ -45,6 +45,7 @@
       "id": "apple-xcode-27.0",
       "host": "macos",
       "container_image": null,
+      "trust_store_image": null,
       "package_snapshot": null,
       "tools": [
         {
@@ -85,11 +86,12 @@
       "id": "ubuntu-24.04-clang-18",
       "host": "linux",
       "container_image": "docker.io/library/ubuntu@sha256:33ceb71981b602c1a7443a53469e4dba065f7503eab3078a2d7a57a2ab987517",
+      "trust_store_image": "docker.io/library/buildpack-deps@sha256:64ae509ccf40ede042d2cdd30d7149450e73ebd4c5362a36768ac727326dafb6",
       "package_snapshot": "20260810T000000Z",
       "tools": [
         {
           "name": "ubuntu-sysroot",
-          "version": "24.04.3"
+          "version": "24.04.4"
         },
         {
           "name": "clang",
@@ -117,7 +119,7 @@
         },
         {
           "name": "libstdc++-abi",
-          "version": "GLIBCXX_3.4.32,CXXABI_1.3.14"
+          "version": "GLIBCXX_3.4.33,CXXABI_1.3.15"
         },
         {
           "name": "perl",

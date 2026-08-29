@@ -56,15 +56,19 @@ toolchain=$(jq -er --arg target "$target" \
     '.targets[] | select(.triple == $target) | .toolchain' "$manifest")
 base_image=$(jq -er --arg toolchain "$toolchain" \
     '.toolchains[] | select(.id == $toolchain) | .container_image' "$manifest")
+trust_store_image=$(jq -er --arg toolchain "$toolchain" \
+    '.toolchains[] | select(.id == $toolchain) | .trust_store_image' "$manifest")
 apt_snapshot=$(jq -er --arg toolchain "$toolchain" \
     '.toolchains[] | select(.id == $toolchain) | .package_snapshot' "$manifest")
 dockerfile=$repository_root/distribution/jsc/linux/Dockerfile
 
 docker pull --platform "$platform" "$base_image"
+docker pull --platform "$platform" "$trust_store_image"
 tag="kunlun-jsc-builder-${target}:${apt_snapshot}"
 docker build \
     --platform "$platform" \
     --build-arg "BASE_IMAGE=$base_image" \
+    --build-arg "TRUST_STORE_IMAGE=$trust_store_image" \
     --build-arg "APT_SNAPSHOT=$apt_snapshot" \
     --file "$dockerfile" \
     --tag "$tag" \
@@ -81,6 +85,7 @@ docker run --rm \
     --user "$(id -u):$(id -g)" \
     --env "KUNLUN_APT_SNAPSHOT=$apt_snapshot" \
     --env "KUNLUN_CONTAINER_IMAGE=$base_image" \
+    --env "KUNLUN_TRUST_STORE_IMAGE=$trust_store_image" \
     --mount "type=bind,src=$repository_root,dst=/workspace/runtime,readonly" \
     --mount "type=bind,src=$webkit_root,dst=/workspace/webkit" \
     --mount "type=bind,src=$output,dst=/workspace/output" \

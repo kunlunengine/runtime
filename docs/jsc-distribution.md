@@ -134,13 +134,16 @@ the three reviewed digests; temporary workflow-artifact URLs alone are not a pub
 [`distribution/jsc/scripts/run-linux-container.sh`](../distribution/jsc/scripts/run-linux-container.sh)
 is the host entry point for Linux artifacts. It accepts only the two manifest Linux triples and
 requires a native runner of the matching architecture; emulated or cross-architecture publication
-builds fail before compilation. The script validates the manifest, pulls the Ubuntu image by its
-multi-architecture OCI digest, and builds a local toolchain image from
+builds fail before compilation. The script validates the manifest, pulls the Ubuntu image and a
+CA trust-store donor by their multi-architecture OCI digests, and builds a local toolchain image from
 [`distribution/jsc/linux/Dockerfile`](../distribution/jsc/linux/Dockerfile). APT resolves through
-the manifest's `package_snapshot`, so the base filesystem and every package index are immutable
-review inputs.
+the manifest's `package_snapshot` URL without a live-archive fallback, so the base filesystem and
+every package index are immutable review inputs. The donor contributes only its CA bundle, allowing
+the minimal Ubuntu base to verify the signed snapshot service before the snapshot-pinned
+`ca-certificates` package replaces it. APT still verifies Ubuntu's archive signatures and package
+hashes; only snapshot `Valid-Until` expiry is disabled because the timestamped archive is immutable.
 
-The base OCI digest and package snapshot are recorded in the archive metadata. The actual WebKit
+Both OCI digests and the package snapshot are recorded in the archive metadata. The actual WebKit
 build then runs from the derived image in a new container with `--network none`, a read-only runtime
 checkout, and fixed `/workspace` mount paths. This separates the audited toolchain installation
 phase from the no-network compilation phase and keeps source/output paths identical for independent

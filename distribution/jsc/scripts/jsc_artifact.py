@@ -201,6 +201,7 @@ def runner_metadata() -> dict[str, Any]:
         "run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT"),
         "apt_snapshot": os.environ.get("KUNLUN_APT_SNAPSHOT"),
         "container_image": os.environ.get("KUNLUN_CONTAINER_IMAGE"),
+        "trust_store_image": os.environ.get("KUNLUN_TRUST_STORE_IMAGE"),
     }
 
 

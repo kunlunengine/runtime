@@ -71,6 +71,7 @@ struct Toolchain {
     id: String,
     host: String,
     container_image: Nullable<String>,
+    trust_store_image: Nullable<String>,
     package_snapshot: Nullable<String>,
     tools: Vec<Tool>,
 }
@@ -292,26 +293,32 @@ fn validate_toolchains<'a>(
         match (
             toolchain.host.as_str(),
             &toolchain.container_image.0,
+            &toolchain.trust_store_image.0,
             &toolchain.package_snapshot.0,
         ) {
-            ("macos", None, None) => {}
-            ("macos", _, _) => errors.push(format!(
-                "macOS toolchain {} must use pinned Xcode without a container or package snapshot",
+            ("macos", None, None, None) => {}
+            ("macos", _, _, _) => errors.push(format!(
+                "macOS toolchain {} must use pinned Xcode without a container, trust store, or package snapshot",
                 toolchain.id
             )),
-            ("linux", Some(image), Some(snapshot)) => {
+            ("linux", Some(image), Some(trust_store), Some(snapshot)) => {
                 validate_oci_image(&toolchain.id, image, errors);
+                validate_oci_image(&format!("{} trust store", toolchain.id), trust_store, errors);
                 validate_package_snapshot(&toolchain.id, snapshot, errors);
             }
-            ("linux", None, _) => errors.push(format!(
+            ("linux", None, _, _) => errors.push(format!(
                 "Linux toolchain {} must pin container_image by OCI digest",
                 toolchain.id
             )),
-            ("linux", _, None) => errors.push(format!(
+            ("linux", _, None, _) => errors.push(format!(
+                "Linux toolchain {} must pin trust_store_image by OCI digest",
+                toolchain.id
+            )),
+            ("linux", _, _, None) => errors.push(format!(
                 "Linux toolchain {} must pin package_snapshot",
                 toolchain.id
             )),
-            (host, _, _) => errors.push(format!(
+            (host, _, _, _) => errors.push(format!(
                 "toolchain {} has unsupported host {host:?}",
                 toolchain.id
             )),
@@ -896,6 +903,18 @@ mod tests {
             errors
                 .iter()
                 .any(|error| error.contains("package_snapshot must use YYYYMMDDTHHMMSSZ"))
+        );
+    }
+
+    #[test]
+    fn linux_toolchains_require_a_pinned_trust_store_image() {
+        let mut value = manifest_value();
+        value["toolchains"][1]["trust_store_image"] = Value::Null;
+        let errors = errors_for(value);
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("must pin trust_store_image by OCI digest"))
         );
     }
 }

@@ -64,7 +64,7 @@ if [[ "$actual_glibc" != "$expected_glibc" ]]; then
 fi
 
 require_version clang "$(clang-18 --version | sed -n '1s/.*clang version \([0-9][0-9.]*\).*/\1/p')"
-require_version lld "$(ld.lld-18 --version | sed -n '1s/^LLD \([0-9][0-9.]*\).*/\1/p')"
+require_version lld "$(ld.lld-18 --version | sed -n '1s/.*LLD \([0-9][0-9.]*\).*/\1/p')"
 require_version cmake "$(cmake --version | sed -n '1s/^cmake version //p')"
 require_version ninja "$(ninja --version)"
 require_version python "$(python3 --version | sed 's/^Python //')"
@@ -91,6 +91,12 @@ expected_image=$(jq -er --arg toolchain "$toolchain" \
     '.toolchains[] | select(.id == $toolchain) | .container_image' "$manifest")
 if [[ "${KUNLUN_CONTAINER_IMAGE:-}" != "$expected_image" ]]; then
     echo "error: builder base image does not match the manifest OCI digest" >&2
+    exit 1
+fi
+expected_trust_store=$(jq -er --arg toolchain "$toolchain" \
+    '.toolchains[] | select(.id == $toolchain) | .trust_store_image' "$manifest")
+if [[ "${KUNLUN_TRUST_STORE_IMAGE:-}" != "$expected_trust_store" ]]; then
+    echo "error: builder trust-store image does not match the manifest OCI digest" >&2
     exit 1
 fi
 

@@ -30,7 +30,7 @@
       "ENABLE_FTL_JIT": true,
       "ENABLE_JSC_GLIB_API": false,
       "ENABLE_JIT": true,
-      "ENABLE_REMOTE_INSPECTOR": false,
+      "ENABLE_REMOTE_INSPECTOR": true,
       "ENABLE_SAMPLING_PROFILER": false,
       "ENABLE_STATIC_JSC": false,
       "ENABLE_WEBASSEMBLY": true,

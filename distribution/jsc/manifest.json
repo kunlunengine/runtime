@@ -270,7 +270,13 @@
       }
     }
   ],
-  "patches": [],
+  "patches": [
+    {
+      "path": "distribution/jsc/patches/webkit-jsc-only-high-priority-nice-level.patch",
+      "sha256": "df22573b8e7c882111c20c5b36522d5437144bafeed367830ee83671467a12be",
+      "purpose": "Keep the GLib-only nice-level constant out of non-GLib JSC-only builds so WebKit's -Werror policy remains enabled."
+    }
+  ],
   "licenses": [
     {
       "component": "Kunlun JSC shim",

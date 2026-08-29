@@ -46,6 +46,10 @@ if [[ -n "$(git -C "$webkit_root" status --porcelain=v1 --untracked-files=all)" 
     exit 1
 fi
 
+# webkitdirs.pm identifies the repository root by the presence of both source
+# trees. A JSC-only sparse checkout needs no WebCore files, only this marker.
+mkdir -p "$webkit_root/Source/WebCore"
+
 while IFS=$'\t' read -r patch_path patch_digest; do
     [[ -n "$patch_path" ]] || continue
     actual_digest=$(sha256sum "$repository_root/$patch_path" | awk '{print $1}')

@@ -280,6 +280,11 @@
       "path": "distribution/jsc/patches/webkit-scoped-lambda-copy-constraint.patch",
       "sha256": "3b6e604744e51b7f832c807e36d0c52f01a64d3fa8d63242b093b6a39f5d256a",
       "purpose": "Exclude ScopedLambda itself from its forwarding constructor so Clang 18 selects the normal copy constructor without recursively instantiating Invocable."
+    },
+    {
+      "path": "distribution/jsc/patches/webkit-jsc-only-socket-inspector.patch",
+      "sha256": "e3f59747b5e8676548066855718ac9c48e5d6fbf70b5b7961a9c0ea3dcb79e7d",
+      "purpose": "Expose the POSIX socket inspector configuration selected by JSCOnly so its remote inspector headers and sources use the same TargetListing backend."
     }
   ],
   "licenses": [

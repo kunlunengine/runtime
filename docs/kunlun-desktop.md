@@ -67,15 +67,58 @@ sandboxed V8      app/tool logic      WIP/CDP/native adapters
           \______ versioned local RPC_/
 ```
 
-CEF's browser, renderer, GPU, and utility processes retain their upstream process boundaries and
-sandbox. Kunlun does not collapse them into a single process to save memory. On platforms where CEF
-requires a helper executable or app-bundle helpers, those helpers are signed and versioned as part
-of the same atomic Desktop installation.
+CEF's browser, renderer, GPU, and utility processes retain their upstream process boundaries;
+separate processes do not imply that every process is sandboxed. The browser is a privileged broker
+outside the Chromium sandbox. Renderer sandboxing is required; GPU and utility sandbox policies
+depend on the exact CEF/Chromium revision, platform, and utility service subtype. Kunlun does not
+collapse them into a single process to save memory. Required helpers are signed and versioned as
+part of the same atomic Desktop installation.
 
 The Kunlun service is a separate process rather than a privileged object injected into the renderer.
 A renderer crash can be recovered without corrupting application state; a service crash is reported
 and restarted according to an explicit lifecycle policy. Per-window and per-profile isolation is
 chosen from security requirements, not hidden behind the backend interface.
+
+### Sandbox qualification record
+
+This repository has no Desktop launcher, pinned CEF revision, or measured sandbox results yet. The
+following candidate platform rows are **unqualified**, not a claim of supported production targets.
+Before release, expand them for every supported OS version/architecture and exact CEF revision and
+Chromium version. Record the actual state (`enabled`, `disabled`, or `not spawned`) and evidence for
+each process, with separate utility service subtypes and GPU hardware/software modes.
+
+| Platform / CEF revision | Browser | Renderer | GPU | Utility (each subtype) |
+| --- | --- | --- | --- | --- |
+| Windows / not selected | Unsandboxed broker by design; unmeasured | Unmeasured; sandbox required | Unmeasured | Unmeasured |
+| macOS / not selected | Unsandboxed broker by design; unmeasured | Unmeasured; sandbox required | Unmeasured | Unmeasured |
+| Linux / not selected | Unsandboxed broker by design; unmeasured | Unmeasured; sandbox required | Unmeasured | Unmeasured |
+
+Each record must include build flags, executable/helper paths and hashes, effective command lines,
+`CefSettings.no_sandbox`, `browser_subprocess_path`, sandbox initialization results, and the
+`sandbox_info` value's origin and whether it is null (not its raw address). Check startup against
+the selected revision's [CEF sandbox setup](https://github.com/chromiumembedded/cef/blob/master/docs/sandbox_setup.md):
+
+- **Windows:** use the same sandbox-capable executable for browser and child processes; do not set
+  `browser_subprocess_path`. For M138 and newer, use the matching CEF bootstrap executable/client
+  DLL arrangement, or build the executable within CEF/Chromium. Forward the executable-created,
+  non-null `sandbox_info` to both `CefExecuteProcess` and `CefInitialize`. Older revisions use the
+  executable-linked `cef_sandbox` static library and `cef_sandbox_info_create()`.
+- **macOS:** initialize each helper with `CefScopedSandboxContext::Initialize` before loading the
+  CEF framework; failure terminates the helper. M138 and newer dynamically load the bundled
+  `libcef_sandbox.dylib`; earlier revisions link the helper with `cef_sandbox`. Record helper bundle
+  layout, signatures, entitlements, and effective sandbox profiles. The Windows-only `sandbox_info`
+  argument is null here and is not evidence that the macOS sandbox is disabled.
+- **Linux:** record the actual namespace or setuid-helper path and seccomp-BPF policy used for each
+  process, including kernel capabilities and helper ownership/permissions where applicable.
+  `sandbox_info` is Windows-only and null here too; it does not enable or disable Linux sandboxing.
+
+Production requires `no_sandbox = false` and no sandbox-disabling overrides, including `--no-sandbox`
+and `--disable-gpu-sandbox`. Configuration alone is not proof: capture runtime restrictions and
+denied-operation probes for the packaged build. Apart from the explicitly privileged browser broker,
+the renderer and every GPU/utility process required by the production profile must have its required
+sandbox enabled. A disabled or unverified required sandbox, missing process evidence, or failed
+initialization **must fail production qualification**; `not spawned` is acceptable only for a
+feature excluded from that profile. Requalify after revision, launch, packaging, or platform changes.
 
 ## Renderer-backend contract
 
@@ -145,7 +188,7 @@ result would delay the showcase while testing a different product.
 Kunlun tests the behavior it owns and relies on the chosen browser project's upstream engine suites:
 
 1. Backend-independent contract tests cover lifecycle, IPC version negotiation, authorization,
-   navigation policy, backpressure, crash recovery, and update rollback.
+   navigation policy, backpressure, crash recovery, and the update/rollback cases below.
 2. A small, published Desktop Web Profile suite covers only the Web APIs and security semantics the
    UI requires. It may reuse focused WPT cases; Kunlun does not fork the full WPT corpus.
 3. Accessibility-tree, DOM-semantic, and interaction tests are the default UI regression signal.
@@ -153,7 +196,8 @@ Kunlun tests the behavior it owns and relies on the chosen browser project's ups
    color profile, and graphics mode. Supported OS release lanes add a small set of platform smoke
    images for native text, input, menus, and compositing seams.
 5. A CEF revision cannot ship until the Web Profile, security, IPC, accessibility/input, crash, and
-   visual gates pass. The exact CEF revision and hashes are recorded in the release manifest.
+   visual gates pass. The exact CEF revision and hashes, plus the completed per-platform sandbox
+   qualification record above, are recorded in the release manifest.
 6. Kunlun/JSC conformance and Test262 work remains a separate runtime gate. A renderer upgrade does
    not silently upgrade JSC, and a JSC upgrade does not silently change presentation output.
 
@@ -166,13 +210,60 @@ remains because fonts, window integration, GPU drivers, and accessibility stacks
 - The Desktop installer includes CEF libraries, resources, locales, helpers, and license notices;
   size is tracked as a release budget rather than hidden.
 - Desktop and CEF are updated atomically, with signed manifests, staged rollout, crash telemetry, and
-  rollback. Chromium security releases require an explicit response-time policy.
-- The renderer sandbox is enabled in production. Disabling it is a development-only diagnostic mode
-  and must be visible in process diagnostics.
+  authorized failure rollback subject to the security policy below. Chromium security releases
+  require an explicit response-time policy and review of the minimum safe CEF version.
+- Required subprocess sandboxes must pass the per-platform qualification gate above. Disabling one
+  is a development-only diagnostic mode, visible in process diagnostics and ineligible for production.
 - Renderer, host, Kunlun service, and DevTools service versions participate in startup compatibility
   negotiation. An incompatible partial installation fails closed.
 - DevTools can inspect its Chromium presentation target through CDP and its Kunlun application target
   through WIP, but production inspection remains disabled unless explicitly authorized.
+
+### Update and rollback acceptance policy
+
+Release security metadata must specify a **minimum safe CEF version** for each supported platform
+and channel, its corresponding Chromium security baseline, and approved exact CEF revisions and
+artifact hashes. Compare parsed numeric versions, not version strings or commit hashes. A valid
+manifest signature proves authenticity, not current safety: reject any manifest below this floor,
+including a previously installed release or an otherwise authorized failure rollback.
+
+The updater must authenticate security metadata independently of the candidate bundle and retain
+the highest accepted policy/revocation sequences and security floor outside the installation being
+rolled back. Neither an old signed manifest nor rollback authorization may lower that floor. Before
+activation and on startup, verify manifest signatures, approved CEF revisions, artifact hashes,
+platform/channel and version compatibility, and the current signed revocation list. Reject revoked
+CEF revisions, artifacts, manifests, signing keys, or rollback authorizations. Verify metadata
+signatures, scope, sequence, and expiry; missing, expired, or invalid metadata or a sequence below the
+retained value fails closed. Offline use may rely only on a still-valid authenticated
+policy/revocation cache meeting those checks.
+
+A downgrade additionally requires an explicit, signed rollback authorization from a trusted
+rollback-authority role; the old release's signature or crash telemetry alone is insufficient.
+Validate the authority and its revocation status, authorization expiry and replay protection, and
+bindings to the failed source and target manifest digests, platform/channel, and failure condition.
+A valid authorization permits atomic rollback to a compatible, non-revoked release at or above the
+current floor, even when its release version is older. Recheck policy immediately before activation,
+retain the security metadata across rollback/restart, and audit the decision. If no safe authorized
+target exists, fail closed and require a safe recovery update instead of starting vulnerable CEF.
+
+### Required security acceptance tests
+
+These are required integration-test cases for the future Desktop updater and launcher. Both the
+implementation and executable Desktop tests are absent from this repository. Production qualification
+requires them to run against the packaged build on every supported platform. Use signed fixtures
+and otherwise valid metadata so negative cases reach the intended check. Let `F` be the installed
+security floor and `A` the failed release; candidate `B` is an older compatible release.
+
+| Case | Expected result |
+| --- | --- |
+| Validly signed update manifest with CEF below `F` | Reject before activation, despite a valid signature. |
+| `B` has CEF below `F` and a valid rollback authorization | Reject; authorization cannot bypass the floor. |
+| Failure of `A`; `B` has CEF equal to `F` or above it, no revocations, and valid scoped rollback authorization (test both) | Accept and atomically restore the complete Desktop/CEF bundle; startup succeeds and retains `F` and the policy/revocation sequences. |
+| Safe `B`, but authorization is missing, invalidly signed, expired, replayed, or bound to another source, target, platform/channel, or failure | Reject each variant; an old signed manifest alone never permits downgrade. |
+| Otherwise valid update/rollback with a revoked revision, artifact, manifest, signing key, or authorization | Reject each revocation variant, including revocation after staging but before activation. |
+| Missing, invalid, expired security/revocation metadata or a sequence below the retained value; attempt to lower the retained floor through an old bundle | Reject each variant; rollback and restart never restore older security policy. |
+| Required subprocess sandbox disabled, initialization fails, or runtime evidence disagrees with configuration | Fail qualification on each platform; include null Windows `sandbox_info`, macOS helper initialization failure, and unavailable required Linux sandbox mechanisms. |
+| All required subprocess probes pass with the documented privileged browser broker | Pass the sandbox gate without claiming that the browser itself is sandboxed. |
 
 ## Revisit conditions
 
@@ -191,6 +282,11 @@ not an optimization task inside the Desktop showcase.
 
 - [CEF general usage and multi-process architecture](https://github.com/chromiumembedded/cef/blob/master/docs/general_usage.md)
 - [CEF C API embedding lifecycle](https://github.com/chromiumembedded/cef/blob/master/docs/using_the_capi.md)
+- [CEF sandbox setup and revision-dependent platform requirements](https://github.com/chromiumembedded/cef/blob/master/docs/sandbox_setup.md)
+- [CEF Windows sandbox API](https://github.com/chromiumembedded/cef/blob/master/include/cef_sandbox_win.h)
+- [CEF macOS sandbox API](https://github.com/chromiumembedded/cef/blob/master/include/cef_sandbox_mac.h)
+- [Chromium sandbox and privileged browser broker](https://chromium.googlesource.com/chromium/src/+/main/docs/design/sandbox.md)
+- [Chromium Linux sandbox mechanisms](https://chromium.googlesource.com/chromium/src/+/HEAD/sandbox/linux/README.md)
 - [WebKitGTK stable API reference](https://webkitgtk.org/reference/webkitgtk/stable/)
 - [Migrating WebKitGTK applications to GTK 4 / WebKitGTK 6.0](https://webkitgtk.org/reference/webkitgtk/stable/migrating-to-webkitgtk-6.0.html)
 - [Microsoft WebView2 runtime distribution](https://learn.microsoft.com/en-us/microsoft-edge/webview2/concepts/distribution)

@@ -177,14 +177,17 @@ staging=$output/staging/$target
     --manifest "$manifest" \
     --target "$target" \
     --archive "$output/$archive_path" \
-    --sbom "$output/$sbom_path"
+    --sbom "$output/$sbom_path" \
+    --source-build \
+    --install-dir "$output/verified/$target"
 
 if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
     {
         echo "output_root=$output"
         echo "archive=$output/$archive_path"
         echo "sbom=$output/$sbom_path"
-        echo "staging=$staging"
+        echo "staging=$output/verified/$target"
+        echo "receipt_sha256=$(shasum -a 256 "$output/verified/$target/.kunlun-jsc-verification.json" | awk '{print $1}')"
         echo "deployment_target=$deployment_target"
         echo "archive_sha256=$(shasum -a 256 "$output/$archive_path" | awk '{print $1}')"
         echo "sbom_sha256=$(shasum -a 256 "$output/$sbom_path" | awk '{print $1}')"

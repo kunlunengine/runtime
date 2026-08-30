@@ -99,17 +99,17 @@ the Rust ABI.
 
 `kunlun-jsc-sys/build.rs` generates bindings only from the authoritative header with allowlists for
 the `kunlun_jsc_` functions/types and `KUNLUN_JSC_` constants. The same build compiles the header as
-both C and C++, compiles the bootstrap shim on macOS, and links the already-installed system
-framework. It invokes no downloader and performs no manifest-driven network or native-artifact
-fetch. The pinned distribution and fail-closed backend selection remain separate M1 work.
+both C and C++. The default `bundled-jsc` backend verifies a locally installed distribution before
+linking it; explicit `system-jsc` compiles the bootstrap shim and links the macOS framework. It
+invokes no downloader. Missing, conflicting, and unsupported backends fail before native compilation.
+See [backend selection and trust](./jsc-distribution.md#selecting-a-cargo-backend).
 
 ## Distribution modes
 
 | Mode | Intended use | Policy |
 | --- | --- | --- |
 | `bundled-jsc` | CI and released runtime | Default for products; pinned and verified |
-| `system-jsc` | local binding development | Explicit opt-in; exact version reported by `doctor` |
-| macOS framework bootstrap | M0 smoke test | Temporary; not compatibility-certified |
+| `system-jsc` | local binding development on macOS arm64/x64 | Explicit opt-in; host-managed revision reported as unknown, not compatibility-certified |
 
 Prefer a dynamically linked, co-distributed engine where licensing and platform packaging require
 it. Static/dynamic decisions and required relinking materials must receive a license review before
@@ -130,7 +130,8 @@ Each invariant needs a targeted test, not only a code comment.
 
 The platform-independent ownership guards are tested under Miri with fake opaque resources. These
 tests cover exact-once release, protect/clone/unprotect balance, failed-protection cleanup, and the
-required child-context-before-group teardown order without invoking the native engine.
+required child-context-before-group teardown order without invoking the native engine. Run them
+through the engine-free harness: `cargo +nightly miri test -p xtask jsc_ownership`.
 
 ## Validation ladder
 

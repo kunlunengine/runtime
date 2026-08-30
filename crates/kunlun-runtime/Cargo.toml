@@ -24,5 +24,10 @@ serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 
+[features]
+default = ["bundled-jsc"]
+bundled-jsc = ["kunlun-jsc/bundled-jsc"]
+system-jsc = ["kunlun-jsc/system-jsc"]
+
 [lints]
 workspace = true

@@ -5,16 +5,12 @@
 mod native;
 #[cfg(any(kunlun_jsc_native, test))]
 mod ownership;
-#[cfg(not(kunlun_jsc_native))]
-mod unsupported;
 
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
 
 #[cfg(kunlun_jsc_native)]
 pub use native::{ContextGroup, DeferredPromise, JscVm, RootedValue};
-#[cfg(not(kunlun_jsc_native))]
-pub use unsupported::{ContextGroup, DeferredPromise, JscVm, RootedValue};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HostCall {
@@ -25,6 +21,10 @@ pub struct HostCall {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BackendInfo {
     pub name: &'static str,
+    pub backend: &'static str,
+    pub engine_revision: &'static str,
+    pub target: &'static str,
+    pub distribution_mode: &'static str,
     pub distribution: &'static str,
     pub hermetic: bool,
     pub supports_inspection: bool,
@@ -139,11 +139,6 @@ impl JscError {
 
     pub fn detail(&self) -> Option<&str> {
         self.detail.as_deref()
-    }
-
-    #[cfg(not(kunlun_jsc_native))]
-    pub(crate) fn unsupported(operation: &'static str, detail: impl Into<String>) -> Self {
-        Self::new(JscErrorKind::UnsupportedPlatform, operation).with_detail(detail)
     }
 
     /// Constructs an exception captured by a higher-level JavaScript host

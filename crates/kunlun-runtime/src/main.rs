@@ -164,6 +164,10 @@ fn doctor_command() -> Result<(), String> {
     let backend = JscVm::backend_info();
     println!("runtime: kunlun-runtime {}", env!("CARGO_PKG_VERSION"));
     println!("engine: {}", backend.name);
+    println!("backend: {}", backend.backend);
+    println!("engine revision: {}", backend.engine_revision);
+    println!("target: {}", backend.target);
+    println!("distribution mode: {}", backend.distribution_mode);
     println!("distribution: {}", backend.distribution);
     println!("hermetic: {}", backend.hermetic);
     println!("inspection primitive: {}", backend.supports_inspection);

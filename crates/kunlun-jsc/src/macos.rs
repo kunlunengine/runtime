@@ -239,6 +239,10 @@ impl JscVm {
     pub const fn backend_info() -> BackendInfo {
         BackendInfo {
             name: "JavaScriptCore",
+            backend: sys::BACKEND_NAME,
+            engine_revision: sys::BACKEND_REVISION,
+            target: sys::BACKEND_TARGET,
+            distribution_mode: sys::BACKEND_MODE,
             distribution: sys::BACKEND_DISTRIBUTION,
             hermetic: sys::BACKEND_HERMETIC,
             supports_inspection: true,

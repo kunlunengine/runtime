@@ -35,14 +35,18 @@ jobs:
               run: |
                   bash -n distribution/jsc/scripts/*.sh
                   python3 -m unittest discover -s distribution/jsc/scripts/tests -v
-            - name: Build
-              run: cargo build
+            - name: Cache dependencies for offline backend rejection tests
+              run: cargo fetch --locked
+            - name: Reject invalid backend selections without network access
+              run: python3 distribution/jsc/scripts/test_cargo_backends.py
+            - name: Build repository tooling
+              run: cargo build -p xtask
             - name: Check code formatting
               run: cargo fmt --all -- --check
             - name: Check code linting
-              run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+              run: cargo clippy -p xtask --all-targets -- -D warnings
             - name: Run tests
-              run: cargo test --workspace
+              run: cargo test -p xtask
 
     m0-macos:
         name: M0 macOS (${{ matrix.arch }})
@@ -77,10 +81,12 @@ jobs:
               with:
                   path: ~/.cargo/git
                   key: ${{ runner.os }}-cargo-git-${{ hashFiles('**/Cargo.lock') }}
+            - name: Lint system developer backend
+              run: cargo clippy --workspace --all-targets --no-default-features --features system-jsc -- -D warnings
             - name: Run workspace tests
-              run: cargo test --workspace
+              run: cargo test --workspace --no-default-features --features system-jsc
             - name: Run runtime doctor
-              run: cargo run -p kunlun-runtime -- doctor
+              run: cargo run -p kunlun-runtime --no-default-features --features system-jsc -- doctor
 
     miri:
         name: Miri ownership invariants
@@ -98,4 +104,4 @@ jobs:
             - name: Prepare Miri sysroot
               run: cargo +nightly miri setup
             - name: Check wrapper-owned invariants
-              run: cargo +nightly miri test -p kunlun-jsc --lib
+              run: cargo +nightly miri test -p xtask jsc_ownership

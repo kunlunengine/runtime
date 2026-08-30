@@ -162,4 +162,6 @@ python3 "$artifact_tool" verify \
     --manifest "$manifest" \
     --target "$target" \
     --archive "$output/$archive_path" \
-    --sbom "$output/$sbom_path"
+    --sbom "$output/$sbom_path" \
+    --source-build \
+    --install-dir "$output/verified/$target"

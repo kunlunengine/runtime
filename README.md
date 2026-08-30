@@ -25,18 +25,21 @@ kunlun-runtime -> kunlun-jsc -> kunlun-jsc-sys -> JavaScriptCore
 
 ## Bootstrap
 
-Requires Rust 1.85 or newer. Ordinary development builds use the macOS system JavaScriptCore
-framework. The controlled M1 pipelines can build and verify pinned macOS and Linux glibc arm64/x64
-artifacts; product-backend feature selection remains milestone work.
+Requires Rust 1.85 or newer. The default `bundled-jsc` backend requires an explicitly verified local
+artifact for macOS arm64/x64 or Linux glibc arm64/x64. Missing artifacts, conflicting features, and
+unsupported targets fail at build time; Cargo never downloads an engine or falls back to the OS.
+See [offline artifact setup](./docs/jsc-distribution.md#selecting-a-cargo-backend).
+
+For fast **macOS development only**, opt into the host system framework:
 
 ```bash
-cargo test
-cargo run -p kunlun-runtime -- doctor
-cargo run -p kunlun-runtime -- eval '21 * 2'
-cargo run -p kunlun-runtime -- eval-async 'await sleep(10); return 21 * 2;'
-cargo run -p kunlun-runtime -- eval-async --allow-read . \
+cargo test --workspace --no-default-features --features system-jsc
+cargo run -p kunlun-runtime --no-default-features --features system-jsc -- doctor
+cargo run -p kunlun-runtime --no-default-features --features system-jsc -- eval '21 * 2'
+cargo run -p kunlun-runtime --no-default-features --features system-jsc -- eval-async 'await sleep(10); return 21 * 2;'
+cargo run -p kunlun-runtime --no-default-features --features system-jsc -- eval-async --allow-read . \
   "const fs = await kunlun.import('kunlun:fs'); return await fs.readTextFile('README.md');"
-cargo run -p kunlun-runtime -- types
+cargo run -p kunlun-runtime --no-default-features --features system-jsc -- types
 ```
 
 The project deliberately reports the limitations of this bootstrap instead of pretending that an

@@ -87,11 +87,13 @@ contract as external agents. UI embedding is not a privileged backdoor into the 
 ## Desktop showcase
 
 The standalone Desktop app is intended to be the first demanding showcase for a future **Kunlun
-Desktop** framework: Kunlun Engine for application/runtime logic plus CEF or a platform WebView for
-the presentation layer. Debugging exercises the parts a desktop framework must prove—multiple
-processes, native menus and windows, local IPC, streaming data, crash recovery, profiling, secure
-capability brokering, and self-inspection—so it can make a concrete case for choosing Kunlun Desktop
-instead of Electron or Tauri.
+Desktop** framework: Kunlun Engine for application/runtime logic plus a pinned CEF/Chromium reference
+renderer for the presentation layer. Debugging exercises the parts a desktop framework must
+prove—multiple processes, native menus and windows, local IPC, streaming data, crash recovery,
+profiling, secure capability brokering, and self-inspection—so it can make a concrete case for
+choosing Kunlun Desktop instead of Electron or Tauri. The presentation-engine decision, process
+boundary, optional-backend policy, and qualification matrix are defined in
+[Kunlun Desktop Presentation Architecture](./kunlun-desktop.md).
 
 That showcase goal must not make the CLI a reduced companion. Every correctness-critical operation
 remains available headlessly; Desktop adds visualization, navigation, and integrated-agent ergonomics.
@@ -149,8 +151,9 @@ capture without opening a window. Machine-readable output is required for agents
    HMR reconnection, diagnostics, and protocol fixtures.
 3. Ship the standalone CLI and MCP + Skill vertical slice so terminal-only and agent-only developers
    can complete a source-debugging session without an IDE.
-4. Ship the Kunlun Desktop client on the same service/core, including an optional embedded agent;
-   retain the browser frontend as a bootstrap/fallback surface.
+4. Ship the Kunlun Desktop client on the same service/core and pinned CEF/Chromium reference
+   renderer, including an optional embedded agent; retain the browser frontend as a
+   bootstrap/fallback surface.
 5. Package the Claude Code plugin and DAP adapters after the semantic tool and session contracts are
    stable.
 6. Add Web/CDP, framework/state, and native/Xcode adapters incrementally, using the platform to

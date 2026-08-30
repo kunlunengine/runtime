@@ -3,10 +3,11 @@ set -euo pipefail
 
 usage() {
     cat >&2 <<'EOF'
-usage: build-macos.sh --target <triple> --webkit-root <path> --output <path> [--repository-root <path>]
+usage: build-macos.sh --target <triple> --webkit-root <path> --output <path> [--repository-root <path>] [--compilation-cache-dir <path>]
 
 Builds the pinned JavaScriptCore source and Kunlun shim, assembles the archive and SPDX SBOM,
 and verifies the result. The output directory must be unique to this build attempt.
+Without --compilation-cache-dir, the Xcode compilation cache is fresh for this invocation.
 EOF
     exit 2
 }
@@ -15,12 +16,14 @@ target=
 webkit_root=
 output=
 repository_root=
+compilation_cache_dir=
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --target) target=${2:-}; shift 2 ;;
         --webkit-root) webkit_root=${2:-}; shift 2 ;;
         --output) output=${2:-}; shift 2 ;;
         --repository-root) repository_root=${2:-}; shift 2 ;;
+        --compilation-cache-dir) compilation_cache_dir=${2:-}; shift 2 ;;
         *) usage ;;
     esac
 done
@@ -97,6 +100,10 @@ done < <(jq -r '.build.feature_flags | to_entries[] | [.key, (if (.value | type)
 xcode_settings+=("ARCHS=$architecture")
 xcode_settings+=("ONLY_ACTIVE_ARCH=NO")
 xcode_settings+=("MACOSX_DEPLOYMENT_TARGET=$deployment_target")
+cache_settings=$("$script_dir/macos-cache-settings.sh" "$output" "$compilation_cache_dir")
+while IFS= read -r setting; do
+    xcode_settings+=("$setting")
+done <<< "$cache_settings"
 build_arguments+=("ARGS=${xcode_settings[*]}")
 
 echo "building WebKit JavaScriptCore $expected_revision for $target"

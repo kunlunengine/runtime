@@ -111,9 +111,10 @@ candidate branch/tag, and uncheck `compare_rebuild` for fast validation. The CLI
 gh workflow run jsc-macos.yml --ref YOUR_BRANCH -f compare_rebuild=false
 gh workflow run jsc-linux.yml --ref YOUR_BRANCH -f compare_rebuild=false
 
-# Reviewed release candidate: both runs must resolve to the same source commit.
-gh workflow run jsc-macos.yml --ref main -f compare_rebuild=true
-gh workflow run jsc-linux.yml --ref main -f compare_rebuild=true
+# Reviewed release candidate: use an immutable tag pinned to the reviewed head SHA.
+reviewed_tag=YOUR_IMMUTABLE_REVIEWED_TAG
+gh workflow run jsc-macos.yml --ref "$reviewed_tag" -f compare_rebuild=true
+gh workflow run jsc-linux.yml --ref "$reviewed_tag" -f compare_rebuild=true
 ```
 
 Link the relevant run(s), their exact head SHA, and the chosen mode in the PR. If artifact inputs

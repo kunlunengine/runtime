@@ -192,6 +192,8 @@
         "id",
         "host",
         "container_image",
+        "trust_store_image",
+        "package_snapshot",
         "tools"
       ],
       "properties": {
@@ -211,6 +213,24 @@
             "null"
           ],
           "pattern": "^[^@]+@sha256:[0-9a-f]{64}$"
+        },
+        "trust_store_image": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[^@]+@sha256:[0-9a-f]{64}$"
+        },
+        "package_snapshot": {
+          "oneOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9]{8}T[0-9]{6}Z$"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "tools": {
           "type": "array",

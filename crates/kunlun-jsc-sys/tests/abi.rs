@@ -1,6 +1,6 @@
 use kunlun_jsc_sys as sys;
 use std::mem::size_of;
-#[cfg(target_os = "macos")]
+#[cfg(kunlun_jsc_native)]
 use std::mem::size_of_val;
 
 #[test]
@@ -16,7 +16,7 @@ fn generated_layout_matches_fixed_width_abi() {
     assert_eq!(sys::KUNLUN_JSC_STATUS_CPP_EXCEPTION, 7);
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(kunlun_jsc_native)]
 #[test]
 fn links_every_allowlisted_symbol() {
     let symbols = [
@@ -52,7 +52,7 @@ fn links_every_allowlisted_symbol() {
     assert!(symbols.iter().all(|symbol| !symbol.is_null()));
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(kunlun_jsc_native)]
 #[test]
 fn compiles_calls_and_releases_the_c_abi() {
     use std::ptr;
@@ -128,7 +128,7 @@ fn compiles_calls_and_releases_the_c_abi() {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(kunlun_jsc_native)]
 #[test]
 fn creates_context_in_an_explicit_group_and_releases_in_order() {
     use std::ptr;
@@ -159,7 +159,7 @@ fn creates_context_in_an_explicit_group_and_releases_in_order() {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(kunlun_jsc_native)]
 #[test]
 fn reports_invalid_inputs_with_status_values() {
     use std::ptr;

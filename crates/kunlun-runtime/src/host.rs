@@ -233,7 +233,7 @@ impl HostDispatcher {
         }
     }
 
-    #[cfg(all(test, target_os = "macos"))]
+    #[cfg(all(test, kunlun_jsc_native))]
     pub(crate) fn pending_count(&self) -> usize {
         self.pending.borrow().len()
     }

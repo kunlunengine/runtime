@@ -241,6 +241,194 @@ class ArtifactTests(unittest.TestCase):
         with self.assertRaisesRegex(jsc_artifact.ArtifactError, "unsafe or duplicate"):
             jsc_artifact.decompress_archive(archive, str(self.fixture.zstd), destination)
 
+    def test_parses_elf_dependency_and_symbol_version_metadata(self) -> None:
+        outputs = {
+            "-hW": "  Machine:                           AArch64\n",
+            "-dW": """
+ 0x0000000000000001 (NEEDED) Shared library: [libc.so.6]
+ 0x000000000000000e (SONAME) Library soname: [libkunlun_jsc.so]
+ 0x000000000000000f (RPATH) Library rpath: [$ORIGIN]
+ 0x000000000000001d (RUNPATH) Library runpath: [$ORIGIN]
+""",
+            "--version-info": "  0x0010:   Name: GLIBC_2.17  Flags: none  Version: 2\n",
+            "nm": "kunlun_jsc_context_create T 100 20\n",
+        }
+
+        def output(command: list[str]) -> str:
+            if command[0] == "nm":
+                return outputs["nm"]
+            return outputs[command[1]]
+
+        with mock.patch.object(jsc_artifact, "command_output", side_effect=output):
+            identity = jsc_artifact.inspect_elf(Path("libkunlun_jsc.so"), include_exports=True)
+
+        self.assertEqual(identity["machine"], "AArch64")
+        self.assertEqual(identity["soname"], "libkunlun_jsc.so")
+        self.assertEqual(identity["needed"], ["libc.so.6"])
+        self.assertEqual(identity["runpaths"], ["$ORIGIN"])
+        self.assertEqual(identity["required_versions"], ["GLIBC_2.17"])
+        self.assertEqual(identity["exports"], ["kunlun_jsc_context_create"])
+
+    def test_linux_policy_rejects_dependency_and_symbol_baseline_drift(self) -> None:
+        root = Path(self.temporary.name) / "elf"
+        (root / "metadata").mkdir(parents=True)
+        metadata = {
+            "schema_version": 1,
+            "target": "aarch64-unknown-linux-gnu",
+            "libraries": {
+                "lib/libJavaScriptCore.so": {
+                    "machine": "AArch64",
+                    "soname": "libJavaScriptCore.so",
+                    "needed": ["libc.so.6", "libicuuc.so.74"],
+                    "runpaths": ["$ORIGIN"],
+                    "required_versions": ["GLIBC_2.39", "GLIBCXX_3.4.32"],
+                },
+                "lib/libkunlun_jsc.so": {
+                    "machine": "AArch64",
+                    "soname": "libkunlun_jsc.so",
+                    "needed": ["libJavaScriptCore.so", "libc.so.6"],
+                    "runpaths": ["$ORIGIN"],
+                    "required_versions": ["GLIBC_2.17"],
+                    "exports": ["kunlun_jsc_context_create"],
+                },
+            },
+        }
+        runtime_metadata = root / "metadata/runtime-dependencies.json"
+        runtime_metadata.write_text(json.dumps(metadata), encoding="utf-8")
+
+        with mock.patch.object(jsc_artifact, "generate_elf_metadata", return_value=metadata):
+            jsc_artifact.verify_elf(
+                root,
+                "aarch64-unknown-linux-gnu",
+                "2.39",
+                "GLIBCXX_3.4.32,CXXABI_1.3.14",
+            )
+
+        x86_metadata = json.loads(json.dumps(metadata))
+        x86_metadata["target"] = "x86_64-unknown-linux-gnu"
+        for identity in x86_metadata["libraries"].values():
+            identity["machine"] = "Advanced Micro Devices X86-64"
+        x86_metadata["libraries"]["lib/libJavaScriptCore.so"]["needed"].append(
+            "ld-linux-x86-64.so.2"
+        )
+        runtime_metadata.write_text(json.dumps(x86_metadata), encoding="utf-8")
+        with mock.patch.object(
+            jsc_artifact, "generate_elf_metadata", return_value=x86_metadata
+        ):
+            jsc_artifact.verify_elf(
+                root,
+                "x86_64-unknown-linux-gnu",
+                "2.39",
+                "GLIBCXX_3.4.32,CXXABI_1.3.14",
+            )
+
+        drifted = json.loads(json.dumps(metadata))
+        drifted["libraries"]["lib/libJavaScriptCore.so"]["needed"].append("libcurl.so.4")
+        runtime_metadata.write_text(json.dumps(drifted), encoding="utf-8")
+        with mock.patch.object(jsc_artifact, "generate_elf_metadata", return_value=drifted):
+            with self.assertRaisesRegex(jsc_artifact.ArtifactError, "unsupported runtime"):
+                jsc_artifact.verify_elf(
+                    root,
+                    "aarch64-unknown-linux-gnu",
+                    "2.39",
+                    "GLIBCXX_3.4.32,CXXABI_1.3.14",
+                )
+
+        drifted["libraries"]["lib/libJavaScriptCore.so"]["needed"].remove("libcurl.so.4")
+        drifted["libraries"]["lib/libJavaScriptCore.so"]["needed"].append(
+            "ld-linux-x86-64.so.2"
+        )
+        runtime_metadata.write_text(json.dumps(drifted), encoding="utf-8")
+        with mock.patch.object(jsc_artifact, "generate_elf_metadata", return_value=drifted):
+            with self.assertRaisesRegex(jsc_artifact.ArtifactError, "ld-linux-x86-64"):
+                jsc_artifact.verify_elf(
+                    root,
+                    "aarch64-unknown-linux-gnu",
+                    "2.39",
+                    "GLIBCXX_3.4.32,CXXABI_1.3.14",
+                )
+
+        drifted["libraries"]["lib/libJavaScriptCore.so"]["needed"].remove(
+            "ld-linux-x86-64.so.2"
+        )
+        drifted["libraries"]["lib/libJavaScriptCore.so"]["required_versions"].append(
+            "GLIBC_2.40"
+        )
+        runtime_metadata.write_text(json.dumps(drifted), encoding="utf-8")
+        with mock.patch.object(jsc_artifact, "generate_elf_metadata", return_value=drifted):
+            with self.assertRaisesRegex(jsc_artifact.ArtifactError, "beyond the recorded"):
+                jsc_artifact.verify_elf(
+                    root,
+                    "aarch64-unknown-linux-gnu",
+                    "2.39",
+                    "GLIBCXX_3.4.32,CXXABI_1.3.14",
+                )
+
+        drifted = json.loads(json.dumps(metadata))
+        drifted["libraries"]["lib/libkunlun_jsc.so"]["exports"].append("_init")
+        runtime_metadata.write_text(json.dumps(drifted), encoding="utf-8")
+        with mock.patch.object(jsc_artifact, "generate_elf_metadata", return_value=drifted):
+            with self.assertRaisesRegex(jsc_artifact.ArtifactError, "_init"):
+                jsc_artifact.verify_elf(
+                    root,
+                    "aarch64-unknown-linux-gnu",
+                    "2.39",
+                    "GLIBCXX_3.4.32,CXXABI_1.3.14",
+                )
+
+    def test_assembles_and_verifies_linux_inventory(self) -> None:
+        target = "aarch64-unknown-linux-gnu"
+        self.fixture.target = target
+        self.fixture.jsc = self.fixture.root / "libJavaScriptCore.so"
+        self.fixture.shim = self.fixture.root / "libkunlun_jsc.so"
+        self.fixture.jsc.write_bytes(b"linux-jsc\n")
+        self.fixture.shim.write_bytes(b"linux-shim\n")
+        entry = self.fixture.manifest["targets"][0]
+        entry.update(
+            {
+                "triple": target,
+                "os": "linux",
+                "arch": "arm64",
+                "libc": "glibc",
+                "deployment_target": {"kind": "glibc", "minimum": "2.39"},
+            }
+        )
+        entry["artifact"].update(
+            {
+                "archive_path": f"artifacts/kunlun-jsc-test-{target}.tar.zst",
+                "library_paths": ["lib/libJavaScriptCore.so", "lib/libkunlun_jsc.so"],
+            }
+        )
+        entry["artifact"]["sbom"]["path"] = f"artifacts/kunlun-jsc-test-{target}.spdx.json"
+        entry["artifact"]["provenance"]["path"] = (
+            f"artifacts/kunlun-jsc-test-{target}.intoto.jsonl"
+        )
+        self.fixture.manifest_path.write_text(
+            json.dumps(self.fixture.manifest), encoding="utf-8"
+        )
+        elf_metadata = {
+            "schema_version": 1,
+            "target": target,
+            "libraries": {},
+        }
+        with mock.patch.object(
+            jsc_artifact, "generate_elf_metadata", return_value=elf_metadata
+        ):
+            archive, sbom, staging = self.fixture.assemble("linux")
+            arguments = argparse.Namespace(
+                manifest=self.fixture.manifest_path,
+                target=target,
+                archive=archive,
+                sbom=sbom,
+                zstd=str(self.fixture.zstd),
+                skip_macho=True,
+            )
+            jsc_artifact.verify(arguments)
+
+        self.assertTrue((staging / "lib/libJavaScriptCore.so").is_file())
+        self.assertTrue((staging / "lib/libkunlun_jsc.so").is_file())
+        self.assertTrue((staging / "metadata/runtime-dependencies.json").is_file())
+
 
 if __name__ == "__main__":
     unittest.main()

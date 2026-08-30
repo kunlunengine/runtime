@@ -1,0 +1,14 @@
+diff --git a/Source/WTF/wtf/ScopedLambda.h b/Source/WTF/wtf/ScopedLambda.h
+index e54660956009..b90f4c37988b 100644
+--- a/Source/WTF/wtf/ScopedLambda.h
++++ b/Source/WTF/wtf/ScopedLambda.h
+@@ -63,7 +63,8 @@ public:
+ 
+ 
+     template<typename Functor>
+-    requires (!std::same_as<std::remove_cvref_t<Functor>, std::nullptr_t>
++    requires (!std::same_as<std::remove_cvref_t<Functor>, ScopedLambda>
++        && !std::same_as<std::remove_cvref_t<Functor>, std::nullptr_t>
+         && Invocable<Functor, ResultType(ArgumentTypes...)>)
+     ScopedLambda(Functor&& functor LIFETIME_BOUND)
+         : m_impl([] (void* argument, ArgumentTypes... arguments) -> ResultType {

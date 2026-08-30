@@ -74,9 +74,10 @@ KUNLUN_JSC_API kunlun_jsc_status
 kunlun_jsc_context_group_create(kunlun_jsc_context_group **out_group);
 KUNLUN_JSC_API kunlun_jsc_status
 kunlun_jsc_context_group_release(kunlun_jsc_context_group *group);
-/* Creates an independent default group for bootstrap compatibility. */
+/* Creates a non-inspectable context in an independent default group. */
 KUNLUN_JSC_API kunlun_jsc_status
 kunlun_jsc_context_create(kunlun_jsc_context **out_context);
+/* Creates a non-inspectable context; inspection must be enabled explicitly. */
 KUNLUN_JSC_API kunlun_jsc_status kunlun_jsc_context_create_in_group(
     kunlun_jsc_context_group *group,
     kunlun_jsc_context **out_context);

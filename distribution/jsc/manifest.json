@@ -16,7 +16,9 @@
       ],
       "linux": [
         "--release",
-        "--jsc-only"
+        "--jsc-only",
+        "--use-ccache",
+        "--cmakeargs=-DCMAKE_DISABLE_PRECOMPILE_HEADERS=ON"
       ]
     },
     "environment": {
@@ -29,7 +31,7 @@
       "ENABLE_FTL_JIT": true,
       "ENABLE_JSC_GLIB_API": false,
       "ENABLE_JIT": true,
-      "ENABLE_REMOTE_INSPECTOR": false,
+      "ENABLE_REMOTE_INSPECTOR": true,
       "ENABLE_SAMPLING_PROFILER": false,
       "ENABLE_STATIC_JSC": false,
       "ENABLE_WEBASSEMBLY": true,
@@ -44,6 +46,8 @@
       "id": "apple-xcode-27.0",
       "host": "macos",
       "container_image": null,
+      "trust_store_image": null,
+      "package_snapshot": null,
       "tools": [
         {
           "name": "xcode",
@@ -83,18 +87,28 @@
       "id": "ubuntu-24.04-clang-18",
       "host": "linux",
       "container_image": "docker.io/library/ubuntu@sha256:33ceb71981b602c1a7443a53469e4dba065f7503eab3078a2d7a57a2ab987517",
+      "trust_store_image": "docker.io/library/buildpack-deps@sha256:64ae509ccf40ede042d2cdd30d7149450e73ebd4c5362a36768ac727326dafb6",
+      "package_snapshot": "20260810T000000Z",
       "tools": [
         {
           "name": "ubuntu-sysroot",
-          "version": "24.04.3"
+          "version": "24.04.4"
         },
         {
           "name": "clang",
           "version": "18.1.3"
         },
         {
+          "name": "lld",
+          "version": "18.1.3"
+        },
+        {
           "name": "cmake",
           "version": "3.28.3"
+        },
+        {
+          "name": "ccache",
+          "version": "4.9.1"
         },
         {
           "name": "ninja",
@@ -109,6 +123,10 @@
           "version": "74.2"
         },
         {
+          "name": "libstdc++-abi",
+          "version": "GLIBCXX_3.4.33,CXXABI_1.3.15"
+        },
+        {
           "name": "perl",
           "version": "5.38.2"
         },
@@ -119,6 +137,18 @@
         {
           "name": "git",
           "version": "2.43.0"
+        },
+        {
+          "name": "binutils",
+          "version": "2.42"
+        },
+        {
+          "name": "patchelf",
+          "version": "0.18.0"
+        },
+        {
+          "name": "zstd",
+          "version": "1.5.5"
         }
       ]
     }
@@ -245,7 +275,23 @@
       }
     }
   ],
-  "patches": [],
+  "patches": [
+    {
+      "path": "distribution/jsc/patches/webkit-jsc-only-high-priority-nice-level.patch",
+      "sha256": "df22573b8e7c882111c20c5b36522d5437144bafeed367830ee83671467a12be",
+      "purpose": "Keep the GLib-only nice-level constant out of non-GLib JSC-only builds so WebKit's -Werror policy remains enabled."
+    },
+    {
+      "path": "distribution/jsc/patches/webkit-scoped-lambda-copy-constraint.patch",
+      "sha256": "3b6e604744e51b7f832c807e36d0c52f01a64d3fa8d63242b093b6a39f5d256a",
+      "purpose": "Exclude ScopedLambda itself from its forwarding constructor so Clang 18 selects the normal copy constructor without recursively instantiating Invocable."
+    },
+    {
+      "path": "distribution/jsc/patches/webkit-jsc-only-socket-inspector.patch",
+      "sha256": "e3f59747b5e8676548066855718ac9c48e5d6fbf70b5b7961a9c0ea3dcb79e7d",
+      "purpose": "Expose the POSIX socket inspector configuration selected by JSCOnly so its remote inspector headers and sources use the same TargetListing backend."
+    }
+  ],
   "licenses": [
     {
       "component": "Kunlun JSC shim",

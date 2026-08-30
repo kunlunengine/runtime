@@ -1,18 +1,19 @@
 //! Safe, thread-affine JavaScriptCore primitives for Kunlun Runtime.
 
-#[cfg(target_os = "macos")]
-mod macos;
-#[cfg(any(target_os = "macos", test))]
+#[cfg(kunlun_jsc_native)]
+#[path = "macos.rs"]
+mod native;
+#[cfg(any(kunlun_jsc_native, test))]
 mod ownership;
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(kunlun_jsc_native))]
 mod unsupported;
 
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
 
-#[cfg(target_os = "macos")]
-pub use macos::{ContextGroup, DeferredPromise, JscVm, RootedValue};
-#[cfg(not(target_os = "macos"))]
+#[cfg(kunlun_jsc_native)]
+pub use native::{ContextGroup, DeferredPromise, JscVm, RootedValue};
+#[cfg(not(kunlun_jsc_native))]
 pub use unsupported::{ContextGroup, DeferredPromise, JscVm, RootedValue};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -140,7 +141,7 @@ impl JscError {
         self.detail.as_deref()
     }
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(kunlun_jsc_native))]
     pub(crate) fn unsupported(operation: &'static str, detail: impl Into<String>) -> Self {
         Self::new(JscErrorKind::UnsupportedPlatform, operation).with_detail(detail)
     }
@@ -155,22 +156,22 @@ impl JscError {
         Self::exception(operation, source_url, exception_text)
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(kunlun_jsc_native)]
     pub(crate) fn invalid_input(operation: &'static str, detail: impl Into<String>) -> Self {
         Self::new(JscErrorKind::InvalidInput, operation).with_detail(detail)
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(kunlun_jsc_native)]
     pub(crate) fn missing_value(operation: &'static str, detail: impl Into<String>) -> Self {
         Self::new(JscErrorKind::MissingValue, operation).with_detail(detail)
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(kunlun_jsc_native)]
     pub(crate) fn host_function(operation: &'static str, detail: impl Into<String>) -> Self {
         Self::new(JscErrorKind::HostFunction, operation).with_detail(detail)
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(kunlun_jsc_native)]
     pub(crate) fn native(operation: &'static str, status: u32) -> Self {
         Self::new(JscErrorKind::NativeFailure, operation).with_status(JscStatus::from_raw(status))
     }

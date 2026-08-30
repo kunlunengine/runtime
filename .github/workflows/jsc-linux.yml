@@ -1,0 +1,269 @@
+name: Build pinned JSC for Linux
+
+on:
+  workflow_dispatch:
+    inputs:
+      compare_rebuild:
+        description: Build each target twice and require byte-identical archives
+        required: true
+        type: boolean
+        default: true
+
+concurrency:
+  group: jsc-linux-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-24.04-arm
+            machine: aarch64
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-24.04
+            machine: x86_64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 480
+    permissions:
+      contents: read
+    env:
+      CARGO_TERM_COLOR: always
+      TARGET: ${{ matrix.target }}
+    steps:
+      - name: Check out runtime inputs
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
+
+      - name: Validate distribution tooling and native runner
+        run: |
+          test "$(uname -s)" = Linux
+          test "$(uname -m)" = "${{ matrix.machine }}"
+          rustup target add "$TARGET"
+          cargo xtask jsc-manifest validate
+          bash -n distribution/jsc/scripts/*.sh
+          python3 -m unittest discover -s distribution/jsc/scripts/tests -v
+
+      - name: Check out pinned WebKit source
+        id: source
+        shell: bash
+        run: |
+          revision=$(jq -er '.source.revision' distribution/jsc/manifest.json)
+          repository=$(jq -er '.source.repository' distribution/jsc/manifest.json)
+          source_root=$(mktemp -d "$RUNNER_TEMP/kunlun-webkit-${TARGET}-XXXXXX")
+          git -C "$source_root" init
+          git -C "$source_root" remote add origin "$repository"
+          git -C "$source_root" fetch --depth=1 --filter=blob:none origin "$revision"
+          git -C "$source_root" sparse-checkout init --cone
+          git -C "$source_root" sparse-checkout set \
+            JSTests Source/JavaScriptCore Source/ThirdParty Source/WTF Source/bmalloc Source/cmake \
+            Tools/Profiling Tools/Scripts Tools/TestWebKitAPI Tools/ccache Tools/clangd
+          git -C "$source_root" checkout --detach FETCH_HEAD
+          test "$(git -C "$source_root" rev-parse HEAD)" = "$revision"
+          echo "source_root=$source_root" >> "$GITHUB_OUTPUT"
+
+      - name: Restore JavaScriptCore compiler cache
+        uses: actions/cache@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
+        with:
+          path: ${{ runner.temp }}/kunlun-jsc-ccache-${{ matrix.target }}
+          key: >-
+            kunlun-jsc-ccache-v1-${{ matrix.target }}-${{
+            hashFiles('distribution/jsc/manifest.json',
+            'distribution/jsc/patches/**',
+            'distribution/jsc/linux/**',
+            'distribution/jsc/scripts/build-linux.sh',
+            'distribution/jsc/scripts/run-linux-container.sh') }}
+          restore-keys: |
+            kunlun-jsc-ccache-v1-${{ matrix.target }}-
+
+      - name: Build, package, and verify without build-time network
+        id: build
+        shell: bash
+        run: |
+          output_root=$(mktemp -d "$RUNNER_TEMP/kunlun-output-${TARGET}-XXXXXX")
+          distribution/jsc/scripts/run-linux-container.sh \
+            --target "$TARGET" \
+            --webkit-root "${{ steps.source.outputs.source_root }}" \
+            --output "$output_root" \
+            --ccache-dir "$RUNNER_TEMP/kunlun-jsc-ccache-${TARGET}"
+
+      - name: Run binding corpus against pinned artifact
+        shell: bash
+        env:
+          KUNLUN_JSC_DIST_DIR: ${{ steps.build.outputs.staging }}
+          LD_LIBRARY_PATH: ${{ steps.build.outputs.staging }}/lib
+        run: |
+          cargo test --workspace --target "$TARGET"
+          cargo run -p kunlun-runtime --target "$TARGET" -- doctor \
+            | tee "$RUNNER_TEMP/doctor-${TARGET}.txt"
+          grep -Fqx 'distribution: pinned Kunlun JSC artifact' "$RUNNER_TEMP/doctor-${TARGET}.txt"
+          grep -Fqx 'hermetic: true' "$RUNNER_TEMP/doctor-${TARGET}.txt"
+
+      - name: Reclaim first-build intermediates
+        if: ${{ inputs.compare_rebuild }}
+        shell: bash
+        env:
+          OUTPUT_ROOT: ${{ steps.build.outputs.output_root }}
+          SOURCE_ROOT: ${{ steps.source.outputs.source_root }}
+        run: |
+          case "$OUTPUT_ROOT" in "$RUNNER_TEMP"/*) ;; *) exit 1 ;; esac
+          case "$SOURCE_ROOT" in "$RUNNER_TEMP"/*) ;; *) exit 1 ;; esac
+          rm -rf -- \
+            "$OUTPUT_ROOT/webkit-build" \
+            "$OUTPUT_ROOT/native" \
+            "$OUTPUT_ROOT/staging" \
+            "$SOURCE_ROOT"
+
+      - name: Check independent rebuild
+        if: ${{ inputs.compare_rebuild }}
+        shell: bash
+        run: |
+          revision=$(jq -er '.source.revision' distribution/jsc/manifest.json)
+          repository=$(jq -er '.source.repository' distribution/jsc/manifest.json)
+          source_root=$(mktemp -d "$RUNNER_TEMP/kunlun-webkit-rebuild-${TARGET}-XXXXXX")
+          git -C "$source_root" init
+          git -C "$source_root" remote add origin "$repository"
+          git -C "$source_root" fetch --depth=1 --filter=blob:none origin "$revision"
+          git -C "$source_root" sparse-checkout init --cone
+          git -C "$source_root" sparse-checkout set \
+            JSTests Source/JavaScriptCore Source/ThirdParty Source/WTF Source/bmalloc Source/cmake \
+            Tools/Profiling Tools/Scripts Tools/TestWebKitAPI Tools/ccache Tools/clangd
+          git -C "$source_root" checkout --detach FETCH_HEAD
+          output_root=$(mktemp -d "$RUNNER_TEMP/kunlun-rebuild-${TARGET}-XXXXXX")
+          distribution/jsc/scripts/run-linux-container.sh \
+            --target "$TARGET" \
+            --webkit-root "$source_root" \
+            --output "$output_root"
+          archive_name=$(basename "${{ steps.build.outputs.archive }}")
+          report="$(dirname "${{ steps.build.outputs.archive }}")/${archive_name%.tar.zst}.rebuild.json"
+          python3 distribution/jsc/scripts/jsc_artifact.py compare \
+            --first "${{ steps.build.outputs.archive }}" \
+            --second "$output_root/artifacts/$archive_name" \
+            --output "$report" \
+            --require-identical
+          echo "rebuild_report=$report" >> "$GITHUB_ENV"
+          case "$output_root" in "$RUNNER_TEMP"/*) ;; *) exit 1 ;; esac
+          case "$source_root" in "$RUNNER_TEMP"/*) ;; *) exit 1 ;; esac
+          rm -rf -- "$output_root" "$source_root"
+
+      - name: Upload release inputs
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: kunlun-jsc-release-inputs-${{ matrix.target }}
+          if-no-files-found: error
+          retention-days: 1
+          path: |
+            ${{ steps.build.outputs.archive }}
+            ${{ steps.build.outputs.sbom }}
+            ${{ env.rebuild_report }}
+
+  release-evidence:
+    name: Attest ${{ matrix.target }}
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - aarch64-unknown-linux-gnu
+          - x86_64-unknown-linux-gnu
+    runs-on: ubuntu-24.04
+    permissions:
+      attestations: write
+      contents: read
+      id-token: write
+    env:
+      TARGET: ${{ matrix.target }}
+    steps:
+      - name: Check out release metadata
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Download verified build outputs
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          name: kunlun-jsc-release-inputs-${{ matrix.target }}
+          path: ${{ runner.temp }}/kunlun-release-${{ matrix.target }}
+
+      - name: Resolve release inputs
+        id: inputs
+        shell: bash
+        run: |
+          evidence_dir="$RUNNER_TEMP/kunlun-release-${TARGET}"
+          archive_name=$(jq -er --arg target "$TARGET" \
+            '.targets[] | select(.triple == $target) | .artifact.archive_path | split("/")[-1]' \
+            distribution/jsc/manifest.json)
+          sbom_name=$(jq -er --arg target "$TARGET" \
+            '.targets[] | select(.triple == $target) | .artifact.sbom.path | split("/")[-1]' \
+            distribution/jsc/manifest.json)
+          archive="$evidence_dir/$archive_name"
+          sbom="$evidence_dir/$sbom_name"
+          test -f "$archive"
+          test -f "$sbom"
+          rebuild_report="$evidence_dir/${archive_name%.tar.zst}.rebuild.json"
+          {
+            echo "evidence_dir=$evidence_dir"
+            echo "archive=$archive"
+            echo "sbom=$sbom"
+            if [[ -f "$rebuild_report" ]]; then
+              echo "rebuild_report=$rebuild_report"
+            fi
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Generate signed SLSA provenance
+        id: provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
+        with:
+          subject-path: ${{ steps.inputs.outputs.archive }}
+
+      - name: Preserve provenance bundle and checksums
+        id: evidence
+        shell: bash
+        run: |
+          provenance_name=$(jq -er --arg target "$TARGET" \
+            '.targets[] | select(.triple == $target) | .artifact.provenance.path | split("/")[-1]' \
+            distribution/jsc/manifest.json)
+          evidence_dir="${{ steps.inputs.outputs.evidence_dir }}"
+          provenance="$evidence_dir/$provenance_name"
+          cp "${{ steps.provenance.outputs.bundle-path }}" "$provenance"
+          checksums="$evidence_dir/SHA256SUMS"
+          files=(
+            "$(basename "${{ steps.inputs.outputs.archive }}")"
+            "$(basename "${{ steps.inputs.outputs.sbom }}")"
+            "$provenance_name"
+          )
+          if [[ -n "${{ steps.inputs.outputs.rebuild_report }}" ]]; then
+            files+=("$(basename "${{ steps.inputs.outputs.rebuild_report }}")")
+          fi
+          (
+            cd "$evidence_dir"
+            sha256sum "${files[@]}" > SHA256SUMS
+          )
+          echo "provenance=$provenance" >> "$GITHUB_OUTPUT"
+          echo "checksums=$checksums" >> "$GITHUB_OUTPUT"
+
+      - name: Attest SPDX SBOM
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
+        with:
+          subject-path: ${{ steps.inputs.outputs.archive }}
+          sbom-path: ${{ steps.inputs.outputs.sbom }}
+
+      - name: Upload audited artifact set
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: kunlun-jsc-${{ matrix.target }}
+          if-no-files-found: error
+          retention-days: 30
+          path: |
+            ${{ steps.inputs.outputs.archive }}
+            ${{ steps.inputs.outputs.sbom }}
+            ${{ steps.evidence.outputs.provenance }}
+            ${{ steps.evidence.outputs.checksums }}
+            ${{ steps.inputs.outputs.rebuild_report }}

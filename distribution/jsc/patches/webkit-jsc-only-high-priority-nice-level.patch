@@ -1,0 +1,15 @@
+diff --git a/Source/WTF/wtf/linux/HighPriorityThreads.cpp b/Source/WTF/wtf/linux/HighPriorityThreads.cpp
+index 826b5aa2205b..e569aaecb732 100644
+--- a/Source/WTF/wtf/linux/HighPriorityThreads.cpp
++++ b/Source/WTF/wtf/linux/HighPriorityThreads.cpp
+@@ -40,8 +40,10 @@
+ 
+ namespace WTF {
+ 
++#if USE(GLIB)
+ // Requested nice value. rtkit clamps this to its own MinNiceLevel.
+ static constexpr int s_highPriorityNiceLevel = -20;
++#endif
+ 
+ HighPriorityThreads& HighPriorityThreads::singleton()
+ {

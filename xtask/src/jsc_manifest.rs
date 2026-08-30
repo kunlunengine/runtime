@@ -71,6 +71,8 @@ struct Toolchain {
     id: String,
     host: String,
     container_image: Nullable<String>,
+    trust_store_image: Nullable<String>,
+    package_snapshot: Nullable<String>,
     tools: Vec<Tool>,
 }
 
@@ -288,20 +290,35 @@ fn validate_toolchains<'a>(
             &toolchain.host,
             errors,
         );
-        match (toolchain.host.as_str(), &toolchain.container_image.0) {
-            ("macos", None) => {}
-            ("macos", Some(_)) => errors.push(format!(
-                "macOS toolchain {} must use the pinned Xcode installation, not a container",
+        match (
+            toolchain.host.as_str(),
+            &toolchain.container_image.0,
+            &toolchain.trust_store_image.0,
+            &toolchain.package_snapshot.0,
+        ) {
+            ("macos", None, None, None) => {}
+            ("macos", _, _, _) => errors.push(format!(
+                "macOS toolchain {} must use pinned Xcode without a container, trust store, or package snapshot",
                 toolchain.id
             )),
-            ("linux", Some(image)) => {
+            ("linux", Some(image), Some(trust_store), Some(snapshot)) => {
                 validate_oci_image(&toolchain.id, image, errors);
+                validate_oci_image(&format!("{} trust store", toolchain.id), trust_store, errors);
+                validate_package_snapshot(&toolchain.id, snapshot, errors);
             }
-            ("linux", None) => errors.push(format!(
+            ("linux", None, _, _) => errors.push(format!(
                 "Linux toolchain {} must pin container_image by OCI digest",
                 toolchain.id
             )),
-            (host, _) => errors.push(format!(
+            ("linux", _, None, _) => errors.push(format!(
+                "Linux toolchain {} must pin trust_store_image by OCI digest",
+                toolchain.id
+            )),
+            ("linux", _, _, None) => errors.push(format!(
+                "Linux toolchain {} must pin package_snapshot",
+                toolchain.id
+            )),
+            (host, _, _, _) => errors.push(format!(
                 "toolchain {} has unsupported host {host:?}",
                 toolchain.id
             )),
@@ -686,6 +703,20 @@ fn validate_oci_image(toolchain: &str, image: &str, errors: &mut Vec<String>) {
     }
 }
 
+fn validate_package_snapshot(toolchain: &str, snapshot: &str, errors: &mut Vec<String>) {
+    let bytes = snapshot.as_bytes();
+    let valid = bytes.len() == 16
+        && bytes[..8].iter().all(u8::is_ascii_digit)
+        && bytes[8] == b'T'
+        && bytes[9..15].iter().all(u8::is_ascii_digit)
+        && bytes[15] == b'Z';
+    if !valid {
+        errors.push(format!(
+            "toolchain {toolchain} package_snapshot must use YYYYMMDDTHHMMSSZ"
+        ));
+    }
+}
+
 fn require_nonempty(label: &str, value: &str, errors: &mut Vec<String>) {
     if value.trim().is_empty() {
         errors.push(format!("{label} must not be empty"));
@@ -860,6 +891,30 @@ mod tests {
             errors
                 .iter()
                 .any(|error| error.contains("missing required target triple"))
+        );
+    }
+
+    #[test]
+    fn linux_toolchains_require_a_pinned_package_snapshot() {
+        let mut value = manifest_value();
+        value["toolchains"][1]["package_snapshot"] = json!("latest");
+        let errors = errors_for(value);
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("package_snapshot must use YYYYMMDDTHHMMSSZ"))
+        );
+    }
+
+    #[test]
+    fn linux_toolchains_require_a_pinned_trust_store_image() {
+        let mut value = manifest_value();
+        value["toolchains"][1]["trust_store_image"] = Value::Null;
+        let errors = errors_for(value);
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("must pin trust_store_image by OCI digest"))
         );
     }
 }

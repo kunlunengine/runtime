@@ -22,9 +22,10 @@ Milestone 1 is the current focus. Good starting points are issues labeled `m1` a
 ## Development Setup
 
 The workspace requires Rust 1.85 or newer. Ordinary development builds link Apple's system
-`JavaScriptCore.framework` on macOS. A controlled pipeline builds pinned macOS arm64/x64 artifacts,
-but product-backend feature selection is not yet implemented. Non-macOS targets currently use an
-unsupported stub and do not have a working JSC backend.
+`JavaScriptCore.framework` on macOS. Controlled pipelines build pinned macOS and Linux glibc
+arm64/x64 artifacts, but product-backend feature selection is not yet implemented. Ordinary
+non-macOS builds continue to use an unsupported stub; the Linux backend is enabled only while the
+controlled artifact corpus points `KUNLUN_JSC_DIST_DIR` at a verified local staging tree.
 
 Run the baseline checks before opening a pull request:
 

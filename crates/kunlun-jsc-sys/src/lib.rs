@@ -9,7 +9,7 @@
 include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 include!(concat!(env!("OUT_DIR"), "/backend.rs"));
 
-#[cfg(all(test, target_os = "macos"))]
+#[cfg(all(test, kunlun_jsc_native))]
 mod tests {
     unsafe extern "C" {
         fn kunlun_jsc_internal_test_bad_alloc_boundary() -> super::kunlun_jsc_status;

@@ -9,9 +9,10 @@ and additionally checks cross-field and local-file integrity rules.
 
 The manifest is metadata and policy. It does not make a target available to Cargo. In particular,
 ordinary Cargo builds continue to use the existing explicit backend and perform no manifest-driven
-download. `KUNLUN_JSC_DIST_DIR` is a verification-only escape hatch used by the controlled artifact
-job to run the workspace corpus against a freshly assembled, local staging directory; it never
-resolves or downloads an artifact.
+download. `KUNLUN_JSC_DIST_DIR` is an explicit local-staging escape hatch used by the controlled
+artifact job only after the packager has verified the archive's native binary constraints. The
+Cargo build checks that the staging metadata matches its target and OS, but it never resolves,
+downloads, or establishes trust in an arbitrary local artifact.
 
 ## Validate the manifest
 
@@ -34,7 +35,8 @@ The v1 manifest contains these review boundaries:
 - `build` records the configuration, upstream build driver, ordered arguments for each host,
   deterministic environment, and feature flags.
 - `toolchains` assigns exact tool versions to reusable macOS and Linux profiles. Linux additionally
-  pins a multi-architecture OCI image index by digest; macOS pins the Xcode build and SDK directly.
+  pins a multi-architecture OCI image index by digest and an Ubuntu archive snapshot timestamp;
+  macOS pins the Xcode build and SDK directly.
 - `targets` carries all four supported target triples, deployment baseline, archive layout, runtime
   libraries, SBOM, and provenance records without separate platform manifests.
 - `patches` is ordered. Every entry must explain its purpose and name a checked-in file whose
@@ -59,6 +61,7 @@ lib/libJavaScriptCore.{dylib,so}
 lib/libkunlun_jsc.{dylib,so}
 licenses/<reviewed license inputs>
 metadata/build.json
+metadata/runtime-dependencies.json  # Linux only
 ```
 
 The metadata records the source revision, effective build arguments and feature flags, deployment
@@ -127,6 +130,66 @@ attestation bundle at the manifest's `.intoto.jsonl` path, `SHA256SUMS`, and reb
 the files are copied to durable release storage, update the target atomically to `published` with
 the three reviewed digests; temporary workflow-artifact URLs alone are not a publication record.
 
+## Controlled Linux glibc builds
+
+[`distribution/jsc/scripts/run-linux-container.sh`](../distribution/jsc/scripts/run-linux-container.sh)
+is the host entry point for Linux artifacts. It accepts only the two manifest Linux triples and
+requires a native runner of the matching architecture; emulated or cross-architecture publication
+builds fail before compilation. The script validates the manifest, pulls the Ubuntu image and a
+CA trust-store donor by their multi-architecture OCI digests, and builds a local toolchain image from
+[`distribution/jsc/linux/Dockerfile`](../distribution/jsc/linux/Dockerfile). APT resolves through
+the manifest's `package_snapshot` URL without a live-archive fallback, so the base filesystem and
+every package index are immutable review inputs. The donor contributes only its CA bundle, allowing
+the minimal Ubuntu base to verify the signed snapshot service before the snapshot-pinned
+`ca-certificates` package replaces it. APT still verifies Ubuntu's archive signatures and package
+hashes; only snapshot `Valid-Until` expiry is disabled because the timestamped archive is immutable.
+
+Both OCI digests and the package snapshot are recorded in the archive metadata. The actual WebKit
+build then runs from the derived image in a new container with `--network none`, a read-only runtime
+checkout, and fixed `/workspace` mount paths. This separates the audited toolchain installation
+phase from the no-network compilation phase and keeps source/output paths identical for independent
+rebuilds without embedding Docker's build timestamp in the artifact identity.
+
+Inside the container,
+[`distribution/jsc/scripts/build-linux.sh`](../distribution/jsc/scripts/build-linux.sh):
+
+1. verifies the native architecture, Ubuntu point release, Clang, LLD, CMake, ccache, Ninja,
+   Python, ICU, Perl, Ruby, Git, binutils, patchelf, and zstd versions against the manifest;
+2. checks the exact clean WebKit revision and reviewed patches, then invokes the upstream
+   `Tools/Scripts/build-jsc --jsc-only` path with the manifest feature flags and LLD;
+3. normalizes the engine and shim to the stable `libJavaScriptCore.so` and `libkunlun_jsc.so`
+   SONAMEs with an `$ORIGIN` runpath;
+4. records each ELF machine, `DT_NEEDED` entry, required GLIBC/GLIBCXX/CXXABI version, and shim
+   export in `metadata/runtime-dependencies.json`; and
+5. rejects an unexpected dependency, architecture, SONAME, runpath, exported shim symbol, or symbol
+   version newer than the recorded glibc/libstdc++ baseline before packaging.
+
+Run the wrapper on a matching Linux host with Docker and a detached checkout of the pinned WebKit
+revision:
+
+```bash
+distribution/jsc/scripts/run-linux-container.sh \
+  --target aarch64-unknown-linux-gnu \
+  --webkit-root /absolute/path/to/WebKit \
+  --output /absolute/path/to/output \
+  --ccache-dir /absolute/path/to/ccache
+```
+
+Use `x86_64-unknown-linux-gnu` on an x86_64 host. The manually dispatched
+`Build pinned JSC for Linux` workflow runs both native architectures, executes the same workspace
+test corpus and `kunlun-runtime doctor` against the staged libraries with `KUNLUN_JSC_DIST_DIR`,
+requires a byte-identical second build by default, and uploads the archive, SPDX inventory, signed
+SLSA provenance, checksums, and member-level rebuild report. It is intentionally manual, like the
+macOS artifact workflow, rather than a per-pull-request job. Each architecture restores a bounded
+ccache whose key covers the target, manifest, patches, Linux toolchain definition, and build entry
+points. A changed input may reuse only compiler-validated entries from an older key. The Linux
+configuration disables precompiled headers so the expensive JSC translation units are
+cacheable without relaxing ccache's macro or timestamp checks. Verbose cache statistics are emitted
+after every build. The independent
+second build does not mount the persisted cache, so rebuild evidence is produced from freshly
+compiled objects. OIDC and attestation write permissions remain isolated to the release-evidence
+jobs after verified outputs cross the job boundary as workflow artifacts.
+
 ## Updating WebKit or another build input
 
 Use one focused pull request for a revision or build-input update:
@@ -165,6 +228,9 @@ Use one focused pull request for a revision or build-input update:
       SHA-256 values.
 - [ ] The macOS artifact was produced on the controlled runner, passed the workspace corpus and
       `doctor`, and has a byte-identical independent-rebuild report.
+- [ ] The Linux artifact was produced on its matching native runner from the pinned OCI/APT
+      snapshots with build-time networking disabled; ELF dependencies and symbol baselines were
+      recorded, and the workspace corpus, `doctor`, and independent rebuild passed.
 - [ ] The public-header set and `abi.shim_version` match the shim compatibility decision.
 - [ ] The manifest validator, workspace tests, formatting, and lints pass.
 - [ ] No ordinary Cargo build gained a network fetch or an implicit native artifact download.

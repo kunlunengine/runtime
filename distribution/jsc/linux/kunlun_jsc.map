@@ -1,0 +1,6 @@
+{
+    global:
+        kunlun_jsc_*;
+    local:
+        *;
+};

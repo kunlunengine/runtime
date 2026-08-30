@@ -21,25 +21,28 @@ Milestone 1 is the current focus. Good starting points are issues labeled `m1` a
 
 ## Development Setup
 
-The workspace requires Rust 1.85 or newer. Ordinary development builds link Apple's system
-`JavaScriptCore.framework` on macOS. Controlled pipelines build pinned macOS and Linux glibc
-arm64/x64 artifacts, but product-backend feature selection is not yet implemented. Ordinary
-non-macOS builds continue to use an unsupported stub; the Linux backend is enabled only while the
-controlled artifact corpus points `KUNLUN_JSC_DIST_DIR` at a verified local staging tree.
+The workspace requires Rust 1.85 or newer. The default `bundled-jsc` backend requires local pinned
+libraries to be verified; it never downloads or falls back. Follow the [offline artifact setup](./docs/jsc-distribution.md#selecting-a-cargo-backend)
+for macOS arm64/x64 and Linux glibc arm64/x64. Linux without a verified artifact is no longer a
+runtime backend. Repository tooling remains available with `cargo test -p xtask`.
+
+The commands below use the explicit macOS `system-jsc` developer backend. For a verified product
+artifact, omit `--no-default-features --features system-jsc` and set the distribution environment
+as documented. Do not use `--all-features`: the two engine backends are mutually exclusive.
 
 Run the baseline checks before opening a pull request:
 
 ```bash
-cargo build --workspace
+cargo build --workspace --no-default-features --features system-jsc
 cargo fmt --all -- --check
-cargo clippy --workspace --all-targets --all-features -- -D warnings
-cargo test --workspace
+cargo clippy --workspace --all-targets --no-default-features --features system-jsc -- -D warnings
+cargo test --workspace --no-default-features --features system-jsc
 ```
 
 On a supported macOS host, also run:
 
 ```bash
-cargo run -p kunlun-runtime -- doctor
+cargo run -p kunlun-runtime --no-default-features --features system-jsc -- doctor
 ```
 
 If a platform-specific or sanitizer check cannot run locally, say so in the pull request and link

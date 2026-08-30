@@ -114,7 +114,7 @@ archive_path=$(jq -er --arg target "$target" \
     '.targets[] | select(.triple == $target) | .artifact.archive_path' "$manifest")
 sbom_path=$(jq -er --arg target "$target" \
     '.targets[] | select(.triple == $target) | .artifact.sbom.path' "$manifest")
-staging=$output/staging/$target
+staging=$output/verified/$target
 
 if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
     {
@@ -122,6 +122,7 @@ if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
         echo "archive=$output/$archive_path"
         echo "sbom=$output/$sbom_path"
         echo "staging=$staging"
+        echo "receipt_sha256=$(sha256sum "$staging/.kunlun-jsc-verification.json" | awk '{print $1}')"
         echo "glibc_baseline=$(jq -er --arg target "$target" '.targets[] | select(.triple == $target) | .deployment_target.minimum' "$manifest")"
         echo "builder_image_id=$builder_image_id"
         echo "archive_sha256=$(sha256sum "$output/$archive_path" | awk '{print $1}')"

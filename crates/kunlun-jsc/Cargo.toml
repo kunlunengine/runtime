@@ -15,5 +15,10 @@ path = "src/lib.rs"
 [dependencies]
 kunlun-jsc-sys.workspace = true
 
+[features]
+default = ["bundled-jsc"]
+bundled-jsc = ["kunlun-jsc-sys/bundled-jsc"]
+system-jsc = ["kunlun-jsc-sys/system-jsc"]
+
 [lints]
 workspace = true

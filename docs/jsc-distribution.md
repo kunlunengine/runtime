@@ -7,12 +7,79 @@ shape is documented for editors and review tooling by
 does not execute that schema: the Rust validator is the sole enforced source of manifest acceptance
 and additionally checks cross-field and local-file integrity rules.
 
-The manifest is metadata and policy. It does not make a target available to Cargo. In particular,
-ordinary Cargo builds continue to use the existing explicit backend and perform no manifest-driven
-download. `KUNLUN_JSC_DIST_DIR` is an explicit local-staging escape hatch used by the controlled
-artifact job only after the packager has verified the archive's native binary constraints. The
-Cargo build checks that the staging metadata matches its target and OS, but it never resolves,
-downloads, or establishes trust in an arbitrary local artifact.
+The manifest controls the default `bundled-jsc` Cargo backend, but does not authorize network
+access. Cargo consumes only an explicitly installed local artifact plus a trusted verification
+receipt digest. It never resolves a URL, downloads, extracts, or falls back to the system engine.
+
+## Selecting a Cargo backend
+
+All three runtime crates expose the same mutually exclusive features:
+
+| Selection | Supported targets | Behavior |
+| --- | --- | --- |
+| Default / `bundled-jsc` | macOS arm64/x64, Linux glibc arm64/x64 | Require an offline-verified pinned artifact |
+| `--no-default-features --features system-jsc` | macOS arm64/x64 | Link the host framework for development only |
+| Neither, both, or an unsupported target | None | Actionable compile-time failure |
+
+Feature forwarding disables dependency defaults so opting into `system-jsc` at the runtime crate
+selects the same backend throughout the dependency graph. `--all-features` is intentionally invalid.
+`system-jsc` does not establish product compatibility, even if compiled with optimizations. Unset
+`KUNLUN_JSC_DIST_DIR` and `KUNLUN_JSC_RECEIPT_SHA256` before switching to system development; setting
+distribution variables with `system-jsc` is an error rather than an ignored configuration.
+
+### Install and consume a local artifact
+
+Obtain the archive, SPDX SBOM, and provenance from the reviewed release process **outside Cargo**.
+For a target marked `published`, the verifier checks all three files against the checked-in manifest
+digests before extracting. Provenance authenticity must be reviewed before those digests are
+published; matching bytes is not a substitute for authenticating the publisher.
+
+```bash
+python3 distribution/jsc/scripts/jsc_artifact.py verify \
+  --manifest distribution/jsc/manifest.json \
+  --target aarch64-apple-darwin \
+  --archive /trusted/artifacts/kunlun-jsc-4b62d53e-aarch64-apple-darwin.tar.zst \
+  --sbom /trusted/artifacts/kunlun-jsc-4b62d53e-aarch64-apple-darwin.spdx.json \
+  --provenance /trusted/artifacts/kunlun-jsc-4b62d53e-aarch64-apple-darwin.intoto.jsonl \
+  --install-dir /absolute/path/to/new-verified-jsc > /trusted/verification-result.json
+
+export KUNLUN_JSC_DIST_DIR=/absolute/path/to/new-verified-jsc
+export KUNLUN_JSC_RECEIPT_SHA256=$(jq -er .receipt_sha256 /trusted/verification-result.json)
+export DYLD_LIBRARY_PATH="$KUNLUN_JSC_DIST_DIR/lib"
+cargo test --workspace
+cargo run -p kunlun-runtime -- doctor
+```
+
+Use the selected Linux triple and its artifact names on Linux, and set `LD_LIBRARY_PATH` instead
+of `DYLD_LIBRARY_PATH`. Native verification runs on the matching platform with `zstd` and its native
+inspection tools installed. `--install-dir` must not already exist. The verifier installs only the
+validated extracted bytes; `--skip-native` can never produce an installable receipt.
+
+All current targets are still `planned`, so no published release is implied. Controlled local/CI
+source builds explicitly pass `--source-build` instead of `--provenance`; this trusts the caller's
+audited source-build process and records `source-build`, not `published`. The platform build scripts
+do this after native verification and expose the new `verified/<target>` directory and receipt hash
+to their corpus jobs. Never use `--source-build` to bless an arbitrary downloaded archive.
+
+The directory contains `.kunlun-jsc-verification.json` recording the manifest digest, target,
+verification mode, archive/SBOM digests, and SHA-256 of every extracted file. Cargo requires its
+**separately supplied** digest from the trusted verification result, then rehashes the entire tree.
+It rejects missing/extra/corrupt files, symlinks, metadata mismatches, a different manifest, and a
+header different from the checked-in ABI header. Cargo watches the receipt, entire tree, and all
+consumed files so edits invalidate its cached build-script result. A writable receipt plus a digest
+computed from that same untrusted receipt establishes no trust. Keep the installed tree, digest,
+and dynamic-loader environment under the same trusted control through linking and execution;
+verification is not a defense against a process that can rewrite them concurrently or inject libraries.
+
+`doctor` reports `backend`, full pinned `engine revision` (or explicitly unknown host-managed
+revision), `target`, `distribution mode`, distribution description, and `hermetic`. Here `hermetic`
+means Kunlun controls the selected JSC build, not that libc/system dependencies disappear.
+
+The offline backend policy and corruption tests run with `cargo test -p xtask`; actual Cargo feature
+rejection tests run with `python3 distribution/jsc/scripts/test_cargo_backends.py` after
+`cargo fetch --locked` has cached Rust dependencies. Every rejection invocation uses `--offline`.
+Miri tests the shared ownership guards through `cargo +nightly miri test -p xtask jsc_ownership`,
+without creating an unsupported engine backend.
 
 ## Validate the manifest
 
@@ -63,6 +130,10 @@ licenses/<reviewed license inputs>
 metadata/build.json
 metadata/runtime-dependencies.json  # Linux only
 ```
+
+External SBOM/provenance entries inside build metadata contain only their logical path and format,
+not their digests: embedding the SBOM digest would create a circular hash dependency when a target
+is published. Reviewed release digests live in the distribution manifest.
 
 The metadata records the source revision, effective build arguments and feature flags, deployment
 target, observed tool versions, runner image identity, ABI, license inventory, and logical SBOM and
@@ -194,8 +265,8 @@ implicitly. The image includes Rosetta 2 for the Intel corpus.
 
 For both target triples the workflow checks out the pinned source inputs, builds and verifies the
 artifact, and runs `cargo test --workspace` plus `kunlun-runtime doctor` with
-`KUNLUN_JSC_DIST_DIR` and `DYLD_LIBRARY_PATH` pointing only at the new staging tree. `doctor` must
-report `pinned Kunlun JSC artifact` and `hermetic: true`; the system framework is not a release
+`KUNLUN_JSC_DIST_DIR`, `KUNLUN_JSC_RECEIPT_SHA256`, and `DYLD_LIBRARY_PATH` selecting the
+verified installation. `doctor` must report `pinned Kunlun JSC artifact` and `hermetic: true`; the system framework is not a release
 fallback.
 
 Release-candidate runs build each target twice from independent source checkouts and a fresh second
@@ -258,8 +329,8 @@ distribution/jsc/scripts/run-linux-container.sh \
 
 Use `x86_64-unknown-linux-gnu` on an x86_64 host. The manually dispatched
 `Build pinned JSC for Linux` workflow runs both native architectures, executes the same workspace
-test corpus and `kunlun-runtime doctor` against the staged libraries with `KUNLUN_JSC_DIST_DIR`,
-requires a byte-identical second build by default, and uploads the archive, SPDX inventory, signed
+test corpus and `kunlun-runtime doctor` against the staged libraries with `KUNLUN_JSC_DIST_DIR`
+and the trusted `KUNLUN_JSC_RECEIPT_SHA256`, requires a byte-identical second build by default, and uploads the archive, SPDX inventory, signed
 SLSA provenance, checksums, and member-level rebuild report. It is intentionally manual, like the
 macOS artifact workflow, rather than a per-pull-request job. Each architecture restores a bounded
 ccache whose key covers the target, manifest, patches, Linux toolchain definition, and build entry

@@ -98,13 +98,19 @@ jobs:
         shell: bash
         env:
           KUNLUN_JSC_DIST_DIR: ${{ steps.build.outputs.staging }}
+          KUNLUN_JSC_RECEIPT_SHA256: ${{ steps.build.outputs.receipt_sha256 }}
           LD_LIBRARY_PATH: ${{ steps.build.outputs.staging }}/lib
         run: |
-          cargo test --workspace --target "$TARGET"
-          cargo run -p kunlun-runtime --target "$TARGET" -- doctor \
+          cargo test --workspace --features bundled-jsc --target "$TARGET"
+          cargo run -p kunlun-runtime --features bundled-jsc --target "$TARGET" -- doctor \
             | tee "$RUNNER_TEMP/doctor-${TARGET}.txt"
           grep -Fqx 'distribution: pinned Kunlun JSC artifact' "$RUNNER_TEMP/doctor-${TARGET}.txt"
           grep -Fqx 'hermetic: true' "$RUNNER_TEMP/doctor-${TARGET}.txt"
+          grep -Fqx 'backend: bundled-jsc' "$RUNNER_TEMP/doctor-${TARGET}.txt"
+          grep -Fqx 'distribution mode: source-build' "$RUNNER_TEMP/doctor-${TARGET}.txt"
+          grep -Fqx "target: $TARGET" "$RUNNER_TEMP/doctor-${TARGET}.txt"
+          revision=$(jq -er '.source.revision' distribution/jsc/manifest.json)
+          grep -Fqx "engine revision: $revision" "$RUNNER_TEMP/doctor-${TARGET}.txt"
 
       - name: Reclaim first-build intermediates
         if: ${{ inputs.compare_rebuild }}

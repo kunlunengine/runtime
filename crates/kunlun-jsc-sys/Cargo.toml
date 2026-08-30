@@ -16,6 +16,12 @@ path = "src/lib.rs"
 bindgen = "0.72.1"
 cc = "1.4.4"
 serde_json.workspace = true
+sha2.workspace = true
+
+[features]
+default = ["bundled-jsc"]
+bundled-jsc = []
+system-jsc = []
 
 [lints]
 workspace = true

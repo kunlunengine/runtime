@@ -60,7 +60,8 @@ Goal: make the engine version controlled by Kunlun rather than by the host OS.
   capabilities absent from the public JavaScriptCore C API.
 - Add `kunlun-jsc`: RAII contexts, rooted/protected values, typed errors, callbacks, typed arrays,
   and explicit thread affinity.
-- Support `bundled-jsc` for release/CI and `system-jsc` only as an opt-in developer feature.
+- [x] Support fail-closed `bundled-jsc` for release/CI and `system-jsc` only as an opt-in
+  developer feature, with offline artifact verification and backend diagnostics (#13).
 - Build macOS arm64/x64 and Linux glibc arm64/x64 artifacts from source in controlled CI.
 - Add ASan/UBSan jobs for the shim and Rust Miri tests for wrapper-owned invariants where possible.
 

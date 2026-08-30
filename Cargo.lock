@@ -724,6 +724,7 @@ dependencies = [
  "bindgen",
  "cc",
  "serde_json",
+ "sha2",
 ]
 
 [[package]]

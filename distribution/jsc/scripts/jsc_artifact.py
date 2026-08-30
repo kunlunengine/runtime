@@ -32,6 +32,7 @@ LINUX_RUNTIME_LOADERS = {
     "x86_64-unknown-linux-gnu": "ld-linux-x86-64.so.2",
 }
 SUPPORTED_TARGETS = MACOS_TARGETS.keys() | LINUX_TARGETS.keys()
+VERIFICATION_RECEIPT = ".kunlun-jsc-verification.json"
 ALLOWED_TOP_LEVEL = {"include", "lib", "licenses", "metadata"}
 
 
@@ -232,8 +233,8 @@ def create_build_metadata(
         "abi": manifest["abi"],
         "artifact": {
             "archive_path": target_entry["artifact"]["archive_path"],
-            "sbom": target_entry["artifact"]["sbom"],
-            "provenance": target_entry["artifact"]["provenance"],
+            "sbom": {key: target_entry["artifact"]["sbom"][key] for key in ("format", "path")},
+            "provenance": {key: target_entry["artifact"]["provenance"][key] for key in ("format", "path")},
         },
         "created": dt.datetime.fromtimestamp(source_epoch, tz=dt.timezone.utc)
         .replace(microsecond=0)
@@ -795,6 +796,31 @@ def verify(args: argparse.Namespace) -> None:
     if args.sbom.name != expected_sbom:
         raise ArtifactError(f"SBOM must be named {expected_sbom}")
 
+    install_dir = getattr(args, "install_dir", None)
+    source_build = getattr(args, "source_build", False)
+    artifact = target_entry["artifact"]
+    mode = "published" if artifact.get("status") == "published" else "source-build"
+    if install_dir is not None:
+        if args.skip_macho:
+            raise ArtifactError("--install-dir requires native verification; --skip-native is test-only")
+        if install_dir.exists() or install_dir.is_symlink():
+            raise ArtifactError("--install-dir must be a new directory")
+        if mode == "source-build" and (artifact.get("status") != "planned" or not source_build):
+            raise ArtifactError("planned artifacts require explicit --source-build from a trusted controlled build")
+        if mode == "published" and source_build:
+            raise ArtifactError("published artifacts cannot use --source-build")
+    if mode == "published":
+        provenance = getattr(args, "provenance", None)
+        if provenance is None:
+            raise ArtifactError("published artifact verification requires --provenance")
+        for path, expected in (
+            (args.archive, artifact["sha256"]),
+            (args.sbom, artifact["sbom"]["sha256"]),
+            (provenance, artifact["provenance"]["sha256"]),
+        ):
+            if sha256_file(path) != expected:
+                raise ArtifactError(f"published artifact SHA-256 mismatch: {path}")
+
     with tempfile.TemporaryDirectory(prefix="kunlun-jsc-verify-") as temporary:
         temporary_path = Path(temporary)
         members = decompress_archive(args.archive, args.zstd, temporary_path)
@@ -861,10 +887,13 @@ def verify(args: argparse.Namespace) -> None:
             raise ArtifactError("archive ABI metadata does not match the manifest")
         if metadata.get("licenses") != expected_licenses:
             raise ArtifactError("archive license metadata does not match the manifest")
+        for entry in expected_licenses:
+            if sha256_file(extract_root / entry["path"]) != entry["sha256"]:
+                raise ArtifactError(f"archive license checksum mismatch: {entry['path']}")
         expected_artifact = {
             "archive_path": target_entry["artifact"]["archive_path"],
-            "sbom": target_entry["artifact"]["sbom"],
-            "provenance": target_entry["artifact"]["provenance"],
+            "sbom": {key: target_entry["artifact"]["sbom"][key] for key in ("format", "path")},
+            "provenance": {key: target_entry["artifact"]["provenance"][key] for key in ("format", "path")},
         }
         if metadata.get("artifact") != expected_artifact:
             raise ArtifactError("archive artifact metadata does not match the manifest")
@@ -899,6 +928,26 @@ def verify(args: argparse.Namespace) -> None:
                     cxx_abi_baseline,
                 )
 
+        receipt_sha256 = None
+        if install_dir is not None:
+            receipt = {
+                "schema_version": 1,
+                "target": args.target,
+                "native_verified": True,
+                "mode": mode,
+                "manifest_sha256": sha256_file(args.manifest),
+                "archive_sha256": sha256_file(args.archive),
+                "sbom_sha256": sha256_file(args.sbom),
+                "files": {
+                    path.relative_to(extract_root).as_posix(): sha256_file(path)
+                    for path in iter_regular_files(extract_root)
+                },
+            }
+            write_json(extract_root / VERIFICATION_RECEIPT, receipt)
+            # Never alter an existing directory; failed verification installs nothing.
+            shutil.copytree(extract_root, install_dir)
+            receipt_sha256 = sha256_file(install_dir / VERIFICATION_RECEIPT)
+
     print(
         json.dumps(
             {
@@ -908,6 +957,8 @@ def verify(args: argparse.Namespace) -> None:
                 "sbom_sha256": sha256_file(args.sbom),
                 "target": args.target,
                 "verified": True,
+                "install_dir": str(install_dir) if install_dir is not None else None,
+                "receipt_sha256": receipt_sha256,
             },
             sort_keys=True,
         )
@@ -979,6 +1030,9 @@ def parser() -> argparse.ArgumentParser:
     verify_parser.add_argument("--archive", type=Path, required=True)
     verify_parser.add_argument("--sbom", type=Path, required=True)
     verify_parser.add_argument("--zstd", default="zstd")
+    verify_parser.add_argument("--install-dir", type=Path, help="install verified files into a new directory for bundled-jsc")
+    verify_parser.add_argument("--source-build", action="store_true", help="explicitly trust a locally controlled source build of a planned artifact")
+    verify_parser.add_argument("--provenance", type=Path, help="local provenance bundle required for a published artifact")
     verify_parser.add_argument(
         "--skip-native",
         "--skip-macho",

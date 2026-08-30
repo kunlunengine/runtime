@@ -196,6 +196,72 @@ class ArtifactTests(unittest.TestCase):
         with self.assertRaisesRegex(jsc_artifact.ArtifactError, "SBOM inventory mismatch"):
             jsc_artifact.verify(arguments)
 
+    def install_arguments(self, archive: Path, sbom: Path) -> argparse.Namespace:
+        return argparse.Namespace(
+            manifest=self.fixture.manifest_path, target=self.fixture.target,
+            archive=archive, sbom=sbom, zstd=str(self.fixture.zstd),
+            skip_macho=False, source_build=True, provenance=None,
+            install_dir=Path(self.temporary.name) / "installed",
+        )
+
+    def test_install_requires_native_verification_and_explicit_source_trust(self) -> None:
+        archive, sbom, _ = self.fixture.assemble("install")
+        args = self.install_arguments(archive, sbom)
+        args.skip_macho = True
+        with self.assertRaisesRegex(jsc_artifact.ArtifactError, "requires native verification"):
+            jsc_artifact.verify(args)
+        args.skip_macho = False
+        args.source_build = False
+        with self.assertRaisesRegex(jsc_artifact.ArtifactError, "explicit --source-build"):
+            jsc_artifact.verify(args)
+        self.assertFalse(args.install_dir.exists())
+
+    def test_install_records_exact_extracted_files_and_does_not_overwrite(self) -> None:
+        archive, sbom, staging = self.fixture.assemble("install")
+        args = self.install_arguments(archive, sbom)
+        self.fixture.manifest["targets"][0]["artifact"]["status"] = "planned"
+        self.fixture.manifest_path.write_text(json.dumps(self.fixture.manifest), encoding="utf-8")
+        # Fixture bytes are not Mach-O; only this unit test mocks native validation.
+        with mock.patch.object(jsc_artifact, "verify_macho") as native:
+            jsc_artifact.verify(args)
+        native.assert_called_once()
+        receipt = jsc_artifact.read_json(args.install_dir / jsc_artifact.VERIFICATION_RECEIPT)
+        self.assertTrue(receipt["native_verified"])
+        self.assertEqual(receipt["mode"], "source-build")
+        self.assertEqual(receipt["manifest_sha256"], jsc_artifact.sha256_file(self.fixture.manifest_path))
+        self.assertEqual(receipt["files"], {
+            path.relative_to(staging).as_posix(): jsc_artifact.sha256_file(path)
+            for path in jsc_artifact.iter_regular_files(staging)
+        })
+        (args.install_dir / "keep.txt").write_text("keep", encoding="utf-8")
+        with self.assertRaisesRegex(jsc_artifact.ArtifactError, "must be a new directory"):
+            jsc_artifact.verify(args)
+        self.assertEqual((args.install_dir / "keep.txt").read_text(), "keep")
+
+    def test_published_artifacts_pin_archive_sbom_and_provenance(self) -> None:
+        archive, sbom, _ = self.fixture.assemble("published")
+        args = self.install_arguments(archive, sbom)
+        args.source_build = False
+        args.provenance = Path(self.temporary.name) / "provenance.jsonl"
+        args.provenance.write_text("reviewed provenance bundle", encoding="utf-8")
+        artifact = self.fixture.manifest["targets"][0]["artifact"]
+        artifact["status"] = "published"
+        artifact["sha256"] = jsc_artifact.sha256_file(archive)
+        artifact["sbom"]["sha256"] = jsc_artifact.sha256_file(sbom)
+        artifact["provenance"]["sha256"] = jsc_artifact.sha256_file(args.provenance)
+        self.fixture.manifest_path.write_text(json.dumps(self.fixture.manifest), encoding="utf-8")
+        with mock.patch.object(jsc_artifact, "verify_macho"):
+            jsc_artifact.verify(args)
+        receipt = jsc_artifact.read_json(args.install_dir / jsc_artifact.VERIFICATION_RECEIPT)
+        self.assertEqual(receipt["mode"], "published")
+        args.install_dir = None
+        for path in (archive, sbom, args.provenance):
+            original = path.read_bytes()
+            path.write_bytes(original + b"corruption")
+            with self.assertRaisesRegex(jsc_artifact.ArtifactError, "SHA-256 mismatch"):
+                jsc_artifact.verify(args)
+            path.write_bytes(original)
+
     def test_spdx_inventory_reports_missing_and_extra_in_the_expected_direction(self) -> None:
         extract_root = Path(self.temporary.name) / "inventory"
         extract_root.mkdir()

@@ -1,3 +1,10 @@
+#[cfg(test)]
+#[path = "../../distribution/jsc/backend.rs"]
+mod jsc_backend;
+#[cfg(test)]
+#[path = "../../crates/kunlun-jsc/src/ownership.rs"]
+mod jsc_ownership;
+
 mod jsc_manifest;
 
 use std::env;

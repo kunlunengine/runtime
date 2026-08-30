@@ -21,8 +21,8 @@ Milestone 1 is the current focus. Good starting points are issues labeled `m1` a
 
 ## Development Setup
 
-The workspace requires Rust 1.85 or newer. The default `bundled-jsc` backend requires verified local
-pinned libraries; it never downloads or falls back. Follow the [offline artifact setup](./docs/jsc-distribution.md#selecting-a-cargo-backend)
+The workspace requires Rust 1.85 or newer. The default `bundled-jsc` backend requires local pinned
+libraries to be verified; it never downloads or falls back. Follow the [offline artifact setup](./docs/jsc-distribution.md#selecting-a-cargo-backend)
 for macOS arm64/x64 and Linux glibc arm64/x64. Linux without a verified artifact is no longer a
 runtime backend. Repository tooling remains available with `cargo test -p xtask`.
 

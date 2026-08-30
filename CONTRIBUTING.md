@@ -45,6 +45,13 @@ cargo run -p kunlun-runtime -- doctor
 If a platform-specific or sanitizer check cannot run locally, say so in the pull request and link
 the corresponding CI result.
 
+The pinned macOS/Linux JSC artifact workflows are manual, not required on every PR. Run the
+affected platform(s) when changing JSC bindings, native build inputs, or packaging; use
+`compare_rebuild=false` while iterating and the default `true` for release-candidate evidence.
+See [when to run the artifact workflows](./docs/jsc-distribution.md#when-to-run-the-artifact-workflows)
+for the change-to-platform matrix, cache behavior, and dispatch commands. Link the candidate SHA,
+mode, and relevant run results in the PR.
+
 ## Engineering Expectations
 
 Changes at the JSC boundary must preserve the invariants documented in

@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       compare_rebuild:
-        description: Build each target twice and require byte-identical archives
+        description: 'Release validation: independent cold rebuild (disable for cached development validation)'
         required: true
         type: boolean
         default: true

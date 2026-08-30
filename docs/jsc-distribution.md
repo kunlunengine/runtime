@@ -70,6 +70,59 @@ provenance paths. The separate SPDX document inventories every regular file in t
 SHA-1 and SHA-256. Archives contain no symlinks, build directories, private WebKit headers, or
 unrelated tools.
 
+## When to run the artifact workflows
+
+`Build pinned JSC for macOS` (`jsc-macos.yml`) and `Build pinned JSC for Linux`
+(`jsc-linux.yml`) are **manual artifact builders**, not ordinary per-PR checks. Neither runs on
+push, pull request, or a timer. The normal `Check Rust` workflow still validates the manifest,
+artifact tooling, Rust code, macOS system-framework corpus, and ownership invariants automatically.
+Those checks do not replace testing an actual pinned artifact when the JSC boundary changes.
+
+| Change or purpose | macOS builder | Linux builder | When / mode |
+| --- | --- | --- | --- |
+| Host/CLI code or documentation unrelated to the JSC boundary | No | No | Normal PR checks are sufficient. |
+| Rust JSC bindings, pinned-backend selection, or the shared binding corpus | Yes | Yes | PR author runs fast validation on the candidate branch before merge. |
+| WebKit revision, patches, shared engine flags, C ABI/shim, licenses, or shared packaging logic | Yes | Yes | Fast validation while iterating; release validation on the final candidate before accepting new artifacts. |
+| macOS build/cache workflow, Xcode/SDK, or macOS deployment settings only | Yes | No | Validate the affected platform; use release mode for final artifact/build-input changes. |
+| Linux build/cache workflow, OCI/APT toolchain, ELF policy, or glibc baseline only | No | Yes | Validate the affected platform; use release mode for final artifact/build-input changes. |
+| Publish a four-target release or refresh release evidence | Yes | Yes | Maintainer runs release validation from the same reviewed ref/commit for both workflows. |
+
+The relevant platform means **both architectures**: macOS builds arm64 and Intel on the pinned
+Apple Silicon Xcode image; Linux builds arm64 and x64 on matching native runners. If a shared
+manifest edit changes only one platform's toolchain, run that platform; a shared JSC flag/revision
+change affects both. A documentation-only workflow/runbook edit does not require an engine rebuild.
+
+Both workflows offer the same input:
+
+- **Fast development validation — `compare_rebuild=false`:** restore the compiler cache, build and
+  package once, verify the artifact, run the binding corpus and `doctor`, and produce signed
+  evidence. A cache miss still performs a full build. Signed output alone is not release approval:
+  this mode has no independent-rebuild report and is not sufficient for publication.
+- **Release validation — `compare_rebuild=true` (default):** do all of the above, then build again
+  from a new source checkout with a fresh, non-shared compiler cache and require byte-identical
+  archives. This deliberately takes a full cold build even when the first build hits its cache.
+  Do not select it for every routine PR simply to test a Rust-only change.
+
+In GitHub, open **Actions → Build pinned JSC for macOS / Linux → Run workflow**, select the
+candidate branch/tag, and uncheck `compare_rebuild` for fast validation. The CLI equivalent is:
+
+```bash
+# Candidate branch: run only the platform(s) selected by the table above.
+gh workflow run jsc-macos.yml --ref YOUR_BRANCH -f compare_rebuild=false
+gh workflow run jsc-linux.yml --ref YOUR_BRANCH -f compare_rebuild=false
+
+# Reviewed release candidate: both runs must resolve to the same source commit.
+gh workflow run jsc-macos.yml --ref main -f compare_rebuild=true
+gh workflow run jsc-linux.yml --ref main -f compare_rebuild=true
+```
+
+Link the relevant run(s), their exact head SHA, and the chosen mode in the PR. If artifact inputs
+change afterward, rerun the affected platform(s). Before publication, verify both workflows used
+the intended reviewed commit and that all four target jobs, independent comparisons, binding
+tests, and attestation jobs passed. Download the archive, SBOM, provenance, checksums, and rebuild
+report from **Artifacts**. Uploading temporary workflow artifacts does not publish a release or
+change a manifest target to `published`; durable publication and digest review remain separate.
+
 ## Controlled macOS builds
 
 [`distribution/jsc/scripts/build-macos.sh`](../distribution/jsc/scripts/build-macos.sh) is the only
@@ -98,11 +151,36 @@ Run it from an exact toolchain host with a detached checkout of the manifest rev
 distribution/jsc/scripts/build-macos.sh \
   --target aarch64-apple-darwin \
   --webkit-root /absolute/path/to/WebKit \
-  --output /absolute/path/to/output
+  --output /absolute/path/to/output \
+  --compilation-cache-dir /absolute/path/to/xcode-cache
 ```
 
 Use `x86_64-apple-darwin` for the Intel build. The output directory is build-specific and contains
 large intermediate WebKit products in addition to `artifacts/` and `staging/`.
+
+### Persistent Xcode compilation cache
+
+The pinned WebKit uses Xcode's native LLVM content-addressable compilation cache, not Linux's
+ccache wrapper. The workflow now saves/restores that CAS between successful runs, separated by
+target architecture and exact manifest toolchain profile. The key also covers the manifest,
+patches, macOS scripts, and workflow. Fallback restores stay within the same toolchain and target;
+Xcode validates compilation inputs before reusing entries. Only the CAS is cached, not source
+checkouts, complete DerivedData trees, test results, or trusted release archives.
+
+The first source/output paths are stable across fresh hosted runners to preserve cache reuse.
+[`macos-cache-settings.sh`](../distribution/jsc/scripts/macos-cache-settings.sh) explicitly selects
+the cache directory, sets Xcode's `2G` cache size limit, enables cache diagnostics, and disables the
+legacy ccache wrapper and remote cache plugins. Cache hit information appears in the Xcode build
+log. `actions/cache` saves a new entry only after a successful job; the first run, evicted entries,
+or changed compiler inputs can still require full compilation.
+
+Omitting `--compilation-cache-dir` creates a new empty CAS under the build output **on every
+invocation**, rather than inheriting Xcode's global cache. The independent rebuild deliberately
+omits it, so it cannot reuse the first build's restored cache. Cache paths must contain no spaces
+or shell metacharacters because the pinned upstream `build-jsc` passes settings through make.
+
+This follows the pinned [WebKit caching guidance](https://github.com/WebKit/WebKit/blob/4b62d53ec6c16753020dbe69e59bf761ed0948e3/Tools/ccache/README.md)
+and Apple's [compilation-cache build settings](https://developer.apple.com/documentation/xcode/build-settings-reference).
 
 ### CI evidence and independent rebuilds
 
@@ -119,14 +197,16 @@ artifact, and runs `cargo test --workspace` plus `kunlun-runtime doctor` with
 report `pinned Kunlun JSC artifact` and `hermetic: true`; the system framework is not a release
 fallback.
 
-Release-candidate runs build each target twice from independent source checkouts by default. The
+Release-candidate runs build each target twice from independent source checkouts and a fresh second
+compiler cache by default. The
 comparison report lists every differing archive member and fails publication unless both archives
 are byte-identical. If a future toolchain introduces unavoidable nondeterminism, its member-level
 cause must be documented and reviewed before changing this gate.
 
 GitHub's `actions/attest` action binds the archive digest to signed SLSA v1 build provenance and
 also attests the SPDX document. Each uploaded artifact set contains the archive, SPDX SBOM, Sigstore
-attestation bundle at the manifest's `.intoto.jsonl` path, `SHA256SUMS`, and rebuild report. After
+attestation bundle at the manifest's `.intoto.jsonl` path, and `SHA256SUMS`; release-validation runs
+also contain the rebuild report. After
 the files are copied to durable release storage, update the target atomically to `published` with
 the three reviewed digests; temporary workflow-artifact URLs alone are not a publication record.
 

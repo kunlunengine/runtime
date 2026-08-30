@@ -74,6 +74,7 @@ export CCACHE_BASEDIR=$webkit_root
 export CCACHE_COMPILERCHECK=content
 export CCACHE_COMPRESS=true
 export CCACHE_MAXSIZE=2G
+export CCACHE_SLOPPINESS=
 
 ccache --zero-stats
 
@@ -94,7 +95,7 @@ echo "building WebKit JavaScriptCore $expected_revision for $target"
     cd "$webkit_root"
     Tools/Scripts/build-jsc "${build_arguments[@]}"
 )
-ccache --show-stats
+ccache --show-stats --verbose
 
 product_dir=$WEBKIT_OUTPUTDIR
 jsc_binary=$product_dir/lib/libJavaScriptCore.so

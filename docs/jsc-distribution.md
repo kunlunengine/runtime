@@ -182,7 +182,10 @@ requires a byte-identical second build by default, and uploads the archive, SPDX
 SLSA provenance, checksums, and member-level rebuild report. It is intentionally manual, like the
 macOS artifact workflow, rather than a per-pull-request job. Each architecture restores a bounded
 ccache whose key covers the target, manifest, patches, Linux toolchain definition, and build entry
-points. A changed input may reuse only compiler-validated entries from an older key. The independent
+points. A changed input may reuse only compiler-validated entries from an older key. The Linux
+configuration disables precompiled headers so the expensive JSC translation units are
+cacheable without relaxing ccache's macro or timestamp checks. Verbose cache statistics are emitted
+after every build. The independent
 second build does not mount the persisted cache, so rebuild evidence is produced from freshly
 compiled objects. OIDC and attestation write permissions remain isolated to the release-evidence
 jobs after verified outputs cross the job boundary as workflow artifacts.

@@ -17,7 +17,8 @@
       "linux": [
         "--release",
         "--jsc-only",
-        "--use-ccache"
+        "--use-ccache",
+        "--cmakeargs=-DCMAKE_DISABLE_PRECOMPILE_HEADERS=ON"
       ]
     },
     "environment": {

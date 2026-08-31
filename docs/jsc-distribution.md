@@ -188,6 +188,10 @@ gh workflow run jsc-macos.yml --ref "$reviewed_tag" -f compare_rebuild=true
 gh workflow run jsc-linux.yml --ref "$reviewed_tag" -f compare_rebuild=true
 ```
 
+Both build scripts run the [shim ownership ASan/UBSan corpus](./jsc-binding.md#ownership-verification)
+against the freshly built engine before packaging, without instrumenting release libraries. Changes
+to the callback/buffer header require fresh artifacts on both platforms.
+
 Link the relevant run(s), their exact head SHA, and the chosen mode in the PR. If artifact inputs
 change afterward, rerun the affected platform(s). Before publication, verify both workflows used
 the intended reviewed commit and that all four target jobs, independent comparisons, binding

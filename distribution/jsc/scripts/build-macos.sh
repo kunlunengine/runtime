@@ -157,6 +157,13 @@ if otool -L "$shim_dylib" | awk '{print $1}' | grep -Fqx "$original_jsc_id"; the
 fi
 codesign --force --sign - "$shim_dylib"
 
+# Exercise an instrumented copy of this shim against the just-built engine.
+# The release libraries remain uninstrumented and artifact contents unchanged.
+CXX="$(xcrun -f clang++)" "$repository_root/distribution/jsc/scripts/test-native-ownership.sh" \
+    -arch "$architecture" -mmacosx-version-min="$deployment_target" \
+    -F "$product_dir" -L "$native_output" -lJavaScriptCore \
+    -Wl,-rpath,"$native_output"
+
 archive_path=$(jq -er --arg target "$target" \
     '.targets[] | select(.triple == $target) | .artifact.archive_path' "$manifest")
 sbom_path=$(jq -er --arg target "$target" \

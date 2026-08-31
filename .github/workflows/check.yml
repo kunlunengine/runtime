@@ -85,6 +85,8 @@ jobs:
               run: cargo clippy --workspace --all-targets --no-default-features --features system-jsc -- -D warnings
             - name: Run workspace tests
               run: cargo test --workspace --no-default-features --features system-jsc
+            - name: Exercise native ownership with ASan and UBSan
+              run: distribution/jsc/scripts/test-native-ownership.sh
             - name: Run runtime doctor
               run: cargo run -p kunlun-runtime --no-default-features --features system-jsc -- doctor
 

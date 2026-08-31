@@ -20,7 +20,8 @@ kunlun-runtime -> kunlun-jsc -> kunlun-jsc-sys -> JavaScriptCore
 ```
 
 - `kunlun-jsc-sys` owns raw C declarations and native linking.
-- `kunlun-jsc` owns safe, `!Send + !Sync` contexts and protected Promise resolvers.
+- `kunlun-jsc` owns safe, `!Send + !Sync` contexts, protected Promise resolvers, revocable host
+  callbacks, and checked ArrayBuffer/TypedArray handles. See the [ownership API](./docs/jsc-binding.md#safe-host-callbacks-and-buffers).
 - `kunlun-runtime` owns Tokio, isolate lifecycle, async evaluation, and the native process entry.
 
 ## Bootstrap

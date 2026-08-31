@@ -30,6 +30,7 @@ RUN test -n "${APT_SNAPSHOT}" \
         git \
         jq \
         libicu-dev \
+        libclang-rt-18-dev \
         lld-18 \
         ninja-build \
         patchelf \

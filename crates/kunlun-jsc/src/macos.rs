@@ -1,10 +1,16 @@
-use crate::ownership::{OwnedHandle, ProtectedHandle};
+#[path = "buffers.rs"]
+mod buffers;
+#[path = "callbacks.rs"]
+mod callbacks;
+pub use buffers::{ArrayBuffer, TypedArray, TypedArrayKind};
+pub use callbacks::{CallbackReturn, CallbackValue, HostFunction};
+
+use crate::ownership::{OwnedHandle, ProtectedHandle, catch_callback_panic};
 use crate::{BackendInfo, HostCall, JscError};
 use kunlun_jsc_sys as sys;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::marker::PhantomData;
-use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::ptr;
 use std::ptr::NonNull;
 use std::rc::Rc;
@@ -580,6 +586,33 @@ pub struct RootedValue<'context> {
 }
 
 impl RootedValue<'_> {
+    /// Publishes this value on its own context's global object.
+    pub fn set_global(&self, name: &str) -> Result<(), JscError> {
+        let name = OwnedJsString::new(name, "set_global")?;
+        let context = self.protected.context();
+        let mut global = ptr::null_mut();
+        // SAFETY: the retained context owns both the global and the value.
+        expect_status("get_global", unsafe {
+            sys::kunlun_jsc_context_get_global_object(context.as_context(), &mut global)
+        })?;
+        let mut exception = ptr::null();
+        // SAFETY: value is protected through property setters and reentrancy.
+        let status = unsafe {
+            sys::kunlun_jsc_object_set_property(
+                context.as_context(),
+                global,
+                name.as_ptr(),
+                self.protected.as_value(),
+                sys::KUNLUN_JSC_PROPERTY_ATTRIBUTE_NONE,
+                &mut exception,
+            )
+        };
+        if !exception.is_null() {
+            return Err(context.exception_error("set_global", None, exception));
+        }
+        expect_status("set_global", status)
+    }
+
     pub fn try_clone(&self) -> Result<Self, JscError> {
         Ok(Self {
             protected: self.protected.try_clone()?,
@@ -746,7 +779,7 @@ unsafe extern "C" fn sleep_callback(
     out_result: *mut ValueRef,
     out_exception: *mut ValueRef,
 ) -> sys::kunlun_jsc_status {
-    match catch_unwind(AssertUnwindSafe(|| {
+    match catch_callback_panic(|| {
         sleep_callback_impl(
             context,
             argument_count,
@@ -754,7 +787,7 @@ unsafe extern "C" fn sleep_callback(
             out_result,
             out_exception,
         )
-    })) {
+    }) {
         Ok(status) => status,
         Err(_) => callback_error(context, out_exception, "Kunlun timer callback panicked"),
     }
@@ -838,7 +871,7 @@ fn sleep_callback_impl(
         }
     };
 
-    if catch_unwind(AssertUnwindSafe(|| (hook.schedule)(duration, deferred))).is_err() {
+    if catch_callback_panic(|| (hook.schedule)(duration, deferred)).is_err() {
         return callback_error(context, out_exception, "Kunlun timer scheduler panicked");
     }
 
@@ -857,7 +890,7 @@ unsafe extern "C" fn host_call_callback(
     out_result: *mut ValueRef,
     out_exception: *mut ValueRef,
 ) -> sys::kunlun_jsc_status {
-    match catch_unwind(AssertUnwindSafe(|| {
+    match catch_callback_panic(|| {
         host_call_callback_impl(
             context,
             argument_count,
@@ -865,7 +898,7 @@ unsafe extern "C" fn host_call_callback(
             out_result,
             out_exception,
         )
-    })) {
+    }) {
         Ok(status) => status,
         Err(_) => callback_error(context, out_exception, "Kunlun host callback panicked"),
     }
@@ -932,7 +965,7 @@ fn host_call_callback_impl(
         }
     };
     let call = HostCall { operation, payload };
-    if catch_unwind(AssertUnwindSafe(|| (hook.schedule)(call, deferred))).is_err() {
+    if catch_callback_panic(|| (hook.schedule)(call, deferred)).is_err() {
         return callback_error(context, out_exception, "Kunlun host scheduler panicked");
     }
 
@@ -1198,3 +1231,7 @@ mod tests {
         assert_eq!(Rc::strong_count(&calls), 1);
     }
 }
+
+#[cfg(test)]
+#[path = "boundary_tests.rs"]
+mod boundary_tests;

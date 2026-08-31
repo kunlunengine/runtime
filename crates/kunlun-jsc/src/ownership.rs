@@ -7,6 +7,18 @@ use std::marker::PhantomData;
 use std::ptr::NonNull;
 use std::rc::Rc;
 
+/// Catches even panic payloads whose destructor panics. Only the exceptional
+/// payload is leaked; callback state is unwound/dropped normally on this thread.
+pub(crate) fn catch_callback_panic<T>(operation: impl FnOnce() -> T) -> Result<T, ()> {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(operation)) {
+        Ok(value) => Ok(value),
+        Err(payload) => {
+            std::mem::forget(payload);
+            Err(())
+        }
+    }
+}
+
 /// Owns one opaque native handle and releases it exactly once.
 pub(crate) struct OwnedHandle<T> {
     raw: NonNull<T>,
@@ -108,6 +120,24 @@ impl<T, C> Drop for ProtectedHandle<T, C> {
 mod tests {
     use super::*;
     use std::cell::{Cell, RefCell};
+
+    #[test]
+    fn callback_panic_drops_local_state_but_not_a_hostile_payload() {
+        struct Payload;
+        impl Drop for Payload {
+            fn drop(&mut self) {
+                panic!("panic payload destructor must not run");
+            }
+        }
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let result = catch_callback_panic(|| {
+            let _local = owner(Rc::clone(&log));
+            std::panic::panic_any(Payload);
+        });
+        assert!(result.is_err());
+        assert_eq!(&*log.borrow(), &["owner"]);
+        assert_eq!(catch_callback_panic(|| 42), Ok(42));
+    }
 
     struct TrackedOwner {
         log: Rc<RefCell<Vec<&'static str>>>,

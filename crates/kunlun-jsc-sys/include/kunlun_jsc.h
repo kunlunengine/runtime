@@ -32,6 +32,10 @@ typedef uint32_t kunlun_jsc_status;
 #define KUNLUN_JSC_STATUS_INTEGER_OVERFLOW 5u
 #define KUNLUN_JSC_STATUS_CALLBACK_ERROR 6u
 #define KUNLUN_JSC_STATUS_CPP_EXCEPTION 7u
+#define KUNLUN_JSC_STATUS_WRONG_THREAD 8u
+#define KUNLUN_JSC_STATUS_WRONG_TYPE 9u
+#define KUNLUN_JSC_STATUS_OUT_OF_BOUNDS 10u
+#define KUNLUN_JSC_STATUS_MISALIGNED 11u
 
 /* Stable property-attribute representation. */
 typedef uint32_t kunlun_jsc_property_attributes;
@@ -69,6 +73,72 @@ typedef kunlun_jsc_status (*kunlun_jsc_function_callback)(
     const kunlun_jsc_value *const *arguments,
     const kunlun_jsc_value **out_result,
     const kunlun_jsc_value **out_exception);
+
+/* The caller owns user_data, keeps it alive until revoke, and roots the
+ * function until revoke completes. Finalization never accesses user_data.
+ * Dispatch and revocation are restricted to the creation thread. */
+typedef kunlun_jsc_status (*kunlun_jsc_stateful_callback)(
+    void *user_data,
+    kunlun_jsc_context *context,
+    uint32_t argument_count,
+    const kunlun_jsc_value *const *arguments,
+    const kunlun_jsc_value **out_result,
+    const kunlun_jsc_value **out_exception);
+
+KUNLUN_JSC_API kunlun_jsc_status kunlun_jsc_object_make_function_with_data(
+    kunlun_jsc_context *context, const kunlun_jsc_string *name,
+    kunlun_jsc_stateful_callback callback, void *user_data,
+    kunlun_jsc_object **out_function, const kunlun_jsc_value **out_exception);
+/* Idempotent; subsequent JS calls throw. Does not free caller-owned data. */
+KUNLUN_JSC_API kunlun_jsc_status kunlun_jsc_object_revoke_function(
+    kunlun_jsc_context *context, kunlun_jsc_object *function);
+KUNLUN_JSC_API kunlun_jsc_status kunlun_jsc_value_make_number(
+    kunlun_jsc_context *context, double number, const kunlun_jsc_value **out_value);
+KUNLUN_JSC_API kunlun_jsc_status kunlun_jsc_value_make_boolean(
+    kunlun_jsc_context *context, uint8_t boolean, const kunlun_jsc_value **out_value);
+KUNLUN_JSC_API kunlun_jsc_status kunlun_jsc_context_collect_garbage(
+    kunlun_jsc_context *context);
+
+/* Stable element kinds; these are not casts of WebKit's enum. */
+typedef uint32_t kunlun_jsc_array_kind;
+#define KUNLUN_JSC_ARRAY_INT8 0u
+#define KUNLUN_JSC_ARRAY_UINT8 1u
+#define KUNLUN_JSC_ARRAY_UINT8_CLAMPED 2u
+#define KUNLUN_JSC_ARRAY_INT16 3u
+#define KUNLUN_JSC_ARRAY_UINT16 4u
+#define KUNLUN_JSC_ARRAY_INT32 5u
+#define KUNLUN_JSC_ARRAY_UINT32 6u
+#define KUNLUN_JSC_ARRAY_FLOAT32 7u
+#define KUNLUN_JSC_ARRAY_FLOAT64 8u
+#define KUNLUN_JSC_ARRAY_BIGINT64 9u
+#define KUNLUN_JSC_ARRAY_BIGUINT64 10u
+
+/* Copies bytes into an independent, aligned shim allocation whose ownership
+ * passes to JSC. The finalizer frees only native memory and calls no Rust or
+ * JSC code. On failure there is no caller cleanup obligation. Null bytes are
+ * accepted only for zero length. The result is borrowed and must be rooted. */
+KUNLUN_JSC_API kunlun_jsc_status kunlun_jsc_array_buffer_create_copy(
+    kunlun_jsc_context *context, const uint8_t *bytes, uint64_t length,
+    kunlun_jsc_object **out_buffer, const kunlun_jsc_value **out_exception);
+/* These accept fixed ArrayBuffers created by create_copy, reject detached buffers
+ * with JS_EXCEPTION, and never expose a backing pointer. Offsets are in bytes.
+ * Copying pins storage via JSC's public C API; a later JS transfer may throw.
+ * All handles must be live/rooted and accessed on their owning isolate thread. */
+KUNLUN_JSC_API kunlun_jsc_status kunlun_jsc_array_buffer_length(
+    kunlun_jsc_context *context, kunlun_jsc_object *buffer,
+    uint64_t *out_length, const kunlun_jsc_value **out_exception);
+KUNLUN_JSC_API kunlun_jsc_status kunlun_jsc_array_buffer_read(
+    kunlun_jsc_context *context, kunlun_jsc_object *buffer,
+    uint64_t offset, uint8_t *bytes, uint64_t length,
+    const kunlun_jsc_value **out_exception);
+KUNLUN_JSC_API kunlun_jsc_status kunlun_jsc_array_buffer_write(
+    kunlun_jsc_context *context, kunlun_jsc_object *buffer,
+    uint64_t offset, const uint8_t *bytes, uint64_t length,
+    const kunlun_jsc_value **out_exception);
+KUNLUN_JSC_API kunlun_jsc_status kunlun_jsc_typed_array_create(
+    kunlun_jsc_context *context, kunlun_jsc_object *buffer,
+    kunlun_jsc_array_kind kind, uint64_t byte_offset, uint64_t length,
+    kunlun_jsc_object **out_array, const kunlun_jsc_value **out_exception);
 
 KUNLUN_JSC_API kunlun_jsc_status
 kunlun_jsc_context_group_create(kunlun_jsc_context_group **out_group);

@@ -71,7 +71,8 @@ handles remain private to the platform module and the deliberately unsafe `kunlu
 
 [`crates/kunlun-jsc-sys/include/kunlun_jsc.h`](../crates/kunlun-jsc-sys/include/kunlun_jsc.h) is the
 authoritative public ABI. ABI v1 wraps the context, string, evaluation, property, callback, Deferred
-Promise, conversion, and rooting primitives already used by the bootstrap safe wrapper. Keeping the
+Promise, conversion, rooting, revocable callback state, and checked ArrayBuffer/TypedArray primitives.
+The callback/buffer additions preserve all existing ABI v1 symbols. Keeping the
 public JSC calls behind the same boundary means Rust declarations cannot drift from either the shim
 or the eventual pinned engine build.
 
@@ -92,7 +93,7 @@ Later versions of the shim will provide the smallest additional API needed for:
 - microtask checkpoints and unhandled-rejection notification;
 - execution deadlines, termination, and memory telemetry;
 - Inspector frontend/backend message callbacks and pause-loop events;
-- external ArrayBuffer lifetime hooks.
+- additional zero-copy buffer adoption APIs, only after a separate ownership review.
 
 It returns status codes and explicit exception/result handles. It does not leak WebKit C++ types into
 the Rust ABI.
@@ -103,6 +104,108 @@ both C and C++. The default `bundled-jsc` backend verifies a locally installed d
 linking it; explicit `system-jsc` compiles the bootstrap shim and links the macOS framework. It
 invokes no downloader. Missing, conflicting, and unsupported backends fail before native compilation.
 See [backend selection and trust](./jsc-distribution.md#selecting-a-cargo-backend).
+
+## Safe host callbacks and buffers
+
+`JscVm::host_function` creates a `HostFunction<'vm>` that owns a rooted JS function and an
+isolate-local Rust closure. The closure accepts invocation-scoped `CallbackValue` arguments and
+returns `CallbackReturn::{Undefined, Boolean, Number, String}` or an error message. Argument
+conversion preserves structured JSC errors. Captures can contain `Rc` and other non-`Send` state.
+Keep the handle alive for as long as JavaScript should be able to call it:
+
+```rust
+use kunlun_jsc::{CallbackReturn, JscVm, TypedArrayKind};
+
+let vm = JscVm::new("host-example")?;
+let echo = vm.host_function("echo", |args| {
+    let text = args.first().ok_or("expected an argument")?
+        .to_string().map_err(|error| error.to_string())?;
+    Ok(CallbackReturn::String(text))
+})?;
+echo.set_global("echo")?;
+assert_eq!(vm.evaluate("echo('hello')", "example:///host.js")?, "hello");
+
+let buffer = vm.array_buffer(&[0; 16])?;
+let view = buffer.typed_array(TypedArrayKind::Uint32, 4, 2)?;
+view.set_global("words")?;
+view.write(0, &42_u32.to_ne_bytes())?;
+assert_eq!(vm.evaluate("words[0]", "example:///buffer.js")?, "42");
+```
+
+Callback ownership and failure rules:
+
+- Rust owns the closure. Native GC finalizes only a C++ callback record and never reads or drops
+  Rust `user_data`. `HostFunction::drop` revokes the native function before releasing its closure
+  on the isolate thread. JS aliases then throw, even if they remain reachable.
+- Each invocation retains an `Rc` to the callback state before entering user code. Reentrant
+  conversion and dropping a callback's own handle cannot free active state. No registry borrow
+  remains held while user code executes. A weak context reference avoids an automatic owner cycle;
+  as with ordinary `Rc`, user-created strong cycles must be broken by the application.
+- Registration failures drop untransferred Rust state. A failure to root a created function revokes
+  it before dropping state. Failure to publish a global leaves the returned handle owned by Rust;
+  the caller can retry or drop it. Explicit drop runs before the VM can be destroyed in safe Rust.
+- Native dispatch checks the creation thread before touching Rust state. Rust also checks the
+  callback's context. Public callback arguments and handles cannot escape their owner lifetime or
+  become `Send`/`Sync`. Sharing a context group grants no cross-context callback authority.
+- Callback and scheduler panics become JavaScript errors. The common panic boundary deliberately
+  forgets the exceptional panic payload: a user-defined payload destructor may itself panic. Normal
+  local state still unwinds and releases; builds using `panic=abort` remain process-aborting.
+
+`ArrayBuffer<'vm>` copies the input bytes into an independent, aligned native allocation and roots
+its JSC buffer. The external backing allocation belongs to JSC after the no-copy C API call; JSC's
+contract also invokes the deallocator on JS creation failure. Validation and shim allocation failures
+are handled before transfer. The finalizer contains no Rust callback or engine call, so it is safe
+on collector threads and cannot race deallocation of the original Rust input. Its storage release
+uses an atomic exchange and is idempotent while the state is live; JSC invokes the finalizer exactly
+once. The native sanitizer harness counts every backing allocation through context-group teardown.
+
+`TypedArray<'vm>` retains both its own root and an independent root for the backing buffer. All 11
+C API element kinds are explicitly mapped, including clamped bytes and BigInt arrays. Creation
+checks alignment and the element count without multiplication overflow. Reads/writes are bounded
+by the view's byte range and use copies in native byte order, never typed pointer casts or Rust
+slices into GC-managed storage. Clones add independent protections. Zero-length buffers and views
+at the aligned end of a buffer are valid.
+
+The API currently creates fixed, unshared buffers; it does not adopt arbitrary JS buffers,
+SharedArrayBuffers, resizable buffers, or caller-owned raw allocations. A native zero-length view
+checks detachment without consulting replaceable JavaScript properties. Detached buffers produce a
+structured JS exception on length, view creation, and even empty reads/writes, instead of being
+mistaken for empty attached buffers. JSC's public C byte-pointer API pins storage during nonempty
+copy operations, so a subsequent JS `transfer()` may throw. No temporary byte pointer survives
+another JSC API call. This limitation is intentional and must be revisited before promising
+transferable zero-copy I/O.
+
+The timer and built-in Promise schedulers retain their existing VM-owned registration lifecycle;
+the explicit per-function handle above is the general callback API.
+
+### Ownership verification
+
+Run the normal workspace corpus with either selected backend. The added tests cover repeated
+registration/drop, JS aliases after revocation, throwing publication setters, callback reentrancy,
+self-drop, panic payloads, GC pressure, view kinds/offsets, alignment/range failures, zero length,
+detachment, root clones, and teardown. Compile-fail examples enforce callback argument lifetimes
+and handle thread affinity. The engine-free Miri harness includes panic cleanup invariants.
+
+```bash
+cargo test --workspace --no-default-features --features system-jsc
+cargo +nightly miri test -p xtask jsc_ownership
+distribution/jsc/scripts/test-native-ownership.sh
+```
+
+The last command explicitly uses macOS's system framework and selected Xcode compiler for a
+bounded developer ASan+UBSan smoke test. The macOS PR matrix runs it on arm64/x64. Both controlled
+platform build scripts also run an instrumented copy of the shim against the just-built pinned
+engine, on all four artifact targets, before packaging. Linux's snapshot-pinned builder includes
+`libclang-rt-18-dev`. Sanitizers cover the shim and harness, not the full JSC library. LeakSanitizer
+is disabled because JSC has uninstrumented process-global caches; backing-storage leak counts are
+asserted separately. The executable has a 120-second timeout. No sanitizer failure is skipped and
+no instrumented binary is included in a release archive. Full-engine sanitizer builds remain #4.
+
+The pinned [JSC typed-array API](https://github.com/WebKit/WebKit/blob/4b62d53ec6c16753020dbe69e59bf761ed0948e3/Source/JavaScriptCore/API/JSTypedArray.h)
+and [object-finalizer contract](https://github.com/WebKit/WebKit/blob/4b62d53ec6c16753020dbe69e59bf761ed0948e3/Source/JavaScriptCore/API/JSObjectRef.h)
+are the authoritative upstream inputs for these ownership decisions. Additive header changes
+still require fresh artifacts: Cargo compares the verified public header with this checkout and
+rejects stale distributions rather than linking an older shim silently.
 
 ## Distribution modes
 

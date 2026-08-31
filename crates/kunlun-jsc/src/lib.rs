@@ -10,7 +10,10 @@ use std::error::Error;
 use std::fmt::{self, Display, Formatter};
 
 #[cfg(kunlun_jsc_native)]
-pub use native::{ContextGroup, DeferredPromise, JscVm, RootedValue};
+pub use native::{
+    ArrayBuffer, CallbackReturn, CallbackValue, ContextGroup, DeferredPromise, HostFunction, JscVm,
+    RootedValue, TypedArray, TypedArrayKind,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HostCall {
@@ -55,6 +58,10 @@ pub enum JscStatus {
     IntegerOverflow,
     CallbackError,
     CppException,
+    WrongThread,
+    WrongType,
+    OutOfBounds,
+    Misaligned,
     Unknown(u32),
 }
 
@@ -69,6 +76,10 @@ impl JscStatus {
             5 => Self::IntegerOverflow,
             6 => Self::CallbackError,
             7 => Self::CppException,
+            8 => Self::WrongThread,
+            9 => Self::WrongType,
+            10 => Self::OutOfBounds,
+            11 => Self::Misaligned,
             status => Self::Unknown(status),
         }
     }
@@ -83,6 +94,10 @@ impl JscStatus {
             Self::IntegerOverflow => 5,
             Self::CallbackError => 6,
             Self::CppException => 7,
+            Self::WrongThread => 8,
+            Self::WrongType => 9,
+            Self::OutOfBounds => 10,
+            Self::Misaligned => 11,
             Self::Unknown(status) => status,
         }
     }
@@ -99,6 +114,10 @@ impl Display for JscStatus {
             Self::IntegerOverflow => "integer overflow",
             Self::CallbackError => "callback error",
             Self::CppException => "C++ exception",
+            Self::WrongThread => "wrong isolate thread",
+            Self::WrongType => "wrong value type",
+            Self::OutOfBounds => "out of bounds",
+            Self::Misaligned => "misaligned byte offset",
             Self::Unknown(status) => return write!(formatter, "unknown status {status}"),
         };
         formatter.write_str(name)
@@ -240,7 +259,7 @@ mod tests {
 
     #[test]
     fn status_values_round_trip_without_losing_unknown_codes() {
-        for raw in 0..=7 {
+        for raw in 0..=11 {
             assert_eq!(JscStatus::from_raw(raw).as_raw(), raw);
         }
         assert_eq!(JscStatus::from_raw(99), JscStatus::Unknown(99));

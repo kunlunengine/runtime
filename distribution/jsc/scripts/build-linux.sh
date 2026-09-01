@@ -142,6 +142,12 @@ clang++-18 \
     -o "$shim_so"
 patchelf --set-rpath "\$ORIGIN" "$shim_so"
 
+# Exercise ownership hooks under ASan/UBSan against the pinned engine without
+# changing the distributed libraries or contacting the network.
+CXX=clang++-18 "$repository_root/distribution/jsc/scripts/test-native-ownership.sh" \
+    -I "$headers" -L "$native_output" -lJavaScriptCore \
+    -Wl,-rpath,"$native_output"
+
 archive_path=$(jq -er --arg target "$target" \
     '.targets[] | select(.triple == $target) | .artifact.archive_path' "$manifest")
 sbom_path=$(jq -er --arg target "$target" \

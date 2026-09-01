@@ -1,10 +1,13 @@
 #include "kunlun_jsc.h"
 #include "exception_boundary.hpp"
+#include "external_bytes.hpp"
 
 #include <JavaScriptCore/JavaScript.h>
 
 #include <cstring>
 #include <limits>
+#include <memory>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -62,7 +65,35 @@ void set_exception_message(JSContextRef context, JSValueRef *exception, const ch
 }
 
 struct CallbackState {
-    kunlun_jsc_function_callback callback;
+    kunlun_jsc_function_callback callback = nullptr;
+    kunlun_jsc_stateful_callback stateful_callback = nullptr;
+    void *user_data = nullptr; // Borrowed, never dereferenced by the finalizer.
+    std::thread::id owner = std::this_thread::get_id();
+};
+
+JSValueRef callback_bridge(JSContextRef, JSObjectRef, JSObjectRef, size_t, const JSValueRef[], JSValueRef *);
+void callback_finalize(JSObjectRef);
+
+JSClassRef callback_class()
+{
+    // Process-lifetime class metadata; JSC instances own their own references.
+    static JSClassRef klass = [] {
+        JSClassDefinition definition = kJSClassDefinitionEmpty;
+        definition.finalize = callback_finalize;
+        definition.callAsFunction = callback_bridge;
+        return JSClassCreate(&definition);
+    }();
+    return klass;
+}
+
+struct ScopedRoot {
+    JSContextRef context;
+    JSValueRef value;
+    ScopedRoot(JSContextRef context, JSValueRef value) : context(context), value(value)
+    {
+        JSValueProtect(context, value);
+    }
+    ~ScopedRoot() { JSValueUnprotect(context, value); }
 };
 
 JSValueRef callback_bridge(
@@ -75,8 +106,12 @@ JSValueRef callback_bridge(
 {
     try {
         auto *state = static_cast<CallbackState *>(JSObjectGetPrivate(function));
-        if (!state || !state->callback) {
+        if (!state || (!state->callback && !state->stateful_callback)) {
             set_exception_message(context, exception, "Kunlun callback state is unavailable");
+            return nullptr;
+        }
+        if (state->owner != std::this_thread::get_id()) {
+            set_exception_message(context, exception, "Kunlun callback invoked on the wrong thread");
             return nullptr;
         }
         if (argument_count > std::numeric_limits<uint32_t>::max()) {
@@ -86,14 +121,14 @@ JSValueRef callback_bridge(
 
         const kunlun_jsc_value *result = nullptr;
         const kunlun_jsc_value *callback_exception = nullptr;
-        kunlun_jsc_status status = state->callback(
-            opaque_cast<kunlun_jsc_context *>(const_cast<OpaqueJSContext *>(context)),
-            opaque_cast<kunlun_jsc_object *>(function),
-            opaque_cast<kunlun_jsc_object *>(this_object),
-            static_cast<uint32_t>(argument_count),
-            opaque_cast<const kunlun_jsc_value *const *>(arguments),
-            &result,
-            &callback_exception);
+        auto *raw_context = opaque_cast<kunlun_jsc_context *>(const_cast<OpaqueJSContext *>(context));
+        auto raw_arguments = opaque_cast<const kunlun_jsc_value *const *>(arguments);
+        kunlun_jsc_status status = state->stateful_callback
+            ? state->stateful_callback(state->user_data, raw_context,
+                static_cast<uint32_t>(argument_count), raw_arguments, &result, &callback_exception)
+            : state->callback(raw_context, opaque_cast<kunlun_jsc_object *>(function),
+                opaque_cast<kunlun_jsc_object *>(this_object), static_cast<uint32_t>(argument_count),
+                raw_arguments, &result, &callback_exception);
 
         if (callback_exception) {
             if (exception)
@@ -445,57 +480,90 @@ kunlun_jsc_status kunlun_jsc_object_make_error(
     });
 }
 
+// Called only inside an exported exception guard. On failure the object is
+// never published and its finalizer only destroys the native record.
+static kunlun_jsc_status make_function(
+    kunlun_jsc_context *context, const kunlun_jsc_string *name,
+    std::unique_ptr<CallbackState> state, kunlun_jsc_object **out_function,
+    const kunlun_jsc_value **out_exception)
+{
+    if (!context || !name || !out_function || !out_exception)
+        return KUNLUN_JSC_STATUS_INVALID_ARGUMENT;
+    *out_function = nullptr;
+    *out_exception = nullptr;
+    auto ctx = opaque_cast<JSContextRef>(context);
+    JSClassRef klass = callback_class();
+    if (!klass)
+        return KUNLUN_JSC_STATUS_OUT_OF_MEMORY;
+    JSObjectRef function = JSObjectMake(ctx, klass, state.get());
+    if (!function)
+        return KUNLUN_JSC_STATUS_OUT_OF_MEMORY;
+    state.release(); // JS owns only the native record, never user_data.
+    ScopedRoot root(ctx, function);
+    JSStringRef name_key = JSStringCreateWithUTF8CString("name");
+    if (!name_key)
+        return KUNLUN_JSC_STATUS_OUT_OF_MEMORY;
+    auto release_key = [](OpaqueJSString *key) { JSStringRelease(key); };
+    std::unique_ptr<OpaqueJSString, decltype(release_key)> key(name_key, release_key);
+    JSValueRef exception = nullptr;
+    JSValueRef name_value = JSValueMakeString(ctx, mutable_opaque_cast<JSStringRef>(name));
+    if (!name_value)
+        return KUNLUN_JSC_STATUS_OUT_OF_MEMORY;
+    JSObjectSetProperty(ctx, function, name_key, name_value,
+        kJSPropertyAttributeReadOnly | kJSPropertyAttributeDontEnum | kJSPropertyAttributeDontDelete,
+        &exception);
+    if (exception) {
+        *out_exception = opaque_cast<const kunlun_jsc_value *>(exception);
+        return KUNLUN_JSC_STATUS_JS_EXCEPTION;
+    }
+    *out_function = opaque_cast<kunlun_jsc_object *>(function);
+    return KUNLUN_JSC_STATUS_OK;
+}
+
 kunlun_jsc_status kunlun_jsc_object_make_function(
-    kunlun_jsc_context *context,
-    const kunlun_jsc_string *name,
-    kunlun_jsc_function_callback callback,
-    kunlun_jsc_object **out_function,
+    kunlun_jsc_context *context, const kunlun_jsc_string *name,
+    kunlun_jsc_function_callback callback, kunlun_jsc_object **out_function,
     const kunlun_jsc_value **out_exception)
 {
     return guard([&] {
-        if (!context || !name || !callback || !out_function || !out_exception)
+        if (!callback)
             return KUNLUN_JSC_STATUS_INVALID_ARGUMENT;
-        *out_function = nullptr;
-        *out_exception = nullptr;
+        auto state = std::make_unique<CallbackState>();
+        state->callback = callback;
+        return make_function(context, name, std::move(state), out_function, out_exception);
+    });
+}
 
-        auto *state = new CallbackState { callback };
-        JSClassDefinition definition = kJSClassDefinitionEmpty;
-        definition.finalize = callback_finalize;
-        definition.callAsFunction = callback_bridge;
-        JSClassRef callback_class = JSClassCreate(&definition);
-        if (!callback_class) {
-            delete state;
-            return KUNLUN_JSC_STATUS_OUT_OF_MEMORY;
-        }
-        JSObjectRef function = JSObjectMake(
-            opaque_cast<JSContextRef>(context), callback_class, state);
-        JSClassRelease(callback_class);
-        if (!function) {
-            delete state;
-            return KUNLUN_JSC_STATUS_OUT_OF_MEMORY;
-        }
+kunlun_jsc_status kunlun_jsc_object_make_function_with_data(
+    kunlun_jsc_context *context, const kunlun_jsc_string *name,
+    kunlun_jsc_stateful_callback callback, void *user_data,
+    kunlun_jsc_object **out_function, const kunlun_jsc_value **out_exception)
+{
+    return guard([&] {
+        if (!callback || !user_data)
+            return KUNLUN_JSC_STATUS_INVALID_ARGUMENT;
+        auto state = std::make_unique<CallbackState>();
+        state->stateful_callback = callback;
+        state->user_data = user_data;
+        return make_function(context, name, std::move(state), out_function, out_exception);
+    });
+}
 
-        JSStringRef name_key = JSStringCreateWithUTF8CString("name");
-        if (!name_key)
-            return KUNLUN_JSC_STATUS_OUT_OF_MEMORY;
-        JSValueRef exception = nullptr;
-        JSObjectSetProperty(
-            opaque_cast<JSContextRef>(context),
-            function,
-            name_key,
-            JSValueMakeString(
-                opaque_cast<JSContextRef>(context), mutable_opaque_cast<JSStringRef>(name)),
-            static_cast<JSPropertyAttributes>(
-                kJSPropertyAttributeReadOnly | kJSPropertyAttributeDontEnum
-                | kJSPropertyAttributeDontDelete),
-            &exception);
-        JSStringRelease(name_key);
-        if (exception) {
-            *out_exception = opaque_cast<const kunlun_jsc_value *>(exception);
-            return KUNLUN_JSC_STATUS_JS_EXCEPTION;
-        }
-
-        *out_function = opaque_cast<kunlun_jsc_object *>(function);
+kunlun_jsc_status kunlun_jsc_object_revoke_function(
+    kunlun_jsc_context *context, kunlun_jsc_object *function)
+{
+    return guard([&] {
+        if (!context || !function)
+            return KUNLUN_JSC_STATUS_INVALID_ARGUMENT;
+        if (!JSValueIsObjectOfClass(opaque_cast<JSContextRef>(context),
+                opaque_cast<JSValueRef>(function), callback_class()))
+            return KUNLUN_JSC_STATUS_WRONG_TYPE;
+        auto *state = static_cast<CallbackState *>(JSObjectGetPrivate(opaque_cast<JSObjectRef>(function)));
+        if (state->owner != std::this_thread::get_id())
+            return KUNLUN_JSC_STATUS_WRONG_THREAD;
+        state->callback = nullptr;
+        state->stateful_callback = nullptr;
+        state->user_data = nullptr;
         return KUNLUN_JSC_STATUS_OK;
     });
 }
@@ -615,5 +683,7 @@ kunlun_jsc_status kunlun_jsc_value_unprotect(
         return KUNLUN_JSC_STATUS_OK;
     });
 }
+
+#include "buffers.inc"
 
 } // extern "C"

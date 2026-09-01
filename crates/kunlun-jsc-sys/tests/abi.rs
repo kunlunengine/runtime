@@ -11,6 +11,12 @@ fn generated_layout_matches_fixed_width_abi() {
         size_of::<sys::kunlun_jsc_function_callback>(),
         size_of::<usize>()
     );
+    assert_eq!(size_of::<sys::kunlun_jsc_array_kind>(), 4);
+    assert_eq!(
+        size_of::<sys::kunlun_jsc_stateful_callback>(),
+        size_of::<usize>()
+    );
+    assert_eq!(sys::KUNLUN_JSC_STATUS_MISALIGNED, 11);
     assert_eq!(sys::KUNLUN_JSC_ABI_VERSION, 1);
     assert_eq!(sys::KUNLUN_JSC_STATUS_OK, 0);
     assert_eq!(sys::KUNLUN_JSC_STATUS_CPP_EXCEPTION, 7);
@@ -20,6 +26,16 @@ fn generated_layout_matches_fixed_width_abi() {
 #[test]
 fn links_every_allowlisted_symbol() {
     let symbols = [
+        sys::kunlun_jsc_object_make_function_with_data as *const (),
+        sys::kunlun_jsc_object_revoke_function as *const (),
+        sys::kunlun_jsc_value_make_number as *const (),
+        sys::kunlun_jsc_value_make_boolean as *const (),
+        sys::kunlun_jsc_context_collect_garbage as *const (),
+        sys::kunlun_jsc_array_buffer_create_copy as *const (),
+        sys::kunlun_jsc_array_buffer_length as *const (),
+        sys::kunlun_jsc_array_buffer_read as *const (),
+        sys::kunlun_jsc_array_buffer_write as *const (),
+        sys::kunlun_jsc_typed_array_create as *const (),
         sys::kunlun_jsc_context_group_create as *const (),
         sys::kunlun_jsc_context_group_release as *const (),
         sys::kunlun_jsc_context_create as *const (),
@@ -47,8 +63,8 @@ fn links_every_allowlisted_symbol() {
         sys::kunlun_jsc_value_unprotect as *const (),
     ];
 
-    assert_eq!(symbols.len(), 25);
-    assert_eq!(size_of_val(&symbols), 25 * size_of::<usize>());
+    assert_eq!(symbols.len(), 35);
+    assert_eq!(size_of_val(&symbols), 35 * size_of::<usize>());
     assert!(symbols.iter().all(|symbol| !symbol.is_null()));
 }
 

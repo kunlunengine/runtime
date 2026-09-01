@@ -43,6 +43,7 @@ On a supported macOS host, also run:
 
 ```bash
 cargo run -p kunlun-runtime --no-default-features --features system-jsc -- doctor
+distribution/jsc/scripts/test-native-ownership.sh
 ```
 
 If a platform-specific or sanitizer check cannot run locally, say so in the pull request and link

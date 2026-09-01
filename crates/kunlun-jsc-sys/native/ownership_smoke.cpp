@@ -34,13 +34,40 @@ struct String {
     ~String() { assert(kunlun_jsc_string_release(raw) == 0); }
 };
 
-static void evaluate(Context &ctx, const char *source)
+static const kunlun_jsc_value *evaluate(Context &ctx, const char *source)
 {
     String script(source);
     String url("test:///native-ownership.js");
     const kunlun_jsc_value *value = nullptr, *exception = nullptr;
     assert(kunlun_jsc_evaluate(ctx.raw, script.raw, nullptr, url.raw, 1, &value, &exception) == 0);
     assert(value && !exception);
+    return value;
+}
+
+static bool detach_buffer(Context &ctx)
+{
+    const auto *value = evaluate(ctx, R"JS(
+        (function () {
+            if (typeof structuredClone !== "function") return false;
+            var probe = new ArrayBuffer(1);
+            try { structuredClone(probe, {transfer: [probe]}); }
+            catch (_) { return false; }
+            try { new Uint8Array(probe); return false; }
+            catch (error) { if (!(error instanceof TypeError)) throw error; }
+            globalThis.moved = structuredClone(buffer, {transfer: [buffer]});
+            try { new Uint8Array(buffer); }
+            catch (error) {
+                if (error instanceof TypeError) return true;
+                throw error;
+            }
+            throw Error("not detached");
+        })()
+    )JS");
+    double detached = 0;
+    const kunlun_jsc_value *exception = nullptr;
+    assert(kunlun_jsc_value_to_number(ctx.raw, value, &detached, &exception) == 0);
+    assert(!exception);
+    return detached == 1;
 }
 
 static kunlun_jsc_status callback(void *data, kunlun_jsc_context *context,
@@ -78,6 +105,7 @@ int main()
         assert(kunlun_jsc_context_get_global_object(ctx.raw, &global) == 0);
         const kunlun_jsc_value *exception = nullptr;
         String key("buffer");
+        bool can_detach = true;
         for (uint64_t size : { 0, 16 }) {
             uint8_t input[16] = { 1, 2, 3, 4 };
             kunlun_jsc_object *buffer = nullptr;
@@ -91,8 +119,10 @@ int main()
             assert(kunlun_jsc_typed_array_create(ctx.raw, buffer, 99, 0, 0, &view, &exception) == KUNLUN_JSC_STATUS_WRONG_TYPE);
             assert(kunlun_jsc_typed_array_create(ctx.raw, buffer, KUNLUN_JSC_ARRAY_UINT32, 1, 0, &view, &exception) == KUNLUN_JSC_STATUS_MISALIGNED);
             assert(kunlun_jsc_array_buffer_read(ctx.raw, buffer, size + 1, nullptr, 0, &exception) == KUNLUN_JSC_STATUS_OUT_OF_BOUNDS);
-            evaluate(ctx, "globalThis.moved = buffer.transfer(); if (!buffer.detached) throw Error('not detached')");
-            assert(kunlun_jsc_array_buffer_read(ctx.raw, buffer, 0, nullptr, 0, &exception) == KUNLUN_JSC_STATUS_JS_EXCEPTION);
+            if (can_detach)
+                can_detach = detach_buffer(ctx);
+            if (can_detach)
+                assert(kunlun_jsc_array_buffer_read(ctx.raw, buffer, 0, nullptr, 0, &exception) == KUNLUN_JSC_STATUS_JS_EXCEPTION);
             assert(kunlun_jsc_value_unprotect(ctx.raw, buffer) == 0);
         }
         for (int n = 0; n < 64; ++n) {

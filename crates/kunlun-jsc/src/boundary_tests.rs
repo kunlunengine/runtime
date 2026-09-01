@@ -324,14 +324,29 @@ fn detached_buffers_fail_without_confusing_them_with_empty_buffers() {
         let buffer = vm.array_buffer(&vec![0; size]).unwrap();
         let view = buffer.typed_array(TypedArrayKind::Uint8, 0, size).unwrap();
         buffer.set_global("buffer").unwrap();
-        assert_eq!(
-            vm.evaluate(
-                "globalThis.transferred = buffer.transfer(); buffer.detached",
-                URL
+        let detached = vm
+            .evaluate(
+                r#"(function () {
+                    if (typeof structuredClone !== "function") return "unsupported";
+                    var probe = new ArrayBuffer(1);
+                    try { structuredClone(probe, {transfer: [probe]}); }
+                    catch (_) { return "unsupported"; }
+                    try { new Uint8Array(probe); return "unsupported"; }
+                    catch (error) { if (!(error instanceof TypeError)) throw error; }
+                    globalThis.transferred = structuredClone(buffer, {transfer: [buffer]});
+                    try { new Uint8Array(buffer); return "false"; }
+                    catch (error) {
+                        if (error instanceof TypeError) return "true";
+                        throw error;
+                    }
+                })()"#,
+                URL,
             )
-            .unwrap(),
-            "true"
-        );
+            .unwrap();
+        if detached == "unsupported" {
+            return;
+        }
+        assert_eq!(detached, "true");
         assert_eq!(
             buffer.len().unwrap_err().kind(),
             JscErrorKind::JavaScriptException

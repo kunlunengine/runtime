@@ -1,6 +1,19 @@
 name: Build pinned JSC for Linux
 
 on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/jsc-linux.yml'
+      - 'Cargo.lock'
+      - 'Cargo.toml'
+      - 'crates/kunlun-jsc-sys/**'
+      - 'crates/kunlun-jsc/**'
+      - 'crates/kunlun-runtime/**'
+      - 'distribution/jsc/**'
+      - 'xtask/**'
+  schedule:
+    - cron: '17 3 * * 6'
   workflow_dispatch:
     inputs:
       compare_rebuild:
@@ -113,7 +126,7 @@ jobs:
           grep -Fqx "engine revision: $revision" "$RUNNER_TEMP/doctor-${TARGET}.txt"
 
       - name: Reclaim first-build intermediates
-        if: ${{ inputs.compare_rebuild }}
+        if: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.compare_rebuild) }}
         shell: bash
         env:
           OUTPUT_ROOT: ${{ steps.build.outputs.output_root }}
@@ -128,7 +141,7 @@ jobs:
             "$SOURCE_ROOT"
 
       - name: Check independent rebuild
-        if: ${{ inputs.compare_rebuild }}
+        if: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.compare_rebuild) }}
         shell: bash
         run: |
           revision=$(jq -er '.source.revision' distribution/jsc/manifest.json)
@@ -173,6 +186,7 @@ jobs:
   release-evidence:
     name: Attest ${{ matrix.target }}
     needs: build
+    if: ${{ github.event_name != 'pull_request' }}
     strategy:
       fail-fast: false
       matrix:
@@ -260,6 +274,18 @@ jobs:
         with:
           subject-path: ${{ steps.inputs.outputs.archive }}
           sbom-path: ${{ steps.inputs.outputs.sbom }}
+
+      - name: Verify signed release evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 distribution/jsc/scripts/jsc_artifact.py verify-evidence \
+            --manifest distribution/jsc/manifest.json \
+            --target "$TARGET" \
+            --evidence-dir "${{ steps.inputs.outputs.evidence_dir }}" \
+            --repository "$GITHUB_REPOSITORY" \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/jsc-linux.yml" \
+            --source-digest "$GITHUB_SHA"
 
       - name: Upload audited artifact set
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

@@ -1,6 +1,6 @@
 # Kunlun Runtime Roadmap
 
-Status date: 2026-08-29
+Status date: 2026-09-02
 
 This roadmap starts from the actual repository state, not from the aspirations in the core README.
 Before this revision the repository contained only a `Hello, world!` binary and no runtime
@@ -55,15 +55,15 @@ or runtime-compatibility claim is allowed at this milestone.
 
 Goal: make the engine version controlled by Kunlun rather than by the host OS.
 
-- Pin an exact WebKit commit and record build flags, patches, archive hashes, licenses, and SBOM.
-- Add `kunlun-jsc-sys`: bindgen allowlist for a small C header plus a Kunlun-owned C ABI shim for
+- [x] Pin an exact WebKit commit and record build flags, patches, archive hashes, licenses, and SBOM.
+- [x] Add `kunlun-jsc-sys`: bindgen allowlist for a small C header plus a Kunlun-owned C ABI shim for
   capabilities absent from the public JavaScriptCore C API.
-- Add `kunlun-jsc`: RAII contexts, rooted/protected values, typed errors, callbacks, typed arrays,
+- [x] Add `kunlun-jsc`: RAII contexts, rooted/protected values, typed errors, callbacks, typed arrays,
   and explicit thread affinity.
 - [x] Support fail-closed `bundled-jsc` for release/CI and `system-jsc` only as an opt-in
   developer feature, with offline artifact verification and backend diagnostics (#13).
-- Build macOS arm64/x64 and Linux glibc arm64/x64 artifacts from source in controlled CI.
-- Add ASan/UBSan jobs for the shim and Rust Miri tests for wrapper-owned invariants where possible.
+- [x] Build macOS arm64/x64 and Linux glibc arm64/x64 artifacts from source in controlled CI.
+- [x] Add ASan/UBSan jobs for the shim and Rust Miri tests for wrapper-owned invariants where possible.
 
 Exit gate: the same test corpus passes against the pinned engine on macOS and Linux; no build script
 downloads an unaudited native archive implicitly.

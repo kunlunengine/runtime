@@ -1007,6 +1007,153 @@ def compare(args: argparse.Namespace) -> None:
         raise ArtifactError("independent rebuilds are not byte-identical")
 
 
+def verify_evidence_checksums(
+    evidence_dir: Path, manifest: dict[str, Any], target: str
+) -> dict[str, Path]:
+    """Verify the exact release-evidence inventory and its SHA-256 file."""
+    target_entry = manifest_target(manifest, target)
+    artifact = target_entry["artifact"]
+    expected_names = {
+        PurePosixPath(artifact["archive_path"]).name,
+        PurePosixPath(artifact["sbom"]["path"]).name,
+        PurePosixPath(artifact["provenance"]["path"]).name,
+    }
+    archive_name = PurePosixPath(artifact["archive_path"]).name
+    rebuild_name = f"{archive_name.removesuffix('.tar.zst')}.rebuild.json"
+    if (evidence_dir / rebuild_name).is_file():
+        expected_names.add(rebuild_name)
+
+    checksums_path = evidence_dir / "SHA256SUMS"
+    if not checksums_path.is_file() or checksums_path.is_symlink():
+        raise ArtifactError("release evidence requires a regular SHA256SUMS file")
+    try:
+        lines = checksums_path.read_text(encoding="utf-8").splitlines()
+    except OSError as error:
+        raise ArtifactError(f"could not read release checksums: {error}") from error
+    checksums: dict[str, str] = {}
+    for line in lines:
+        match = re.fullmatch(r"([0-9a-f]{64}) [ *]([^/]+)", line)
+        if match is None:
+            raise ArtifactError(f"invalid SHA256SUMS entry: {line!r}")
+        digest, name = match.groups()
+        if name in checksums:
+            raise ArtifactError(f"duplicate SHA256SUMS entry: {name}")
+        checksums[name] = digest
+
+    actual_names = set()
+    for path in evidence_dir.iterdir():
+        if not path.is_file() or path.is_symlink():
+            raise ArtifactError(f"release evidence contains a non-regular file: {path.name}")
+        if path.name != checksums_path.name:
+            actual_names.add(path.name)
+    if actual_names != expected_names or checksums.keys() != expected_names:
+        raise ArtifactError(
+            "release evidence inventory mismatch: "
+            f"expected={sorted(expected_names)}, files={sorted(actual_names)}, "
+            f"checksums={sorted(checksums)}"
+        )
+    for name, expected_digest in checksums.items():
+        path = evidence_dir / name
+        actual_digest = sha256_file(path)
+        if actual_digest != expected_digest:
+            raise ArtifactError(
+                f"release evidence SHA-256 mismatch for {name}: "
+                f"expected {expected_digest}, computed {actual_digest}"
+            )
+    return {name: evidence_dir / name for name in expected_names}
+
+
+def attestation_result(command: list[str]) -> list[dict[str, Any]]:
+    """Run GitHub attestation verification and parse its JSON result."""
+    output = command_output(command)
+    try:
+        result = json.loads(output)
+    except json.JSONDecodeError as error:
+        raise ArtifactError("GitHub attestation verification returned invalid JSON") from error
+    if not isinstance(result, list) or not result or not all(
+        isinstance(entry, dict) for entry in result
+    ):
+        raise ArtifactError("GitHub attestation verification returned no verified statements")
+    return result
+
+
+def verify_evidence(args: argparse.Namespace) -> None:
+    """Verify candidate bytes plus signed provenance and the attested SPDX document."""
+    manifest = read_json(args.manifest)
+    target_entry = manifest_target(manifest, args.target)
+    files = verify_evidence_checksums(args.evidence_dir, manifest, args.target)
+    artifact = target_entry["artifact"]
+    archive = files[PurePosixPath(artifact["archive_path"]).name]
+    sbom = files[PurePosixPath(artifact["sbom"]["path"]).name]
+    provenance = files[PurePosixPath(artifact["provenance"]["path"]).name]
+
+    verify(
+        argparse.Namespace(
+            manifest=args.manifest,
+            target=args.target,
+            archive=archive,
+            sbom=sbom,
+            provenance=provenance,
+            source_build=artifact.get("status") == "planned",
+            install_dir=None,
+            skip_macho=False,
+            zstd=args.zstd,
+        )
+    )
+
+    identity = [
+        "--repo",
+        args.repository,
+        "--signer-workflow",
+        args.signer_workflow,
+        "--source-digest",
+        args.source_digest,
+        "--deny-self-hosted-runners",
+        "--format",
+        "json",
+    ]
+    attestation_result(
+        [
+            "gh",
+            "attestation",
+            "verify",
+            str(archive),
+            *identity,
+            "--bundle",
+            str(provenance),
+        ]
+    )
+    sbom_results = attestation_result(
+        [
+            "gh",
+            "attestation",
+            "verify",
+            str(archive),
+            *identity,
+            "--predicate-type",
+            "https://spdx.dev/Document/v2.3",
+        ]
+    )
+    expected_sbom = read_json(sbom)
+    predicates = [
+        entry.get("verificationResult", {}).get("statement", {}).get("predicate")
+        for entry in sbom_results
+    ]
+    if expected_sbom not in predicates:
+        raise ArtifactError("signed SPDX attestation does not match the supplied SBOM")
+    print(
+        json.dumps(
+            {
+                "evidence_dir": str(args.evidence_dir),
+                "source_digest": args.source_digest,
+                "target": args.target,
+                "verified_evidence": True,
+            },
+            sort_keys=True,
+        )
+    )
+
+
 def parser() -> argparse.ArgumentParser:
     """Construct the command-line parser."""
     result = argparse.ArgumentParser(description=__doc__)
@@ -1049,6 +1196,18 @@ def parser() -> argparse.ArgumentParser:
     compare_parser.add_argument("--zstd", default="zstd")
     compare_parser.add_argument("--require-identical", action="store_true")
     compare_parser.set_defaults(function=compare)
+
+    evidence_parser = subcommands.add_parser(
+        "verify-evidence", help="verify a signed JSC release-evidence set"
+    )
+    evidence_parser.add_argument("--manifest", type=Path, required=True)
+    evidence_parser.add_argument("--target", required=True)
+    evidence_parser.add_argument("--evidence-dir", type=Path, required=True)
+    evidence_parser.add_argument("--repository", required=True)
+    evidence_parser.add_argument("--signer-workflow", required=True)
+    evidence_parser.add_argument("--source-digest", required=True)
+    evidence_parser.add_argument("--zstd", default="zstd")
+    evidence_parser.set_defaults(function=verify_evidence)
     return result
 
 

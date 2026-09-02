@@ -262,6 +262,87 @@ class ArtifactTests(unittest.TestCase):
                 jsc_artifact.verify(args)
             path.write_bytes(original)
 
+    def test_release_evidence_verifies_signatures_and_exact_sbom(self) -> None:
+        archive, sbom, _ = self.fixture.assemble("evidence")
+        artifact = self.fixture.manifest["targets"][0]["artifact"]
+        evidence_dir = archive.parent
+        provenance = evidence_dir / Path(artifact["provenance"]["path"]).name
+        provenance.write_text("signed provenance bundle\n", encoding="utf-8")
+        evidence_files = (archive, sbom, provenance)
+        (evidence_dir / "SHA256SUMS").write_text(
+            "".join(
+                f"{jsc_artifact.sha256_file(path)}  {path.name}\n"
+                for path in evidence_files
+            ),
+            encoding="utf-8",
+        )
+        arguments = argparse.Namespace(
+            manifest=self.fixture.manifest_path,
+            target=self.fixture.target,
+            evidence_dir=evidence_dir,
+            repository="kunlunengine/runtime",
+            signer_workflow="kunlunengine/runtime/.github/workflows/jsc-macos.yml",
+            source_digest="a" * 40,
+            zstd=str(self.fixture.zstd),
+        )
+        verified_sbom = json.loads(sbom.read_text(encoding="utf-8"))
+        command_results = [
+            json.dumps([{"verificationResult": {"statement": {"predicate": {}}}}]),
+            json.dumps(
+                [
+                    {
+                        "verificationResult": {
+                            "statement": {"predicate": verified_sbom}
+                        }
+                    }
+                ]
+            ),
+        ]
+        with (
+            mock.patch.object(jsc_artifact, "verify") as verify_artifact,
+            mock.patch.object(
+                jsc_artifact, "command_output", side_effect=command_results
+            ) as verify_attestation,
+        ):
+            jsc_artifact.verify_evidence(arguments)
+
+        verify_artifact.assert_called_once()
+        self.assertEqual(verify_attestation.call_count, 2)
+        provenance_command = verify_attestation.call_args_list[0].args[0]
+        self.assertIn("--bundle", provenance_command)
+        self.assertIn("--source-digest", provenance_command)
+        sbom_command = verify_attestation.call_args_list[1].args[0]
+        self.assertIn("https://spdx.dev/Document/v2.3", sbom_command)
+
+    def test_release_evidence_rejects_unlisted_or_tampered_files(self) -> None:
+        archive, sbom, _ = self.fixture.assemble("bad-evidence")
+        artifact = self.fixture.manifest["targets"][0]["artifact"]
+        evidence_dir = archive.parent
+        provenance = evidence_dir / Path(artifact["provenance"]["path"]).name
+        provenance.write_text("signed provenance bundle\n", encoding="utf-8")
+        evidence_files = (archive, sbom, provenance)
+        checksums = evidence_dir / "SHA256SUMS"
+        checksums.write_text(
+            "".join(
+                f"{jsc_artifact.sha256_file(path)}  {path.name}\n"
+                for path in evidence_files
+            ),
+            encoding="utf-8",
+        )
+        manifest = jsc_artifact.read_json(self.fixture.manifest_path)
+        archive.write_bytes(archive.read_bytes() + b"corruption")
+        with self.assertRaisesRegex(jsc_artifact.ArtifactError, "SHA-256 mismatch"):
+            jsc_artifact.verify_evidence_checksums(
+                evidence_dir, manifest, self.fixture.target
+            )
+
+        archive.write_bytes(archive.read_bytes()[: -len(b"corruption")])
+        (evidence_dir / "unexpected.txt").write_text("unexpected\n", encoding="utf-8")
+        with self.assertRaisesRegex(jsc_artifact.ArtifactError, "inventory mismatch"):
+            jsc_artifact.verify_evidence_checksums(
+                evidence_dir, manifest, self.fixture.target
+            )
+
     def test_spdx_inventory_reports_missing_and_extra_in_the_expected_direction(self) -> None:
         extract_root = Path(self.temporary.name) / "inventory"
         extract_root.mkdir()

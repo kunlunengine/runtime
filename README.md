@@ -55,7 +55,10 @@ async classic-script host is already an ESM/Fetch-compatible application runtime
   validation, and revision review procedure.
 - [docs/devtools.md](./docs/devtools.md) — Inspector backend and the standalone DevTools platform.
 - [docs/builtins.md](./docs/builtins.md) — built-in module ABI, permissions, and TypeScript types.
+- [docs/module-loading.md](./docs/module-loading.md) — M2 URL resolver contract and native ESM boundary.
 - [docs/kunlun-cli.md](./docs/kunlun-cli.md) — the Vite+-class `kunlun` command surface and generator model.
+- [docs/cli-toolchain-plan.md](./docs/cli-toolchain-plan.md) — package-manager, toolchain, native-build,
+  and Lightning-provider decisions.
 
 ## Non-goals
 

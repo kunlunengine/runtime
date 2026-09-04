@@ -18,7 +18,7 @@ a `kunlun-runtime` developer binary; it does not become the project generator.
 
 ```text
 kunlun create [template] [directory]   scaffold a project or run a generator
-kunlun install                         delegate dependency installation to pinned pnpm
+kunlun install                         install via the selected PackageManagerProvider/v1
 kunlun dev [project]                   build targets + runtime + HMR + optional inspector
 kunlun check [--fix]                   format + lint + type-check
 kunlun test [--watch]                  run Lightning (or configured test provider)
@@ -40,7 +40,7 @@ before those internals.
 
 | Concern | Default provider | CLI role |
 | --- | --- | --- |
-| dependency resolution/workspaces | native `kunlun-pm`; pinned pnpm compatibility bridge during bootstrap | resolve/fetch/store/link without Node; select fallback provider and stream diagnostics |
+| dependency resolution/workspaces | native `kunlun-pm`; pinned pnpm only as a compatibility fallback | resolve/fetch/store/link without Node; select fallback provider and stream diagnostics |
 | development/build | Nasti `BuildEngine` | select targets and orchestrate sessions |
 | alternative build | Vite/Webpack/Rspack adapters | capability negotiation and clear errors |
 | format/lint | Oxfmt/Oxlint | one `check` result and fix policy |
@@ -49,13 +49,14 @@ before those internals.
 | native server execution | `kunlun-runtime` | version selection, manifest handshake, lifecycle |
 | reference/fallback execution | `runtime-node` | compatibility and unsupported-host fallback |
 
-This revises the current "CLI never installs" wording. The target implementation is a native
-`kunlun-pm` provider that owns resolution, registry access, integrity verification, the content
-store, workspace linking, and lockfile updates without starting Node. The first usable releases may
-invoke the project's pinned pnpm as a compatibility bridge while native coverage grows. Kunlun's
-toolchain manager verifies that pnpm distribution; Corepack is only an optional adapter and is not
-assumed to ship with Node. The bridge has explicit retirement gates and does not become the
-architecture. Neither the build nor runtime layers understand package-manager internals.
+This revises the current "CLI never installs" wording. `kunlun install` installs through the selected
+`PackageManagerProvider/v1`, with native `kunlun-pm` as the default implementation. It owns resolution,
+registry access, integrity verification, the content store, workspace linking, and lockfile updates
+without starting Node. The project's pinned pnpm is available only as a compatibility fallback
+provider while native coverage grows. Kunlun's toolchain manager verifies that pnpm distribution;
+Corepack is only an optional adapter and is not assumed to ship with Node. The bridge has explicit
+retirement gates and does not become the architecture. Neither the build nor runtime layers
+understand package-manager internals.
 
 ## Generator protocol
 

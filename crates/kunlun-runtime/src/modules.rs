@@ -320,7 +320,11 @@ impl ModuleResolver {
                 url.scheme().to_owned(),
             ));
         }
-        if url.cannot_be_a_base() || url.host().is_some() || !url.path().starts_with('/') {
+        if url.cannot_be_a_base()
+            || url.host().is_some()
+            || !url.path().starts_with('/')
+            || !url.as_str().starts_with("kunlun-generated:///")
+        {
             return Err(ModuleResolutionError::InvalidSpecifier {
                 specifier: supplied.to_owned(),
                 detail: format!(
@@ -475,13 +479,19 @@ mod tests {
     fn generated_module_ids_must_be_hierarchical_and_authority_free() {
         let fixture = Fixture::new();
         let mut resolver = fixture.resolver();
+        let entry = fixture.entry(&resolver);
 
         for invalid in [
             "kunlun-generated:bootstrap/entry.mjs",
+            "kunlun-generated:/bootstrap/entry.mjs",
             "kunlun-generated://runtime/bootstrap/entry.mjs",
         ] {
             assert!(matches!(
                 resolver.register_generated(invalid),
+                Err(ModuleResolutionError::InvalidSpecifier { .. })
+            ));
+            assert!(matches!(
+                resolver.resolve(invalid, &entry),
                 Err(ModuleResolutionError::InvalidSpecifier { .. })
             ));
         }

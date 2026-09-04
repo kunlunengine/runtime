@@ -66,13 +66,16 @@ Hoisted mode can remain an explicit compatibility escape hatch; it is not the de
 The top-level CLI owns stable verbs while a provider owns resolution and installation:
 
 ```text
-kunlun install [--frozen]
+kunlun install [--frozen] [--ignore-scripts]
 kunlun add <spec...> [--dev]
 kunlun remove <name...>
 kunlun update [name...]
 kunlun why <name>
 kunlun exec <command...>
 ```
+
+`kunlun install --ignore-scripts` still resolves dependencies, populates the store, and completes
+workspace linking; it skips only lifecycle scripts.
 
 The internal `PackageManagerProvider/v1` operations are `detect`, `resolve`, `fetch`, `install`,
 `mutate`, `prune`, `why`, and `exec`. Results carry a provider ID, `requiresNode` capability,

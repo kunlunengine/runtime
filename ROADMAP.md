@@ -1,6 +1,6 @@
 # Kunlun Runtime Roadmap
 
-Status date: 2026-09-02
+Status date: 2026-09-03
 
 This roadmap starts from the actual repository state, not from the aspirations in the core README.
 Before this revision the repository contained only a `Hello, world!` binary and no runtime
@@ -18,10 +18,11 @@ protocol, tests, JSC ownership model, or development-tool decision.
    clients. The platform may have multiple Web/native protocol adapters, but one session and tooling
    model.
 4. **`kunlun` matches Vite+'s coherent workflow, not its internal implementation.** It presents
-   create/install/dev/check/test/build/run commands. pnpm is the initial package-management provider,
-   not a permanent architectural boundary; an integrated provider remains in scope behind the same
-   contract. Building delegates to Nasti or another `BuildEngine`, tests to Lightning, and native
-   execution to this repository.
+   create/install/dev/check/test/build/run commands. pnpm is a temporary compatibility/bootstrap
+   provider; the target package resolver, store, and linker are native and do not require Node.
+   Both live behind the same provider contract and pnpm-compatible project format. Building
+   delegates to Nasti or another `BuildEngine`, tests to Lightning, and native execution to this
+   repository.
 5. **The native artifact is a built server module plus a versioned manifest.** The current core
    application manifest contains route metadata but no executable handlers, so it is insufficient
    for a native runtime on its own.
@@ -72,7 +73,8 @@ downloads an unaudited native archive implicitly.
 
 Goal: run real bundled server entrypoints rather than classic scripts.
 
-- [ ] URL-based native ESM resolver with file, `kunlun:`, and generated-module schemes.
+- [ ] URL-based native ESM resolver with file, `kunlun:`, and generated-module schemes. The
+  canonical Rust resolver and policy tests have landed; JSC resolve/fetch callback wiring remains.
 - [x] Built-in module registry and bootstrap loader for `kunlun:` specifiers.
 - [ ] Native module linking, cyclic graph handling, dynamic import, `import.meta.url`, and source maps.
 - [x] Initial Deferred Promise bridge and native Promise/`async`/`await` continuation execution.
@@ -171,6 +173,8 @@ This runs in parallel after the artifact contract in M3 starts to stabilize.
 | C3 | Workspace task graph, filters, parallelism, local/remote cache | Stable command contracts |
 
 The detailed command and template design is in [docs/kunlun-cli.md](./docs/kunlun-cli.md).
+Package format, toolchain distribution, native build, and Lightning-provider decisions are in
+[docs/cli-toolchain-plan.md](./docs/cli-toolchain-plan.md).
 
 ## Release labels
 

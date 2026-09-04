@@ -7,6 +7,10 @@ subsystem contracts, and replaceable build engines/runtimes. "Against Vite+" mea
 workflow and scaffolding quality, not copying every implementation choice or hiding capability
 differences between Nasti, Vite, Webpack, and Rspack.
 
+The cross-repository implementation decisions for package layout, rustup-style toolchain selection,
+native builds, and Lightning execution are recorded in
+[cli-toolchain-plan.md](./cli-toolchain-plan.md).
+
 The CLI remains in `kunlunengine-core`. This runtime exposes a machine-readable process protocol and
 a `kunlun-runtime` developer binary; it does not become the project generator.
 
@@ -14,7 +18,7 @@ a `kunlun-runtime` developer binary; it does not become the project generator.
 
 ```text
 kunlun create [template] [directory]   scaffold a project or run a generator
-kunlun install                         delegate dependency installation to pinned pnpm
+kunlun install                         install via the selected PackageManagerProvider/v1
 kunlun dev [project]                   build targets + runtime + HMR + optional inspector
 kunlun check [--fix]                   format + lint + type-check
 kunlun test [--watch]                  run Lightning (or configured test provider)
@@ -36,7 +40,7 @@ before those internals.
 
 | Concern | Default provider | CLI role |
 | --- | --- | --- |
-| dependency resolution/workspaces | pnpm through Corepack initially | select provider, pin/invoke it, stream diagnostics |
+| dependency resolution/workspaces | native `kunlun-pm`; pinned pnpm only as a compatibility fallback | resolve/fetch/store/link without Node; select fallback provider and stream diagnostics |
 | development/build | Nasti `BuildEngine` | select targets and orchestrate sessions |
 | alternative build | Vite/Webpack/Rspack adapters | capability negotiation and clear errors |
 | format/lint | Oxfmt/Oxlint | one `check` result and fix policy |
@@ -45,12 +49,14 @@ before those internals.
 | native server execution | `kunlun-runtime` | version selection, manifest handshake, lifecycle |
 | reference/fallback execution | `runtime-node` | compatibility and unsupported-host fallback |
 
-This revises the current "CLI never installs" wording: `kunlun install` initially invokes the
-project's pinned pnpm, which owns resolution, lockfiles, linking, registries, and lifecycle scripts
-for that provider. That is a bootstrap choice rather than a non-goal. A future integrated
-package-management provider may implement the same lifecycle and workspace contract without
-changing the top-level Kunlun commands or forcing the build/runtime layers to understand its
-internals.
+This revises the current "CLI never installs" wording. `kunlun install` installs through the selected
+`PackageManagerProvider/v1`, with native `kunlun-pm` as the default implementation. It owns resolution,
+registry access, integrity verification, the content store, workspace linking, and lockfile updates
+without starting Node. The project's pinned pnpm is available only as a compatibility fallback
+provider while native coverage grows. Kunlun's toolchain manager verifies that pnpm distribution;
+Corepack is only an optional adapter and is not assumed to ship with Node. The bridge has explicit
+retirement gates and does not become the architecture. Neither the build nor runtime layers
+understand package-manager internals.
 
 ## Generator protocol
 

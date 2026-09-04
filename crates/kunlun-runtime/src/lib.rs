@@ -2,11 +2,15 @@
 
 mod builtins;
 mod host;
+mod modules;
 
 pub use builtins::{
     BUILTIN_MODULES, BuiltinModuleDescriptor, TYPESCRIPT_DECLARATIONS, is_builtin_specifier,
 };
 pub use host::HostPermissions;
+pub use modules::{
+    GENERATED_MODULE_SCHEME, ModuleKind, ModuleResolutionError, ModuleResolver, ModuleUrl,
+};
 
 use kunlun_jsc::{DeferredPromise, JscError, JscVm};
 use std::cell::{Cell, RefCell};

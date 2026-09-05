@@ -1,6 +1,6 @@
 # Kunlun Runtime Roadmap
 
-Status date: 2026-09-03
+Status date: 2026-09-05
 
 This roadmap starts from the actual repository state, not from the aspirations in the core README.
 Before this revision the repository contained only a `Hello, world!` binary and no runtime
@@ -73,8 +73,9 @@ downloads an unaudited native archive implicitly.
 
 Goal: run real bundled server entrypoints rather than classic scripts.
 
-- [ ] URL-based native ESM resolver with file, `kunlun:`, and generated-module schemes. The
-  canonical Rust resolver and policy tests have landed; JSC resolve/fetch callback wiring remains.
+- [x] Engine-independent URL resolver for file, `kunlun:`, and generated modules (#28), with
+  contextual errors, canonical cache keys, and Unicode/escaping/cycle/policy contract tests.
+- [ ] Wire JSC static/dynamic module requests and source fetching through that resolver (#29).
 - [x] Built-in module registry and bootstrap loader for `kunlun:` specifiers.
 - [ ] Native module linking, cyclic graph handling, dynamic import, `import.meta.url`, and source maps.
 - [x] Initial Deferred Promise bridge and native Promise/`async`/`await` continuation execution.

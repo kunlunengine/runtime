@@ -18,7 +18,7 @@ a `kunlun-runtime` developer binary; it does not become the project generator.
 
 ```text
 kunlun create [template] [directory]   scaffold a project or run a generator
-kunlun install                         install via the selected PackageManagerProvider/v1
+kunlun install [--frozen] [--ignore-scripts]   install via the selected PackageManagerProvider/v1
 kunlun dev [project]                   build targets + runtime + HMR + optional inspector
 kunlun check [--fix]                   format + lint + type-check
 kunlun test [--watch]                  run Lightning (or configured test provider)
@@ -49,14 +49,25 @@ before those internals.
 | native server execution | `kunlun-runtime` | version selection, manifest handshake, lifecycle |
 | reference/fallback execution | `runtime-node` | compatibility and unsupported-host fallback |
 
-This revises the current "CLI never installs" wording. `kunlun install` installs through the selected
-`PackageManagerProvider/v1`, with native `kunlun-pm` as the default implementation. It owns resolution,
-registry access, integrity verification, the content store, workspace linking, and lockfile updates
-without starting Node. The project's pinned pnpm is available only as a compatibility fallback
-provider while native coverage grows. Kunlun's toolchain manager verifies that pnpm distribution;
-Corepack is only an optional adapter and is not assumed to ship with Node. The bridge has explicit
-retirement gates and does not become the architecture. Neither the build nor runtime layers
-understand package-manager internals.
+This is a target contract, not a claim that the installer exists in this runtime repository. It
+revises the current "CLI never installs" wording: `kunlun install` will use the selected
+`PackageManagerProvider/v1`, with native `kunlun-pm` as the release target. That provider will own
+resolution, registry access, integrity verification, the content store, workspace linking, and
+lockfile updates without starting Node. The project's verified, pinned pnpm is a temporary
+compatibility fallback while native coverage grows; Corepack remains optional. The native provider
+becomes the default at the P2 resolver/linker acceptance gate in
+[the package-management plan](./cli-toolchain-plan.md#native-delivery-plan). Neither build nor runtime
+layers own package-manager internals.
+
+Projects initially retain `pnpm-lock.yaml` as their single authoritative graph. A future native
+format would be reviewable text named `kunlun.lock` and require explicit migration; binary data is
+only a disposable cache. Frozen installs reject graph/configuration drift and still enforce registry,
+artifact, and security policy. Automatic installation hooks default to denied, and approvals bind
+the exact package content, script, runner, and permissions under trusted caller/CI policy. A
+repository cannot grant itself CI execution authority. `--ignore-scripts` completes linking and
+reports packages that remain unbuilt; supported Node-dependent hooks require explicit `compat-node`.
+The [lifecycle and supply-chain requirements](./cli-toolchain-plan.md#node-independence-and-lifecycle-scripts)
+also apply to the pnpm bridge and must not be bypassed through executable configuration or fallback.
 
 ## Generator protocol
 

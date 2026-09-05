@@ -9,7 +9,8 @@ pub use builtins::{
 };
 pub use host::HostPermissions;
 pub use modules::{
-    GENERATED_MODULE_SCHEME, ModuleKind, ModuleResolutionError, ModuleResolver, ModuleUrl,
+    GENERATED_MODULE_SCHEME, ModuleKind, ModuleResolutionError, ModuleResolutionErrorKind,
+    ModuleResolver, ModuleUrl,
 };
 
 use kunlun_jsc::{DeferredPromise, JscError, JscVm};

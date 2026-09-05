@@ -140,7 +140,7 @@ For pinned macOS/Linux backends, use the verified artifact setup described in
 [JSC distribution](./jsc-distribution.md) and the workspace test commands in the platform workflows.
 Local developer-backend success is not evidence that pinned platform jobs have run.
 
-#29 must add the pinned-JSC shim callbacks for resolve, fetch, link, evaluate, dynamic import, and
+`#29` must add the pinned-JSC shim callbacks for resolve, fetch, link, evaluate, dynamic import, and
 `import.meta`, then consume this resolver and key contract. Cycles with live bindings, top-level
 await, rejection tracking, and source-map integration remain M2 exit requirements.
 

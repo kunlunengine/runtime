@@ -18,7 +18,7 @@ a `kunlun-runtime` developer binary; it does not become the project generator.
 
 ```text
 kunlun create [template] [directory]   scaffold a project or run a generator
-kunlun install                         install via the selected PackageManagerProvider/v1
+kunlun install [--frozen] [--ignore-scripts]   install via the selected PackageManagerProvider/v1
 kunlun dev [project]                   build targets + runtime + HMR + optional inspector
 kunlun check [--fix]                   format + lint + type-check
 kunlun test [--watch]                  run Lightning (or configured test provider)

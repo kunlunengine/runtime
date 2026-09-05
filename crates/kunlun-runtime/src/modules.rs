@@ -488,7 +488,9 @@ fn canonical_generated_url(mut url: Url) -> Result<Url, ModuleResolutionErrorKin
     if url.cannot_be_a_base()
         || url.host().is_some()
         || !url.path().starts_with('/')
-        || !url.as_str().starts_with("kunlun-generated:///")
+        || !url
+            .as_str()
+            .starts_with(&format!("{GENERATED_MODULE_SCHEME}:///"))
     {
         return Err(invalid_specifier(format!(
             "generated modules require an authority-free hierarchical {GENERATED_MODULE_SCHEME}:/// URL"

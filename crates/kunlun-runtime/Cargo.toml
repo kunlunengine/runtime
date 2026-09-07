@@ -18,6 +18,9 @@ path = "src/main.rs"
 
 [dependencies]
 cap-std.workspace = true
+base64.workspace = true
+sourcemap.workspace = true
+libc.workspace = true
 kunlun-jsc.workspace = true
 reqwest.workspace = true
 serde.workspace = true

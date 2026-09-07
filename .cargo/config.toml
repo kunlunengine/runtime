@@ -1,2 +1,8 @@
 [alias]
 xtask = "run --quiet --package xtask --"
+
+[env]
+# Set before the child process starts; JSC options freeze at the first VM.
+# The pinned engine already defaults to true. This also enables supported
+# system-JSC development builds, while preserving an explicit user override.
+JSC_useTemporal = { value = "true", force = false }

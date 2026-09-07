@@ -1,5 +1,7 @@
 use kunlun_jsc::JscVm;
-use kunlun_runtime::{EVENT_LOOP_BACKEND, HostPermissions, TYPESCRIPT_DECLARATIONS, TokioIsolate};
+use kunlun_runtime::{
+    EVENT_LOOP_BACKEND, HostPermissions, ModuleSources, TYPESCRIPT_DECLARATIONS, TokioIsolate,
+};
 use std::env;
 use std::fs;
 use std::path::Path;
@@ -22,6 +24,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
         Some("eval-async") => eval_async_command(&args[1..]),
         Some("run") => run_command(&args[1..]),
         Some("run-async") => run_async_command(&args[1..]),
+        Some("run-module") => run_module_command(&args[1..]),
         Some("doctor") => doctor_command(),
         Some("types") => {
             print!("{TYPESCRIPT_DECLARATIONS}");
@@ -80,6 +83,31 @@ fn run_async_command(args: &[String]) -> Result<(), String> {
     let file_args = [options.subject];
     let (source, source_url, display_name) = read_script(&file_args, "run-async")?;
     evaluate_async(&source, &source_url, &display_name, options.permissions)
+}
+
+fn run_module_command(args: &[String]) -> Result<(), String> {
+    let options = parse_async_options(args, "run-module <file>")?;
+    let entry = Path::new(&options.subject)
+        .canonicalize()
+        .map_err(|error| format!("cannot resolve module entry {}: {error}", options.subject))?;
+    let root = entry
+        .parent()
+        .ok_or("module entry has no parent directory")?;
+    let sources = ModuleSources::new(root)?;
+    let runtime = Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| e.to_string())?;
+    let mut isolate =
+        TokioIsolate::new_with_permissions("kunlun-runtime run-module", options.permissions)
+            .map_err(|e| e.to_string())?;
+    isolate
+        .install_module_sources(sources)
+        .map_err(|e| e.to_string())?;
+    let entry = entry.to_str().ok_or("module entry is not valid UTF-8")?;
+    runtime
+        .block_on(isolate.evaluate_module(entry))
+        .map_err(|e| e.to_string())
 }
 
 fn read_script(args: &[String], command: &str) -> Result<(String, String, String), String> {
@@ -202,6 +230,29 @@ fn doctor_command() -> Result<(), String> {
         ));
     }
     println!("synchronous smoke test: ok");
+    let temporal = vm
+        .evaluate(
+            "typeof Temporal === 'object' && typeof Temporal.PlainDate === 'function'",
+            "kunlun:temporal-doctor",
+        )
+        .map_err(|e| e.to_string())?
+        == "true";
+    println!("native Temporal API: {temporal}");
+    if backend.hermetic && !temporal {
+        return Err("pinned JSC must expose Temporal; check JSC_useTemporal overrides".to_owned());
+    }
+    if temporal {
+        let value = vm
+            .evaluate(
+                "Temporal.PlainDate.from('2024-02-28').add({ days: 1 }).toString()",
+                "kunlun:temporal-doctor",
+            )
+            .map_err(|e| e.to_string())?;
+        if value != "2024-02-29" {
+            return Err(format!("unexpected Temporal smoke-test result: {value}"));
+        }
+        println!("Temporal smoke test: ok");
+    }
 
     let runtime = Builder::new_current_thread()
         .enable_all()
@@ -231,6 +282,7 @@ fn print_help() {
            eval-async <body>   Evaluate an async body with sleep and built-ins\n  \
            run <file>          Evaluate a classic JavaScript file\n  \
            run-async <file>    Evaluate a file as an async function body\n  \
+           run-module <file>   Evaluate native ESM (bundled JSC only)\n  \
            doctor              Verify JSC, Inspector, Promise, and Tokio integration\n  \
            types               Print TypeScript declarations for built-in modules\n  \
            version             Print the runtime version\n\n\

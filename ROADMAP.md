@@ -75,9 +75,9 @@ Goal: run real bundled server entrypoints rather than classic scripts.
 
 - [x] Engine-independent URL resolver for file, `kunlun:`, and generated modules (#28), with
   contextual errors, canonical cache keys, and Unicode/escaping/cycle/policy contract tests.
-- [ ] Wire JSC static/dynamic module requests and source fetching through that resolver (#29).
+- [x] Wire JSC static/dynamic module requests and source fetching through that resolver (#29).
 - [x] Built-in module registry and bootstrap loader for `kunlun:` specifiers.
-- [ ] Native module linking, cyclic graph handling, dynamic import, `import.meta.url`, and source maps.
+- [x] Native module linking, cyclic graph handling, dynamic import, `import.meta.url`, and source maps.
 - [x] Initial Deferred Promise bridge and native Promise/`async`/`await` continuation execution.
 - [x] Caller-driven Tokio host loop and Promise-returning timer primitive.
 - [ ] Promise rejection tracking and an explicit deterministic microtask checkpoint API.

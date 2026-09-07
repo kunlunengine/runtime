@@ -425,9 +425,10 @@ name.
 | T0/T1 executor boundary | core + Lightning + runtime | `kunlun test` plus one JSC worker fixture with honest capability output |
 
 M2-R1 (#28) owns the engine-independent resolver, contextual errors, URL/cache identity contract,
-and adversarial resolver fixtures. M2-R2 (#29) owns the JSC callbacks that consume this contract and
-prove actual static/dynamic import behavior. Resolver completion does not claim native ESM support;
-the native loader and overall M2 exit gate remain open until their integration tests pass.
+and adversarial resolver fixtures. M2-R2 (#29) adds the JSC callbacks that consume this contract and
+the native static/dynamic import corpus, including cycles, live bindings, TLA, and source maps.
+These tests run against pinned artifacts on each supported platform. The overall M2 exit gate
+remains open for the remaining microtask, cancellation, limits, and compatibility work.
 
 ## Primary references
 

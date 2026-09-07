@@ -17,6 +17,12 @@ fn generated_layout_matches_fixed_width_abi() {
         size_of::<usize>()
     );
     assert_eq!(sys::KUNLUN_JSC_STATUS_MISALIGNED, 11);
+    assert_eq!(sys::KUNLUN_JSC_STATUS_UNSUPPORTED, 12);
+    assert_eq!(sys::KUNLUN_JSC_STATUS_INVALID_STATE, 13);
+    assert_eq!(
+        size_of::<sys::kunlun_jsc_module_callback>(),
+        size_of::<usize>()
+    );
     assert_eq!(sys::KUNLUN_JSC_ABI_VERSION, 1);
     assert_eq!(sys::KUNLUN_JSC_STATUS_OK, 0);
     assert_eq!(sys::KUNLUN_JSC_STATUS_CPP_EXCEPTION, 7);
@@ -26,6 +32,13 @@ fn generated_layout_matches_fixed_width_abi() {
 #[test]
 fn links_every_allowlisted_symbol() {
     let symbols = [
+        sys::kunlun_jsc_modules_install as *const (),
+        sys::kunlun_jsc_modules_revoke as *const (),
+        sys::kunlun_jsc_module_load as *const (),
+        sys::kunlun_jsc_module_evaluate as *const (),
+        sys::kunlun_jsc_module_poll as *const (),
+        sys::kunlun_jsc_module_release as *const (),
+        sys::kunlun_jsc_value_get_property as *const (),
         sys::kunlun_jsc_object_make_function_with_data as *const (),
         sys::kunlun_jsc_object_revoke_function as *const (),
         sys::kunlun_jsc_value_make_number as *const (),
@@ -63,8 +76,8 @@ fn links_every_allowlisted_symbol() {
         sys::kunlun_jsc_value_unprotect as *const (),
     ];
 
-    assert_eq!(symbols.len(), 35);
-    assert_eq!(size_of_val(&symbols), 35 * size_of::<usize>());
+    assert_eq!(symbols.len(), 42);
+    assert_eq!(size_of_val(&symbols), 42 * size_of::<usize>());
     assert!(symbols.iter().all(|symbol| !symbol.is_null()));
 }
 

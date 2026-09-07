@@ -8,6 +8,7 @@
 #include <limits>
 #include <memory>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 namespace {
@@ -162,6 +163,8 @@ void callback_finalize(JSObjectRef function)
 
 } // namespace
 
+#include "modules.inc"
+
 extern "C" {
 
 kunlun_jsc_status kunlun_jsc_context_group_create(kunlun_jsc_context_group **out_group)
@@ -194,7 +197,11 @@ kunlun_jsc_status kunlun_jsc_context_create(kunlun_jsc_context **out_context)
         if (!out_context)
             return KUNLUN_JSC_STATUS_INVALID_ARGUMENT;
         *out_context = nullptr;
+#if defined(KUNLUN_JSC_BUNDLED)
+        JSGlobalContextRef context = JSKunlunGlobalContextCreateInGroup(nullptr);
+#else
         JSGlobalContextRef context = JSGlobalContextCreate(nullptr);
+#endif
         if (!context)
             return KUNLUN_JSC_STATUS_OUT_OF_MEMORY;
         // WebKit enables inspection by default on non-Cocoa platforms. Keep the
@@ -213,8 +220,13 @@ kunlun_jsc_status kunlun_jsc_context_create_in_group(
         if (!group || !out_context)
             return KUNLUN_JSC_STATUS_INVALID_ARGUMENT;
         *out_context = nullptr;
+#if defined(KUNLUN_JSC_BUNDLED)
+        JSGlobalContextRef context = JSKunlunGlobalContextCreateInGroup(
+            opaque_cast<JSContextGroupRef>(group));
+#else
         JSGlobalContextRef context = JSGlobalContextCreateInGroup(
             opaque_cast<JSContextGroupRef>(group), nullptr);
+#endif
         if (!context)
             return KUNLUN_JSC_STATUS_OUT_OF_MEMORY;
         // Match kunlun_jsc_context_create: inspection is always opt-in.
@@ -229,7 +241,13 @@ kunlun_jsc_status kunlun_jsc_context_release(kunlun_jsc_context *context)
     return guard([&] {
         if (!context)
             return KUNLUN_JSC_STATUS_INVALID_ARGUMENT;
+        auto status = kunlun_jsc_modules_revoke(context);
+        if (status != KUNLUN_JSC_STATUS_OK)
+            return status;
         JSGlobalContextRelease(opaque_cast<JSGlobalContextRef>(context));
+#if defined(KUNLUN_JSC_BUNDLED)
+        module_callbacks.erase(opaque_cast<JSGlobalContextRef>(context));
+#endif
         return KUNLUN_JSC_STATUS_OK;
     });
 }

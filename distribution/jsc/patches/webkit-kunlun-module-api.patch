@@ -1,0 +1,231 @@
+diff --git a/Source/JavaScriptCore/API/JSContextRef.cpp b/Source/JavaScriptCore/API/JSContextRef.cpp
+index 4b4dbd867..2e352a926 100644
+--- a/Source/JavaScriptCore/API/JSContextRef.cpp
++++ b/Source/JavaScriptCore/API/JSContextRef.cpp
+@@ -60,6 +60,8 @@ static constexpr int32_t webkitFirstVersionWithConcurrentGlobalContexts = 0x2100
+
+ using namespace JSC;
+
++#include "KunlunModuleAPI.inc"
++
+ // From the API's perspective, a context group remains alive iff
+ //     (a) it has been JSContextGroupRetained
+ //     OR
+diff --git a/Source/JavaScriptCore/API/KunlunModuleAPI.inc b/Source/JavaScriptCore/API/KunlunModuleAPI.inc
+new file mode 100644
+index 000000000..82765a648
+--- /dev/null
++++ b/Source/JavaScriptCore/API/KunlunModuleAPI.inc
+@@ -0,0 +1,212 @@
++/* Kunlun's pinned-engine module adapter. Compiled inside JavaScriptCore so
++ * implementation types never cross the external C boundary. */
++#include "Completion.h"
++#include "TopExceptionScope.h"
++#include <wtf/NeverDestroyed.h>
++#include <wtf/ThreadSpecific.h>
++#include "GlobalObjectMethodTable.h"
++#include "JSCInlines.h"
++#include "JSModuleLoader.h"
++#include "JSPromise.h"
++#include "JSSourceCode.h"
++#include "ObjectConstructor.h"
++#include "OpaqueJSString.h"
++#include "SourceCode.h"
++#include <unordered_map>
++
++namespace {
++
++using KunlunModuleCallback = JSValueRef (*)(void*, JSContextRef, uint32_t, JSValueRef, JSValueRef, JSValueRef*);
++struct KunlunModuleHook {
++    KunlunModuleCallback callback;
++    void* data;
++};
++
++// Only the owning isolate thread can install, invoke, or remove these hooks.
++// No GC-owned values or owning references live in this registry.
++auto& kunlunModuleHooks()
++{
++    static NeverDestroyed<ThreadSpecific<std::unordered_map<JSC::JSGlobalObject*, KunlunModuleHook>>> hooks;
++    return *hooks.get();
++}
++
++JSC::JSValue kunlunModuleCall(JSC::JSGlobalObject* globalObject, uint32_t operation, JSC::JSValue key, JSC::JSValue referrer)
++{
++    using namespace JSC;
++    VM& vm = globalObject->vm();
++    auto scope = DECLARE_THROW_SCOPE(vm);
++    auto found = kunlunModuleHooks().find(globalObject);
++    if (found == kunlunModuleHooks().end()) {
++        throwTypeError(globalObject, scope, "Kunlun module loader is not installed or has been revoked"_s);
++        return { };
++    }
++    // Copy before entering host code; reentry can revoke the registry entry.
++    auto hook = found->second;
++    JSValueRef exception = nullptr;
++    JSValueRef result = hook.callback(hook.data, toRef(globalObject), operation,
++        toRef(globalObject, key), toRef(globalObject, referrer), &exception);
++    if (exception) {
++        throwException(globalObject, scope, toJS(globalObject, exception));
++        return { };
++    }
++    if (!result || !toJS(globalObject, result).isString()) {
++        throwTypeError(globalObject, scope, "Kunlun module callback must return a string"_s);
++        return { };
++    }
++    return toJS(globalObject, result);
++}
++
++JSC::Identifier kunlunModuleResolve(JSC::JSGlobalObject* globalObject, JSC::JSModuleLoader*, JSC::JSValue key, JSC::JSValue referrer, RefPtr<JSC::ScriptFetcher>, bool)
++{
++    using namespace JSC;
++    auto scope = DECLARE_THROW_SCOPE(globalObject->vm());
++    JSValue resolved = kunlunModuleCall(globalObject, 0, key, referrer);
++    RETURN_IF_EXCEPTION(scope, { });
++    RELEASE_AND_RETURN(scope, resolved.toPropertyKey(globalObject));
++}
++
++JSC::JSPromise* kunlunModuleFetch(JSC::JSGlobalObject* globalObject, JSC::JSModuleLoader*, JSC::JSValue key, RefPtr<JSC::ScriptFetchParameters> parameters, RefPtr<JSC::ScriptFetcher>)
++{
++    using namespace JSC;
++    VM& vm = globalObject->vm();
++    auto scope = DECLARE_THROW_SCOPE(vm);
++    Strong<JSPromise> promise(vm, JSPromise::create(vm, globalObject->promiseStructure()));
++    if (parameters && parameters->type() != ScriptFetchParameters::Type::None && parameters->type() != ScriptFetchParameters::Type::JavaScript) {
++        throwTypeError(globalObject, scope, "Kunlun supports JavaScript modules only"_s);
++        return promise->rejectWithCaughtException(vm, scope);
++    }
++    String url = key.toWTFString(globalObject);
++    RETURN_IF_EXCEPTION(scope, promise->rejectWithCaughtException(vm, scope));
++    JSValue fetched = kunlunModuleCall(globalObject, 1, key, jsUndefined());
++    RETURN_IF_EXCEPTION(scope, promise->rejectWithCaughtException(vm, scope));
++    String source = fetched.toWTFString(globalObject);
++    RETURN_IF_EXCEPTION(scope, promise->rejectWithCaughtException(vm, scope));
++    auto code = makeSource(source, SourceOrigin { URL({ }, url) }, SourceTaintedOrigin::Untainted,
++        url, TextPosition(), SourceProviderSourceType::Module);
++    auto* sourceCode = JSSourceCode::create(vm, WTF::move(code));
++    scope.release();
++    promise->resolve(globalObject, vm, sourceCode);
++    return promise.get();
++}
++
++JSC::JSPromise* kunlunModuleImport(JSC::JSGlobalObject* globalObject, JSC::JSModuleLoader*, JSC::JSString* name, RefPtr<JSC::ScriptFetchParameters> parameters, const JSC::SourceOrigin& origin, bool deferred)
++{
++    using namespace JSC;
++    VM& vm = globalObject->vm();
++    auto scope = DECLARE_THROW_SCOPE(vm);
++    auto specifier = name->value(globalObject);
++    if (scope.exception()) {
++        auto* promise = JSPromise::create(vm, globalObject->promiseStructure());
++        return promise->rejectWithCaughtException(vm, scope);
++    }
++    JSPromise* result = importModule(globalObject, Identifier::fromString(vm, specifier),
++        Identifier::fromString(vm, origin.url().string()), WTF::move(parameters), nullptr, deferred);
++    if (scope.exception()) {
++        auto* promise = JSPromise::create(vm, globalObject->promiseStructure());
++        return promise->rejectWithCaughtException(vm, scope);
++    }
++    return result;
++}
++
++JSC::JSObject* kunlunModuleMeta(JSC::JSGlobalObject* globalObject, JSC::JSModuleLoader*, JSC::JSValue key, JSC::JSModuleRecord*, RefPtr<JSC::ScriptFetcher>)
++{
++    using namespace JSC;
++    VM& vm = globalObject->vm();
++    auto* meta = constructEmptyObject(vm, globalObject->nullPrototypeObjectStructure());
++    meta->putDirect(vm, Identifier::fromString(vm, "url"_s), key);
++    return meta;
++}
++
++const JSC::GlobalObjectMethodTable kunlunGlobalObjectMethodTable {
++    &JSC::JSGlobalObject::supportsRichSourceInfo,
++    &JSC::JSGlobalObject::shouldInterruptScript,
++    &JSC::JSGlobalObject::javaScriptRuntimeFlags,
++    &JSC::JSGlobalObject::shouldInterruptScriptBeforeTimeout,
++    &kunlunModuleImport,
++    &kunlunModuleResolve,
++    &kunlunModuleFetch,
++    &kunlunModuleMeta,
++    nullptr, // Use the engine's native module evaluation.
++    &JSC::JSGlobalObject::promiseRejectionTracker,
++    &JSC::JSGlobalObject::reportUncaughtExceptionAtEventLoop,
++    &JSC::JSGlobalObject::currentScriptExecutionOwner,
++    &JSC::JSGlobalObject::scriptExecutionStatus,
++    &JSC::JSGlobalObject::reportViolationForUnsafeEval,
++    nullptr, nullptr, nullptr, nullptr,
++    &JSC::JSGlobalObject::codeForEval,
++    &JSC::JSGlobalObject::canCompileStrings,
++    &JSC::JSGlobalObject::trustedScriptStructure,
++};
++
++} // namespace
++
++extern "C" {
++JS_EXPORT JSGlobalContextRef JSKunlunGlobalContextCreateInGroup(JSContextGroupRef);
++JS_EXPORT bool JSKunlunSetModuleLoader(JSGlobalContextRef, KunlunModuleCallback, void*);
++JS_EXPORT JSObjectRef JSKunlunLoadModule(JSGlobalContextRef, JSStringRef, uint32_t, JSValueRef*);
++JS_EXPORT uint32_t JSKunlunPromiseState(JSGlobalContextRef, JSObjectRef, JSValueRef*);
++}
++
++extern "C" JS_EXPORT JSGlobalContextRef JSKunlunGlobalContextCreateInGroup(JSContextGroupRef group)
++{
++    using namespace JSC;
++    JSC::initialize();
++    Ref<VM> vm = group ? Ref<VM>(*toJS(group)) : VM::createContextGroup();
++    JSLockHolder locker(vm.ptr());
++    auto* globalObject = JSGlobalObject::createWithCustomMethodTable(vm.get(),
++        JSGlobalObject::createStructure(vm.get(), jsNull()), &kunlunGlobalObjectMethodTable);
++    globalObject->setInspectable(false);
++    return JSGlobalContextRetain(toGlobalRef(globalObject));
++}
++
++extern "C" JS_EXPORT bool JSKunlunSetModuleLoader(JSGlobalContextRef context, KunlunModuleCallback callback, void* data)
++{
++    auto* globalObject = toJS(context);
++    JSC::JSLockHolder locker(globalObject);
++    if (globalObject->globalObjectMethodTable() != &kunlunGlobalObjectMethodTable)
++        return false;
++    if (!callback) {
++        kunlunModuleHooks().erase(globalObject);
++        return true;
++    }
++    return kunlunModuleHooks().emplace(globalObject, KunlunModuleHook { callback, data }).second;
++}
++
++// mode 0 fetches/parses the graph; mode 1 links/evaluates it, including TLA.
++// The result is a borrowed native Promise. The external shim roots it.
++extern "C" JS_EXPORT JSObjectRef JSKunlunLoadModule(JSGlobalContextRef context, JSStringRef key, uint32_t mode, JSValueRef* exception)
++{
++    using namespace JSC;
++    auto* globalObject = toJS(context);
++    VM& vm = globalObject->vm();
++    JSLockHolder locker(vm);
++    auto scope = DECLARE_TOP_EXCEPTION_SCOPE(vm);
++    auto identifier = Identifier::fromString(vm, key->string());
++    JSPromise* promise = mode ? linkAndEvaluateModule(globalObject, identifier, nullptr)
++                             : loadModule(globalObject, identifier, nullptr, nullptr);
++    if (scope.exception()) {
++        *exception = toRef(globalObject, scope.exception()->value());
++        scope.clearException();
++        return nullptr;
++    }
++    // Its settlement is consumed by the native host, which owns the result.
++    promise->markAsHandled();
++    return toRef(promise);
++}
++
++extern "C" JS_EXPORT uint32_t JSKunlunPromiseState(JSGlobalContextRef context, JSObjectRef object, JSValueRef* result)
++{
++    using namespace JSC;
++    auto* globalObject = toJS(context);
++    JSLockHolder locker(globalObject);
++    auto* promise = dynamicDowncast<JSPromise>(toJS(object));
++    if (!promise)
++        return 3;
++    *result = toRef(globalObject, promise->result());
++    switch (promise->status()) {
++    case JSPromise::Status::Pending: return 0;
++    case JSPromise::Status::Fulfilled: return 1;
++    case JSPromise::Status::Rejected: return 2;
++    }
++    return 3;
++}

@@ -2,8 +2,11 @@
 mod buffers;
 #[path = "callbacks.rs"]
 mod callbacks;
+#[path = "modules.rs"]
+mod modules;
 pub use buffers::{ArrayBuffer, TypedArray, TypedArrayKind};
 pub use callbacks::{CallbackReturn, CallbackValue, HostFunction};
+pub use modules::{ModuleLoader, ModuleRecord, ModuleState};
 
 use crate::ownership::{OwnedHandle, ProtectedHandle, catch_callback_panic};
 use crate::{BackendInfo, HostCall, JscError};
@@ -253,7 +256,7 @@ impl JscVm {
             hermetic: sys::BACKEND_HERMETIC,
             supports_inspection: true,
             supports_deferred_promises: true,
-            supports_native_modules: false,
+            supports_native_modules: cfg!(feature = "bundled-jsc"),
             supports_explicit_microtask_checkpoint: false,
         }
     }
@@ -495,6 +498,7 @@ impl JscVm {
 
 impl Drop for JscVm {
     fn drop(&mut self) {
+        modules::revoke(self.context.as_context());
         let key = self.context.as_context() as usize;
         SLEEP_HOOKS.with(|hooks| {
             hooks.borrow_mut().remove(&key);

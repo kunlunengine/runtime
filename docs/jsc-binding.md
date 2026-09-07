@@ -87,9 +87,13 @@ all other C++ exceptions to `KUNLUN_JSC_STATUS_CPP_EXCEPTION`. The C++ callback 
 catch-all boundary. Rust callbacks catch panics before returning and report a JavaScript exception
 plus `KUNLUN_JSC_STATUS_CALLBACK_ERROR`; unwinding across either ABI direction is forbidden.
 
+The bundled shim provides native module resolve/fetch/link/evaluate callbacks, `import.meta.url`,
+and opaque, rooted module phase handles. Static and dynamic imports share the VM's native module
+cache. The safe wrapper ties each handle to its VM and isolate thread; system JSC reports this
+extension as unsupported. See [native module loading](./module-loading.md#executing-modules).
+
 Later versions of the shim will provide the smallest additional API needed for:
 
-- module resolve/fetch/link/evaluate and `import.meta`;
 - microtask checkpoints and unhandled-rejection notification;
 - execution deadlines, termination, and memory telemetry;
 - Inspector frontend/backend message callbacks and pause-loop events;

@@ -2,7 +2,10 @@
 
 mod builtins;
 mod host;
+mod module_sources;
 mod modules;
+mod source_maps;
+pub use module_sources::ModuleSources;
 
 pub use builtins::{
     BUILTIN_MODULES, BuiltinModuleDescriptor, TYPESCRIPT_DECLARATIONS, is_builtin_specifier,
@@ -13,7 +16,7 @@ pub use modules::{
     ModuleResolver, ModuleUrl,
 };
 
-use kunlun_jsc::{DeferredPromise, JscError, JscVm};
+use kunlun_jsc::{DeferredPromise, JscError, JscVm, ModuleState};
 use std::cell::{Cell, RefCell};
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
@@ -28,6 +31,7 @@ pub const EVENT_LOOP_BACKEND: &str = "caller-provided Tokio runtime";
 #[derive(Debug)]
 pub enum RuntimeError {
     Jsc(JscError),
+    Module(String),
     HostInitialization(String),
 }
 
@@ -35,6 +39,7 @@ impl Display for RuntimeError {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         match self {
             Self::Jsc(error) => Display::fmt(error, formatter),
+            Self::Module(error) => formatter.write_str(error),
             Self::HostInitialization(error) => {
                 write!(formatter, "could not initialize host services: {error}")
             }
@@ -46,7 +51,7 @@ impl Error for RuntimeError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Jsc(error) => Some(error),
-            Self::HostInitialization(_) => None,
+            Self::HostInitialization(_) | Self::Module(_) => None,
         }
     }
 }
@@ -65,6 +70,7 @@ pub struct TokioIsolate {
     timers: TimerDispatcher,
     host: host::HostDispatcher,
     vm: JscVm,
+    module_cancelled: Cell<bool>,
 }
 
 impl TokioIsolate {
@@ -93,26 +99,119 @@ impl TokioIsolate {
         host.install(&vm)?;
         builtins::install_builtin_modules(&mut vm)?;
 
-        Ok(Self { timers, host, vm })
+        Ok(Self {
+            timers,
+            host,
+            vm,
+            module_cancelled: Cell::new(false),
+        })
+    }
+
+    fn ensure_usable(&self) -> Result<(), RuntimeError> {
+        if self.module_cancelled.get() {
+            return Err(RuntimeError::Module("native module evaluation was cancelled; discard this isolate before executing more JavaScript".to_owned()));
+        }
+        Ok(())
+    }
+
+    pub fn install_module_sources(&mut self, sources: ModuleSources) -> Result<(), RuntimeError> {
+        self.ensure_usable()?;
+        self.vm.install_module_loader(sources)?;
+        Ok(())
+    }
+
+    /// Runs an ESM entrypoint with native linking, cycles, dynamic imports, and
+    /// top-level await. The installed source policy and cache last for this VM.
+    /// Dropping this future cancels its host work and makes the isolate unusable:
+    /// JSC's pending module graph can only be discarded safely with the VM.
+    pub async fn evaluate_module(&mut self, specifier: &str) -> Result<(), RuntimeError> {
+        self.ensure_usable()?;
+        let Self {
+            timers,
+            host,
+            vm,
+            module_cancelled,
+        } = self;
+        let id = NEXT_EVALUATION_ID.fetch_add(1, Ordering::Relaxed);
+        timers.begin_evaluation(id);
+        host.begin_evaluation(id);
+        let mut cleanup = ModuleEvaluationCleanup {
+            timers,
+            host,
+            cancelled: module_cancelled,
+            id,
+            finished: false,
+        };
+        let result = async {
+            let mut module = vm.load_module(specifier)?;
+            for phase in 0..2 {
+                if phase == 1 {
+                    module.evaluate()?;
+                }
+                loop {
+                    timers.settle_expired()?;
+                    cleanup.host.settle_completions()?;
+                    // The bootstrap uses the engine's API-entry checkpoint.
+                    // General explicit checkpoint/rejection policy remains #30.
+                    vm.evaluate("undefined", "kunlun:module-checkpoint")?;
+                    if module.poll()? == ModuleState::Fulfilled {
+                        break;
+                    }
+                    if let Some(deadline) = timers.next_deadline() {
+                        let _ =
+                            tokio::time::timeout_at(deadline, cleanup.host.wait_for_completion())
+                                .await;
+                    } else {
+                        cleanup.host.wait_for_completion().await;
+                    }
+                }
+            }
+            Ok(())
+        }
+        .await;
+        cleanup.finished = true;
+        result
     }
 
     pub fn evaluate(&mut self, source: &str, source_url: &str) -> Result<String, RuntimeError> {
+        self.ensure_usable()?;
         self.vm.evaluate(source, source_url).map_err(Into::into)
     }
 
     /// Evaluates JavaScript as the body of an async function.
     ///
     /// The body may use `await`, call the Promise-returning `sleep(ms)` host
-    /// function, and return a value. ESM/top-level-await support is a separate
-    /// module-loader milestone. This bootstrap API has no execution deadline:
+    /// function, and return a value. Use `evaluate_module` for ESM and top-level
+    /// await. This bootstrap API has no execution deadline:
     /// cancelling the Rust future cannot preempt synchronous JavaScript.
     pub async fn evaluate_async_body(
         &mut self,
         source: &str,
         source_url: &str,
     ) -> Result<String, RuntimeError> {
-        let Self { timers, host, vm } = self;
+        self.ensure_usable()?;
+        let Self {
+            timers, host, vm, ..
+        } = self;
         run_async_body(vm, timers, host, source, source_url).await
+    }
+}
+
+struct ModuleEvaluationCleanup<'a> {
+    timers: &'a TimerDispatcher,
+    host: &'a mut host::HostDispatcher,
+    cancelled: &'a Cell<bool>,
+    id: u64,
+    finished: bool,
+}
+
+impl Drop for ModuleEvaluationCleanup<'_> {
+    fn drop(&mut self) {
+        self.timers.cancel_evaluation(self.id);
+        self.host.cancel_evaluation(self.id);
+        if !self.finished {
+            self.cancelled.set(true);
+        }
     }
 }
 

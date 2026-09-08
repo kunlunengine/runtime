@@ -85,7 +85,7 @@ static kunlun_jsc_status throwing_callback(void *, kunlun_jsc_context *,
     throw std::runtime_error("native callback exception");
 }
 
-#if defined(KUNLUN_JSC_BUNDLED)
+#if defined(KUNLUN_JSC_BUNDLED) && defined(KUNLUN_JSC_TESTING)
 extern "C" uint64_t kunlun_jsc_test_live_module_handles();
 static unsigned module_mode = 0;
 static unsigned module_fetches = 0;
@@ -153,7 +153,7 @@ static void test_native_modules()
 
 int main()
 {
-#if defined(KUNLUN_JSC_BUNDLED)
+#if defined(KUNLUN_JSC_BUNDLED) && defined(KUNLUN_JSC_TESTING)
     test_native_modules();
 #endif
     // Exercise idempotent cleanup, including competing cleanup paths. State is

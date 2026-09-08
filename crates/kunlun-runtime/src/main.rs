@@ -290,8 +290,8 @@ fn print_help() {
            --allow-read <dir>  Grant kunlun:fs read access to a directory\n  \
            --allow-net <host>  Grant kunlun:http access to an exact host\n\n\
          The async bootstrap supports Promise/async/await and Tokio timers.\n\
-         Built-ins use kunlun.import() until the pinned JSC ESM shim lands.\n\
-         Native ESM/TLA and the portable remote inspector are not implemented yet.",
+         run-module supports native ESM and top-level await with bundled JSC.\n\
+         The portable remote inspector is not implemented yet.",
         version = env!("CARGO_PKG_VERSION")
     );
 }

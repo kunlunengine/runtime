@@ -242,13 +242,11 @@ kunlun_jsc_status kunlun_jsc_context_release(kunlun_jsc_context *context)
         if (!context)
             return KUNLUN_JSC_STATUS_INVALID_ARGUMENT;
         auto status = kunlun_jsc_modules_revoke(context);
-        if (status != KUNLUN_JSC_STATUS_OK)
-            return status;
         JSGlobalContextRelease(opaque_cast<JSGlobalContextRef>(context));
 #if defined(KUNLUN_JSC_BUNDLED)
         module_callbacks.erase(opaque_cast<JSGlobalContextRef>(context));
 #endif
-        return KUNLUN_JSC_STATUS_OK;
+        return status;
     });
 }
 

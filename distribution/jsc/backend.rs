@@ -50,7 +50,14 @@ pub fn sha256(path: &Path) -> Result<String, String> {
         }
         hash.update(&buffer[..count]);
     }
-    Ok(format!("{:x}", hash.finalize()))
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let digest = hash.finalize();
+    let mut encoded = String::with_capacity(digest.len() * 2);
+    for &byte in digest.iter() {
+        encoded.push(HEX[(byte >> 4) as usize] as char);
+        encoded.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    Ok(encoded)
 }
 
 fn json(path: &Path) -> Result<Value, String> {
@@ -326,6 +333,17 @@ mod tests {
         fn drop(&mut self) {
             fs::remove_dir_all(&self.root).unwrap();
         }
+    }
+
+    #[test]
+    fn computes_lowercase_sha256() {
+        let fixture = Fixture::new(TARGETS[0]);
+        let path = fixture.root.join("sha256-vector");
+        fs::write(&path, b"abc").unwrap();
+        assert_eq!(
+            sha256(&path).unwrap(),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
     }
 
     #[test]

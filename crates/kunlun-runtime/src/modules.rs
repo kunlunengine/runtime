@@ -164,6 +164,17 @@ pub struct ModuleResolver {
 }
 
 impl ModuleResolver {
+    pub(crate) fn resolve_absolute_url(
+        &self,
+        specifier: &str,
+    ) -> Result<ModuleUrl, ModuleResolutionError> {
+        let error = |kind| ModuleResolutionError::new(specifier, None, kind);
+        validate_specifier(specifier).map_err(error)?;
+        let url =
+            Url::parse(specifier).map_err(|cause| error(invalid_specifier(cause.to_string())))?;
+        self.resolve_url(url).map_err(error)
+    }
+
     pub fn new(root: impl AsRef<Path>) -> Result<Self, ModuleResolutionError> {
         let supplied = root.as_ref();
         let error = |kind| ModuleResolutionError::new(&supplied.to_string_lossy(), None, kind);

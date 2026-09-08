@@ -290,6 +290,11 @@
       "path": "distribution/jsc/patches/webkit-jsc-only-socket-inspector.patch",
       "sha256": "e3f59747b5e8676548066855718ac9c48e5d6fbf70b5b7961a9c0ea3dcb79e7d",
       "purpose": "Expose the POSIX socket inspector configuration selected by JSCOnly so its remote inspector headers and sources use the same TargetListing backend."
+    },
+    {
+      "path": "distribution/jsc/patches/webkit-kunlun-module-api.patch",
+      "sha256": "2365786c240895881e156e59f51c97956dcba57205356b5337dadc60f40996a3",
+      "purpose": "Add C extension points for Kunlun-owned canonical module resolve/fetch callbacks, native ESM linking and evaluation, and native Promise settlement without exporting WebKit C++ types."
     }
   ],
   "licenses": [

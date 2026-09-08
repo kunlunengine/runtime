@@ -130,6 +130,7 @@ clang++-18 \
     -fvisibility=hidden \
     -Wall -Wextra -Werror \
     -DKUNLUN_JSC_BUILDING_LIBRARY \
+    -DKUNLUN_JSC_BUNDLED \
     -I "$repository_root/crates/kunlun-jsc-sys/include" \
     -I "$repository_root/crates/kunlun-jsc-sys/native" \
     -I "$headers" \
@@ -145,6 +146,7 @@ patchelf --set-rpath "\$ORIGIN" "$shim_so"
 # Exercise ownership hooks under ASan/UBSan against the pinned engine without
 # changing the distributed libraries or contacting the network.
 CXX=clang++-18 "$repository_root/distribution/jsc/scripts/test-native-ownership.sh" \
+    -DKUNLUN_JSC_BUNDLED \
     -I "$headers" -L "$native_output" -lJavaScriptCore \
     -Wl,-rpath,"$native_output"
 

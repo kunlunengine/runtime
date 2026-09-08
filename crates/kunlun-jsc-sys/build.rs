@@ -17,6 +17,7 @@ fn main() {
     println!("cargo:rerun-if-changed=native/exception_smoke.cpp");
     println!("cargo:rerun-if-changed=native/kunlun_jsc.cpp");
     println!("cargo:rerun-if-changed=native/buffers.inc");
+    println!("cargo:rerun-if-changed=native/modules.inc");
     println!("cargo:rerun-if-changed=native/external_bytes.hpp");
     println!("cargo:rerun-if-env-changed=KUNLUN_JSC_DIST_DIR");
 

@@ -85,8 +85,77 @@ static kunlun_jsc_status throwing_callback(void *, kunlun_jsc_context *,
     throw std::runtime_error("native callback exception");
 }
 
+#if defined(KUNLUN_JSC_BUNDLED) && defined(KUNLUN_JSC_TESTING)
+extern "C" uint64_t kunlun_jsc_test_live_module_handles();
+static unsigned module_mode = 0;
+static unsigned module_fetches = 0;
+static kunlun_jsc_status module_callback(kunlun_jsc_context *context, uint32_t operation,
+    const kunlun_jsc_value *key, const kunlun_jsc_value *,
+    const kunlun_jsc_value **result, const kunlun_jsc_value **)
+{
+    if (!operation) { *result = key; return 0; }
+    ++module_fetches;
+    if (module_mode == 1)
+        throw std::runtime_error("module fetch exception");
+    if (module_mode == 2) {
+        assert(kunlun_jsc_modules_revoke(context) == 0);
+        assert(kunlun_jsc_modules_install(context, module_callback) == KUNLUN_JSC_STATUS_INVALID_STATE);
+    }
+    String source(module_mode == 2 ? "import 'test:///dependency.mjs';" : "export const value = 42;");
+    return kunlun_jsc_value_make_string(context, source.raw, result);
+}
+
+static void test_native_modules()
+{
+    for (unsigned round = 0; round < 32; ++round) {
+        for (module_mode = 0; module_mode < 3; ++module_mode) {
+            Context ctx;
+            module_fetches = 0;
+            assert(kunlun_jsc_modules_install(ctx.raw, module_callback) == 0);
+            assert(kunlun_jsc_modules_install(ctx.raw, module_callback) == KUNLUN_JSC_STATUS_INVALID_STATE);
+            String url("test:///module.mjs");
+            kunlun_jsc_module *module = nullptr;
+            const kunlun_jsc_value *exception = nullptr;
+            assert(kunlun_jsc_module_load(ctx.raw, url.raw, &module, &exception) == 0);
+            assert(module && !exception);
+            assert(kunlun_jsc_test_live_module_handles() == 1);
+            evaluate(ctx, "undefined");
+            assert(kunlun_jsc_context_collect_garbage(ctx.raw) == 0);
+            uint32_t state = 0;
+            assert(kunlun_jsc_module_poll(module, &state, &exception) == 0);
+            assert(state == (module_mode ? 2u : 1u));
+            assert(module_fetches == 1);
+            if (!module_mode) {
+                std::thread other([&] {
+                    uint32_t wrong_state = 0;
+                    const kunlun_jsc_value *wrong_exception = nullptr;
+                    assert(kunlun_jsc_module_poll(module, &wrong_state, &wrong_exception) == KUNLUN_JSC_STATUS_WRONG_THREAD);
+                    assert(kunlun_jsc_module_evaluate(module, &wrong_exception) == KUNLUN_JSC_STATUS_WRONG_THREAD);
+                    assert(kunlun_jsc_module_release(module) == KUNLUN_JSC_STATUS_WRONG_THREAD);
+                });
+                other.join();
+                assert(kunlun_jsc_module_evaluate(module, &exception) == 0);
+                evaluate(ctx, "undefined");
+                assert(kunlun_jsc_module_poll(module, &state, &exception) == 0 && state == 1);
+                assert(kunlun_jsc_module_evaluate(module, &exception) == KUNLUN_JSC_STATUS_INVALID_STATE);
+                kunlun_jsc_module *duplicate = nullptr;
+                assert(kunlun_jsc_module_load(ctx.raw, url.raw, &duplicate, &exception) == 0);
+                evaluate(ctx, "undefined");
+                assert(module_fetches == 1);
+                assert(kunlun_jsc_module_release(duplicate) == 0);
+            }
+            assert(kunlun_jsc_module_release(module) == 0);
+            assert(kunlun_jsc_test_live_module_handles() == 0);
+        }
+    }
+}
+#endif
+
 int main()
 {
+#if defined(KUNLUN_JSC_BUNDLED) && defined(KUNLUN_JSC_TESTING)
+    test_native_modules();
+#endif
     // Exercise idempotent cleanup, including competing cleanup paths. State is
     // retained until all threads join; no reader races storage reclamation.
     {

@@ -143,6 +143,7 @@ xcrun clang++ \
     -arch "$architecture" \
     -mmacosx-version-min="$deployment_target" \
     -DKUNLUN_JSC_BUILDING_LIBRARY \
+    -DKUNLUN_JSC_BUNDLED \
     -I "$repository_root/crates/kunlun-jsc-sys/include" \
     -I "$repository_root/crates/kunlun-jsc-sys/native" \
     -F "$product_dir" \
@@ -160,6 +161,7 @@ codesign --force --sign - "$shim_dylib"
 # Exercise an instrumented copy of this shim against the just-built engine.
 # The release libraries remain uninstrumented and artifact contents unchanged.
 CXX="$(xcrun -f clang++)" "$repository_root/distribution/jsc/scripts/test-native-ownership.sh" \
+    -DKUNLUN_JSC_BUNDLED \
     -arch "$architecture" -mmacosx-version-min="$deployment_target" \
     -F "$product_dir" -L "$native_output" -lJavaScriptCore \
     -Wl,-rpath,"$native_output"

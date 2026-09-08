@@ -10,8 +10,9 @@ its async evaluation future is polled, so JavaScript continuations execute on th
 
 The bootstrap also exposes capability-gated `kunlun:fs` and `kunlun:http` modules through
 `kunlun.import()`. Their Tokio operations return plain completion data to the isolate; JSC Promise
-handles never cross the completion channel. Native ESM syntax/TLA still requires the pinned WebKit
-module-loader shim. Full Fetch objects, the remote inspector, and sandboxing remain roadmap work.
+handles never cross the completion channel. The pinned WebKit backend additionally runs native
+ESM graphs, live bindings, cycles, top-level await, and dynamic imports through the canonical URL
+resolver. Full Fetch objects, the remote inspector, and sandboxing remain roadmap work.
 
 ## Workspace
 
@@ -43,8 +44,14 @@ cargo run -p kunlun-runtime --no-default-features --features system-jsc -- eval-
 cargo run -p kunlun-runtime --no-default-features --features system-jsc -- types
 ```
 
-The project deliberately reports the limitations of this bootstrap instead of pretending that an
-async classic-script host is already an ESM/Fetch-compatible application runtime.
+With a verified pinned artifact, run a bundled ESM entrypoint using
+`cargo run -p kunlun-runtime -- run-module dist/server.mjs`. The entry's directory is the module
+root; `--allow-read` and `--allow-net` grant additional built-in I/O permissions. The system backend
+does not implement native modules. See [module loading](./docs/module-loading.md).
+
+The pinned engine exposes native Temporal by default. Cargo also sets `JSC_useTemporal=true` before
+starting development commands, preserving explicit environment overrides. `doctor` reports actual
+availability and checks leap-day arithmetic. See [Temporal](./docs/module-loading.md#temporal).
 
 ## Design documents
 

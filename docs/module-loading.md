@@ -4,9 +4,9 @@
 
 The engine-independent resolver contract belongs to [#28](https://github.com/kunlunengine/runtime/issues/28).
 The JSC module ABI, module records, fetch/link/evaluate callbacks, and actual static and dynamic
-imports belong to [#29](https://github.com/kunlunengine/runtime/issues/29). Completing the resolver
-does not enable native ESM execution. `supports_native_modules` remains false until that integration
-is implemented and validated against the pinned engine.
+imports belong to [#29](https://github.com/kunlunengine/runtime/issues/29). The pinned backend now
+connects those operations to JSC's native module loader. `supports_native_modules` is true for
+`bundled-jsc`; `system-jsc` returns `Unsupported` for module installation.
 
 `ModuleResolver` recognizes three module kinds:
 
@@ -118,8 +118,9 @@ It does not grant ambient filesystem, network, or process capabilities. Host API
 enforced by the host broker.
 
 A successful resolution does not protect a later path-based open from concurrent filesystem
-changes. The #29 fetch layer must preserve containment when opening the source (for example through
-root-scoped handles and verification), or use an independently verified immutable artifact tree.
+changes. `ModuleSources` preserves containment with root-scoped directory handles, rejects
+non-regular files, and bounds source reads. An independently verified immutable artifact tree can
+also be used.
 The resolver must not be presented as a hostile-code filesystem sandbox.
 
 ## Verification and remaining integration
@@ -140,9 +141,86 @@ For pinned macOS/Linux backends, use the verified artifact setup described in
 [JSC distribution](./jsc-distribution.md) and the workspace test commands in the platform workflows.
 Local developer-backend success is not evidence that pinned platform jobs have run.
 
-`#29` must add the pinned-JSC shim callbacks for resolve, fetch, link, evaluate, dynamic import, and
-`import.meta`, then consume this resolver and key contract. Cycles with live bindings, top-level
-await, rejection tracking, and source-map integration remain M2 exit requirements.
+The native corpus covers cycles with live bindings, TLA with timers and host I/O, dynamic-import
+cache identity and rejection, generated modules, permission denial, source maps, repeated teardown,
+Rust callback panics and reentry. The native sanitizer harness additionally checks C++ callback
+exceptions, revocation during graph loading, wrong-thread operations and module root balance.
+General explicit microtask and unhandled-rejection policy remains #30; the overall M2 gate is open.
+
+## Executing modules
+
+After installing a verified pinned artifact as described in the distribution guide:
+
+```sh
+cargo run -p kunlun-runtime -- run-module dist/server.mjs
+cargo run -p kunlun-runtime -- run-module dist/server.mjs --allow-read ./data
+```
+
+The CLI uses the canonical entry's parent directory as its module root. It does not grant built-in
+filesystem or network access merely because a module can be loaded. Imports of `kunlun:fs` and
+`kunlun:http` expose genuine module namespaces over the existing capability-gated exports.
+`run` and `run-async` retain their classic-script behavior.
+
+Embedders construct `ModuleSources::new(artifact_root)`, optionally register generated sources and
+maps, then call `TokioIsolate::install_module_sources` once and await `evaluate_module(entry)`.
+Native entry paths are relative to the configured root. Absolute module URLs can also be entries.
+The resolver/source policy and JSC cache are fixed for the VM lifetime; replacing a loader is an
+error. Equal canonical URLs share one module even across static/dynamic requests, while queries
+and fragments distinguish module identities.
+
+`JscVm::load_module` resolves an entry before touching the cache, then returns a rooted
+`ModuleRecord<'vm>`. Its first phase fetches and parses the graph; after `poll` reports `Fulfilled`,
+`evaluate` starts native linking and evaluation. TLA can leave that phase pending. The caller must
+continue driving timers, host completions and JSC API-entry checkpoints. Polling reads native
+Promise state without consulting replaceable JavaScript properties. A rejected phase yields a
+structured `JscError`; evaluation cannot be started twice on a handle. Dropping a handle releases
+its root, while JSC retains cached module records until context teardown.
+
+Module records borrow their VM and are `!Send + !Sync`. Rust callback state is retained for each
+invocation with no registry borrow held across user code. Revocation disconnects callbacks before
+Rust state is dropped. C++ exceptions and Rust panics become JavaScript errors. Reentrant
+evaluate/poll/release on an active native handle returns `InvalidState`.
+
+The Tokio driver runs JSC API-entry checkpoints and settles host work on the owning thread.
+Dropping a pending module future cancels its timers and host operations and retires the isolate;
+subsequent evaluation is rejected until the embedder creates a new isolate. Dropping a handle
+alone is not cancellation of JSC's graph. Synchronous JS still has no execution deadline (#32).
+
+## Source fetching and diagnostics
+
+File fetching opens relative to a retained `cap_std::fs::Dir`, preserving root containment across
+symlink races. Nonblocking open plus a regular-file check rejects a path raced into a FIFO or
+device. Sources must be UTF-8, at most 8 MiB each, with at most 1024 fetched module identities and
+64 MiB of sources per VM. Generated registration has the same aggregate bounds. No fetch performs
+network requests, package resolution, extension probing, or implicit permission grants.
+
+JSC receives the canonical URL as both the module key and source origin. `import.meta.url` is that
+key. Error diagnostics preserve the generated URL and engine stack, then append mapped locations
+when a v3 source map is available. Throwing `stack` getters cannot replace the original error.
+
+Supported maps are explicit `register_source_map` registrations, trailing
+`//# sourceMappingURL=relative-file.map` comments, and trailing base64 JSON data URLs (with optional
+`charset=utf-8`). External maps must be regular files below the artifact root. Original source names
+are resolved relative to the map URL and displayed without fetching their contents, including
+HTTP URLs. Regular maps and indexes containing embedded maps are supported; external index-section
+URLs are not fetched. Maps are bounded to 1 MiB each and 8 MiB per VM. Missing, malformed or denied
+automatic maps leave the original generated diagnostics intact; invalid explicit registrations
+return an error. This metadata layer does not implement the M4 debugger transport.
+
+## Temporal
+
+The pinned revision's `useTemporal` option defaults to true. Its native implementation supplies
+`Duration`, `Instant`, `PlainDate`, `PlainDateTime`, `PlainMonthDay`, `PlainTime`, `PlainYearMonth`,
+`ZonedDateTime`, and `Now`; no JavaScript polyfill is installed. The pinned test corpus checks leap
+days, nanosecond precision, calendar/time arithmetic, DST transitions and invalid-input rejection
+in a fresh process without a `JSC_useTemporal` override.
+
+`.cargo/config.toml` enables the same option before Cargo starts child processes, including for
+system-JSC development. It respects an existing environment value. Standalone system-backend
+binaries can be launched with `JSC_useTemporal=true`; their actual supported surface depends on
+the host OS. Options freeze at the first VM, so the runtime never mutates the environment after
+threads or JSC have started. `doctor` probes the actual global and runs a leap-day smoke test; a
+pinned backend with Temporal disabled fails this check.
 
 References: [WHATWG URL Standard](https://url.spec.whatwg.org/),
 [`url` crate documentation](https://docs.rs/url/2.5.8/url/struct.Url.html).

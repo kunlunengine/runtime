@@ -12,7 +12,7 @@ use std::fmt::{self, Display, Formatter};
 #[cfg(kunlun_jsc_native)]
 pub use native::{
     ArrayBuffer, CallbackReturn, CallbackValue, ContextGroup, DeferredPromise, HostFunction, JscVm,
-    RootedValue, TypedArray, TypedArrayKind,
+    ModuleLoader, ModuleRecord, ModuleState, RootedValue, TypedArray, TypedArrayKind,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -62,6 +62,8 @@ pub enum JscStatus {
     WrongType,
     OutOfBounds,
     Misaligned,
+    Unsupported,
+    InvalidState,
     Unknown(u32),
 }
 
@@ -80,6 +82,8 @@ impl JscStatus {
             9 => Self::WrongType,
             10 => Self::OutOfBounds,
             11 => Self::Misaligned,
+            12 => Self::Unsupported,
+            13 => Self::InvalidState,
             status => Self::Unknown(status),
         }
     }
@@ -98,6 +102,8 @@ impl JscStatus {
             Self::WrongType => 9,
             Self::OutOfBounds => 10,
             Self::Misaligned => 11,
+            Self::Unsupported => 12,
+            Self::InvalidState => 13,
             Self::Unknown(status) => status,
         }
     }
@@ -118,6 +124,8 @@ impl Display for JscStatus {
             Self::WrongType => "wrong value type",
             Self::OutOfBounds => "out of bounds",
             Self::Misaligned => "misaligned byte offset",
+            Self::Unsupported => "unsupported",
+            Self::InvalidState => "invalid state",
             Self::Unknown(status) => return write!(formatter, "unknown status {status}"),
         };
         formatter.write_str(name)

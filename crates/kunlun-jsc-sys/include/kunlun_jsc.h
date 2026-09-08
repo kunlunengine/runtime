@@ -36,6 +36,8 @@ typedef uint32_t kunlun_jsc_status;
 #define KUNLUN_JSC_STATUS_WRONG_TYPE 9u
 #define KUNLUN_JSC_STATUS_OUT_OF_BOUNDS 10u
 #define KUNLUN_JSC_STATUS_MISALIGNED 11u
+#define KUNLUN_JSC_STATUS_UNSUPPORTED 12u
+#define KUNLUN_JSC_STATUS_INVALID_STATE 13u
 
 /* Stable property-attribute representation. */
 typedef uint32_t kunlun_jsc_property_attributes;
@@ -58,6 +60,39 @@ typedef struct kunlun_jsc_context kunlun_jsc_context;
 typedef struct kunlun_jsc_string kunlun_jsc_string;
 typedef struct kunlun_jsc_value kunlun_jsc_value;
 typedef kunlun_jsc_value kunlun_jsc_object;
+
+/* Module callbacks synchronously return a borrowed string value or exception.
+ * Operation 0 resolves key against referrer (null for an entry); operation 1
+ * fetches source for a canonical key (referrer is null). No callback may unwind.
+ * The caller retains callback code until context release. Revocation is
+ * implicit at context release. Only one loader can be installed per context. */
+typedef kunlun_jsc_status (*kunlun_jsc_module_callback)(
+    kunlun_jsc_context *context, uint32_t operation,
+    const kunlun_jsc_value *key, const kunlun_jsc_value *referrer,
+    const kunlun_jsc_value **out_result, const kunlun_jsc_value **out_exception);
+KUNLUN_JSC_API kunlun_jsc_status kunlun_jsc_modules_install(
+    kunlun_jsc_context *context, kunlun_jsc_module_callback callback);
+KUNLUN_JSC_API kunlun_jsc_status kunlun_jsc_modules_revoke(kunlun_jsc_context *context);
+
+/* Owned, rooted, context-bound and thread-affine. The context must outlive the
+ * module. Release once even on failure. JSC retains its cache until teardown;
+ * releasing a handle does not invalidate cached module records or JS aliases.
+ * Reentrant evaluate/poll/release on an active handle returns INVALID_STATE.
+ * Load fetches/parses the graph. Once fulfilled, evaluate links/evaluates it.
+ * Both phases return immediately; poll reports pending/fulfilled/rejected as
+ * 0/1/2. Host timers/completions must be pumped while a phase is pending.
+ * System JSC returns UNSUPPORTED and never emulates ESM with classic scripts. */
+typedef struct kunlun_jsc_module kunlun_jsc_module;
+KUNLUN_JSC_API kunlun_jsc_status kunlun_jsc_module_load(
+    kunlun_jsc_context *context, const kunlun_jsc_string *canonical_url,
+    kunlun_jsc_module **out_module, const kunlun_jsc_value **out_exception);
+KUNLUN_JSC_API kunlun_jsc_status kunlun_jsc_module_evaluate(
+    kunlun_jsc_module *module, const kunlun_jsc_value **out_exception);
+/* out_exception is borrowed and set for rejected phases only. */
+KUNLUN_JSC_API kunlun_jsc_status kunlun_jsc_module_poll(
+    kunlun_jsc_module *module, uint32_t *out_state,
+    const kunlun_jsc_value **out_exception);
+KUNLUN_JSC_API kunlun_jsc_status kunlun_jsc_module_release(kunlun_jsc_module *module);
 
 /*
  * Host callbacks must not unwind across this boundary. Implementations return
@@ -245,6 +280,12 @@ KUNLUN_JSC_API kunlun_jsc_status kunlun_jsc_value_to_string(
     kunlun_jsc_context *context,
     const kunlun_jsc_value *value,
     kunlun_jsc_string **out_string,
+    const kunlun_jsc_value **out_exception);
+/* Reads an object property using normal JS semantics (getters may throw).
+ * The returned value/exception is borrowed from the context. */
+KUNLUN_JSC_API kunlun_jsc_status kunlun_jsc_value_get_property(
+    kunlun_jsc_context *context, const kunlun_jsc_value *object,
+    const kunlun_jsc_string *name, const kunlun_jsc_value **out_value,
     const kunlun_jsc_value **out_exception);
 KUNLUN_JSC_API kunlun_jsc_status kunlun_jsc_value_protect(
     kunlun_jsc_context *context,

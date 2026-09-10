@@ -26,6 +26,9 @@ libraries to be verified; it never downloads or falls back. Follow the [offline 
 for macOS arm64/x64 and Linux glibc arm64/x64. Linux without a verified artifact is no longer a
 runtime backend. Repository tooling remains available with `cargo test -p xtask`.
 
+For RustRover feature selection and its build-script synchronization workaround, see
+[the macOS IDE setup](./docs/rustrover.md).
+
 The commands below use the explicit macOS `system-jsc` developer backend. For a verified product
 artifact, omit `--no-default-features --features system-jsc` and set the distribution environment
 as documented. Do not use `--all-features`: the two engine backends are mutually exclusive.

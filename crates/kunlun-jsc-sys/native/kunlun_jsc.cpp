@@ -164,6 +164,7 @@ void callback_finalize(JSObjectRef function)
 } // namespace
 
 #include "modules.inc"
+#include "microtasks.inc"
 
 extern "C" {
 
@@ -241,6 +242,9 @@ kunlun_jsc_status kunlun_jsc_context_release(kunlun_jsc_context *context)
     return guard([&] {
         if (!context)
             return KUNLUN_JSC_STATUS_INVALID_ARGUMENT;
+        auto stopped = kunlun_jsc_microtasks_stop(context);
+        if (stopped != KUNLUN_JSC_STATUS_OK)
+            return stopped;
         auto status = kunlun_jsc_modules_revoke(context);
         JSGlobalContextRelease(opaque_cast<JSGlobalContextRef>(context));
 #if defined(KUNLUN_JSC_BUNDLED)
@@ -467,6 +471,10 @@ kunlun_jsc_status kunlun_jsc_object_make_deferred_promise(
         *out_exception = opaque_cast<const kunlun_jsc_value *>(exception);
         if (exception)
             return KUNLUN_JSC_STATUS_JS_EXCEPTION;
+#if defined(KUNLUN_JSC_BUNDLED)
+        if (promise)
+            JSKunlunTrackDeferredPromise(opaque_cast<JSGlobalContextRef>(context), promise);
+#endif
         return promise && resolve && reject ? KUNLUN_JSC_STATUS_OK
                                            : KUNLUN_JSC_STATUS_OUT_OF_MEMORY;
     });

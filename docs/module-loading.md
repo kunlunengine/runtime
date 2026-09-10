@@ -145,7 +145,7 @@ The native corpus covers cycles with live bindings, TLA with timers and host I/O
 cache identity and rejection, generated modules, permission denial, source maps, repeated teardown,
 Rust callback panics and reentry. The native sanitizer harness additionally checks C++ callback
 exceptions, revocation during graph loading, wrong-thread operations and module root balance.
-General explicit microtask and unhandled-rejection policy remains #30; the overall M2 gate is open.
+Explicit microtask and rejection policy is documented in [microtasks](./microtasks.md); the overall M2 gate remains open.
 
 ## Executing modules
 
@@ -171,7 +171,7 @@ and fragments distinguish module identities.
 `JscVm::load_module` resolves an entry before touching the cache, then returns a rooted
 `ModuleRecord<'vm>`. Its first phase fetches and parses the graph; after `poll` reports `Fulfilled`,
 `evaluate` starts native linking and evaluation. TLA can leave that phase pending. The caller must
-continue driving timers, host completions and JSC API-entry checkpoints. Polling reads native
+continue driving timers, host completions and explicit JSC microtask checkpoints. Polling reads native
 Promise state without consulting replaceable JavaScript properties. A rejected phase yields a
 structured `JscError`; evaluation cannot be started twice on a handle. Dropping a handle releases
 its root, while JSC retains cached module records until context teardown.
@@ -181,7 +181,7 @@ invocation with no registry borrow held across user code. Revocation disconnects
 Rust state is dropped. C++ exceptions and Rust panics become JavaScript errors. Reentrant
 evaluate/poll/release on an active native handle returns `InvalidState`.
 
-The Tokio driver runs JSC API-entry checkpoints and settles host work on the owning thread.
+The Tokio driver runs explicit JSC microtask checkpoints and settles host work on the owning thread.
 Dropping a pending module future cancels its timers and host operations and retires the isolate;
 subsequent evaluation is rejected until the embedder creates a new isolate. Dropping a handle
 alone is not cancellation of JSC's graph. Synchronous JS still has no execution deadline (#32).

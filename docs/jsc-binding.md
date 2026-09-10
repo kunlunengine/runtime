@@ -92,9 +92,12 @@ and opaque, rooted module phase handles. Static and dynamic imports share the VM
 cache. The safe wrapper ties each handle to its VM and isolate thread; system JSC reports this
 extension as unsupported. See [native module loading](./module-loading.md#executing-modules).
 
+The pinned shim also exposes explicit microtask checkpoints, plain-data Promise rejection
+transitions, reentry rejection, and queue disposal before context release. See
+[checkpoint ownership and host boundaries](./microtasks.md).
+
 Later versions of the shim will provide the smallest additional API needed for:
 
-- microtask checkpoints and unhandled-rejection notification;
 - execution deadlines, termination, and memory telemetry;
 - Inspector frontend/backend message callbacks and pause-loop events;
 - additional zero-copy buffer adoption APIs, only after a separate ownership review.

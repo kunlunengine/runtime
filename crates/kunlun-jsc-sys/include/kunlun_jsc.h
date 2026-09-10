@@ -61,6 +61,29 @@ typedef struct kunlun_jsc_string kunlun_jsc_string;
 typedef struct kunlun_jsc_value kunlun_jsc_value;
 typedef kunlun_jsc_value kunlun_jsc_object;
 
+/* Explicit checkpoints are available only on the pinned engine. Each context
+ * owns a FIFO microtask queue; ordinary API calls never drain it. A checkpoint
+ * drains nested jobs, then delivers a snapshot of rejection transitions:
+ * 0 = still unhandled, 1 = handled after a prior unhandled notification.
+ * IDs are context-local, monotonic, and stable across both transitions. Reason
+ * and source URL are borrowed for the callback only. Callback code/user_data
+ * are borrowed only until checkpoint returns; callbacks must not unwind.
+ * Reentry from running JS or a checkpoint returns INVALID_STATE. New jobs or
+ * transitions created by notification callbacks wait for the next checkpoint;
+ * out_pending is 1 when another checkpoint is needed before an idle decision.
+ * The callback must copy diagnostics before returning; native rejection roots
+ * live until handled or stopped. No WebKit types cross this boundary. */
+typedef kunlun_jsc_status (*kunlun_jsc_rejection_callback)(void *user_data,
+    uint64_t rejection_id, uint32_t transition, const kunlun_jsc_value *reason,
+    const kunlun_jsc_string *source_url);
+KUNLUN_JSC_API kunlun_jsc_status kunlun_jsc_microtask_checkpoint(
+    kunlun_jsc_context *context, kunlun_jsc_rejection_callback callback, void *user_data,
+    uint8_t *out_pending);
+/* Permanently discard pending jobs/rejection roots without running JS. Called
+ * before context release, idempotent; rejects reentry during JS/checkpoints.
+ * System JSC has no owned queue to stop and returns OK. */
+KUNLUN_JSC_API kunlun_jsc_status kunlun_jsc_microtasks_stop(kunlun_jsc_context *context);
+
 /* Module callbacks synchronously return a borrowed string value or exception.
  * Operation 0 resolves key against referrer (null for an entry); operation 1
  * fetches source for a canonical key (referrer is null). No callback may unwind.

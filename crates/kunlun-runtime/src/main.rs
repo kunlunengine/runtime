@@ -1,4 +1,4 @@
-use kunlun_jsc::JscVm;
+use kunlun_jsc::{JscVm, PromiseRejection, PromiseRejectionTransition};
 use kunlun_runtime::{
     EVENT_LOOP_BACKEND, HostPermissions, ModuleSources, TYPESCRIPT_DECLARATIONS, TokioIsolate,
 };
@@ -49,12 +49,7 @@ fn eval_command(args: &[String]) -> Result<(), String> {
         .first()
         .ok_or_else(|| "usage: kunlun-runtime eval <source>".to_owned())?;
     let vm = JscVm::new("kunlun-runtime eval").map_err(|error| error.to_string())?;
-    println!(
-        "{}",
-        vm.evaluate(source, "kunlun:eval")
-            .map_err(|error| error.to_string())?
-    );
-    Ok(())
+    evaluate_script(&vm, source, "kunlun:eval")
 }
 
 fn eval_async_command(args: &[String]) -> Result<(), String> {
@@ -70,12 +65,7 @@ fn eval_async_command(args: &[String]) -> Result<(), String> {
 fn run_command(args: &[String]) -> Result<(), String> {
     let (source, source_url, display_name) = read_script(args, "run")?;
     let vm = JscVm::new(&display_name).map_err(|error| error.to_string())?;
-    println!(
-        "{}",
-        vm.evaluate(&source, &source_url)
-            .map_err(|error| error.to_string())?
-    );
-    Ok(())
+    evaluate_script(&vm, &source, &source_url)
 }
 
 fn run_async_command(args: &[String]) -> Result<(), String> {
@@ -105,9 +95,35 @@ fn run_module_command(args: &[String]) -> Result<(), String> {
         .install_module_sources(sources)
         .map_err(|e| e.to_string())?;
     let entry = entry.to_str().ok_or("module entry is not valid UTF-8")?;
-    runtime
-        .block_on(isolate.evaluate_module(entry))
-        .map_err(|e| e.to_string())
+    let result = runtime.block_on(isolate.evaluate_module(entry));
+    report_rejections(isolate.take_promise_rejections());
+    result.map_err(|e| e.to_string())
+}
+
+fn evaluate_script(vm: &JscVm, source: &str, source_url: &str) -> Result<(), String> {
+    let result = vm.evaluate(source, source_url);
+    if JscVm::backend_info().supports_explicit_microtask_checkpoint {
+        while vm
+            .microtask_checkpoint()
+            .map_err(|error| error.to_string())?
+        {}
+    }
+    report_rejections(vm.take_promise_rejections());
+    println!("{}", result.map_err(|error| error.to_string())?);
+    Ok(())
+}
+
+fn report_rejections(records: Vec<PromiseRejection>) {
+    for record in records {
+        let transition = match record.transition {
+            PromiseRejectionTransition::Unhandled => "unhandled Promise rejection",
+            PromiseRejectionTransition::Handled => "Promise rejection handled",
+        };
+        eprintln!(
+            "{transition} [isolate {}, rejection {}]: {}",
+            record.isolate_id, record.rejection_id, record.exception
+        );
+    }
 }
 
 fn read_script(args: &[String], command: &str) -> Result<(String, String, String), String> {
@@ -137,10 +153,9 @@ fn evaluate_async(
         .map_err(|error| format!("could not create Tokio event loop: {error}"))?;
     let mut isolate =
         TokioIsolate::new_with_permissions(name, permissions).map_err(|error| error.to_string())?;
-    let value = runtime
-        .block_on(isolate.evaluate_async_body(source, source_url))
-        .map_err(|error| error.to_string())?;
-    println!("{value}");
+    let result = runtime.block_on(isolate.evaluate_async_body(source, source_url));
+    report_rejections(isolate.take_promise_rejections());
+    println!("{}", result.map_err(|error| error.to_string())?);
     Ok(())
 }
 

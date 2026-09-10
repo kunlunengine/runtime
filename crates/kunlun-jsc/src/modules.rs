@@ -34,7 +34,12 @@ pub(super) fn revoke(context: ContextRef) {
 }
 
 impl JscVm {
-    fn module_error(&self, operation: &'static str, url: &str, exception: ValueRef) -> JscError {
+    pub(super) fn module_error(
+        &self,
+        operation: &'static str,
+        url: &str,
+        exception: ValueRef,
+    ) -> JscError {
         // Root before stringification: a user-defined toString can reenter JS
         // and trigger collection just like a stack getter can.
         let root =

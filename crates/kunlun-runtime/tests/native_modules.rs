@@ -375,11 +375,11 @@ mod native {
             let mut vm = JscVm::new("module-roots").unwrap();
             vm.install_module_loader(f.sources()).unwrap();
             let mut record = vm.load_module("entry.mjs").unwrap();
-            vm.evaluate("undefined", "test:///checkpoint.js").unwrap();
+            vm.microtask_checkpoint().unwrap();
             assert_eq!(record.poll().unwrap(), ModuleState::Fulfilled);
             vm.collect_garbage().unwrap();
             record.evaluate().unwrap();
-            vm.evaluate("undefined", "test:///checkpoint.js").unwrap();
+            vm.microtask_checkpoint().unwrap();
             assert_eq!(record.poll().unwrap(), ModuleState::Fulfilled);
             assert!(record.evaluate().is_err());
             drop(record);
@@ -488,7 +488,7 @@ mod native {
             let vm = Rc::new(vm);
             *owner.borrow_mut() = Rc::downgrade(&vm);
             let record = vm.load_module("entry").unwrap();
-            vm.evaluate("undefined", "test:///checkpoint.js").unwrap();
+            vm.microtask_checkpoint().unwrap();
             if panic {
                 assert!(
                     record

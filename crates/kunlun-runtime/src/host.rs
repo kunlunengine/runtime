@@ -208,7 +208,7 @@ impl HostDispatcher {
         }
     }
 
-    pub(crate) fn settle_completions(&mut self) -> Result<(), JscError> {
+    pub(crate) fn settle_completions(&mut self, vm: &JscVm) -> Result<(), JscError> {
         while let Some(completion) = self
             .buffered_completions
             .pop_front()
@@ -222,6 +222,7 @@ impl HostDispatcher {
                 Ok(value) => call.promise.resolve_string(&value)?,
                 Err(message) => call.promise.reject_message(&message)?,
             }
+            crate::checkpoint(vm)?;
         }
         Ok(())
     }
@@ -371,4 +372,67 @@ async fn http_request(
         body,
     })
     .map_err(|error| format!("could not encode HTTP response: {error}"))
+}
+
+#[cfg(test)]
+mod checkpoint_tests {
+    use super::*;
+
+    #[test]
+    fn completions_and_nested_promise_jobs_follow_channel_fifo() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let vm = JscVm::new("completion-fifo").unwrap();
+            let mut host = HostDispatcher::new(HostPermissions::none()).unwrap();
+            host.install(&vm).unwrap();
+            host.begin_evaluation(1);
+            vm.evaluate("globalThis.order = []; for (let i = 1; i <= 2; i++) __kunlunHostCall('test', '{}').then(v => { order.push(v); Promise.resolve().then(() => order.push(v + '-job')); });", "test:///completions.js").unwrap();
+            // No await/yield: worker tasks have not run. Control channel arrival
+            // order directly, including out-of-order request completion.
+            for id in [2, 1] {
+                host.completion_tx.send(Completion { id, result: Ok(id.to_string()) }).unwrap();
+            }
+            host.settle_completions(&vm).unwrap();
+            assert_eq!(vm.evaluate("order.join(',')", "test:///read.js").unwrap(), "2,2-job,1,1-job");
+            host.cancel_evaluation(1);
+        });
+    }
+
+    #[test]
+    fn host_rejection_is_observed_at_its_checkpoint() {
+        if !JscVm::backend_info().supports_explicit_microtask_checkpoint {
+            return;
+        }
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let vm = JscVm::new("completion-rejection").unwrap();
+            let mut host = HostDispatcher::new(HostPermissions::none()).unwrap();
+            host.install(&vm).unwrap();
+            vm.evaluate("__kunlunHostCall('test', '{}');", "test:///host.js")
+                .unwrap();
+            host.completion_tx
+                .send(Completion {
+                    id: 1,
+                    result: Err("denied".to_owned()),
+                })
+                .unwrap();
+            host.settle_completions(&vm).unwrap();
+            let records = vm.take_promise_rejections();
+            assert_eq!(records.len(), 1);
+            assert_eq!(records[0].exception.source_url(), Some("test:///host.js"));
+            assert!(
+                records[0]
+                    .exception
+                    .exception_text()
+                    .unwrap()
+                    .contains("denied")
+            );
+        });
+    }
 }

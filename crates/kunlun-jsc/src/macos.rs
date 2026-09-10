@@ -2,6 +2,8 @@
 mod buffers;
 #[path = "callbacks.rs"]
 mod callbacks;
+#[path = "microtasks.rs"]
+mod microtasks;
 #[path = "modules.rs"]
 mod modules;
 pub use buffers::{ArrayBuffer, TypedArray, TypedArrayKind};
@@ -18,6 +20,8 @@ use std::ptr;
 use std::ptr::NonNull;
 use std::rc::Rc;
 use std::time::Duration;
+
+static NEXT_ISOLATE_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 type SleepScheduler = dyn Fn(Duration, DeferredPromise);
 type HostScheduler = dyn Fn(HostCall, DeferredPromise);
@@ -81,6 +85,7 @@ struct ContextInner {
     // final reference to the owning group.
     handle: OwnedHandle<sys::kunlun_jsc_context>,
     _group: Rc<ContextGroupInner>,
+    isolate_id: u64,
 }
 
 impl ContextInner {
@@ -217,9 +222,12 @@ impl ContextGroup {
             )
         })?;
         let vm = JscVm {
+            rejections: RefCell::new(Vec::new()),
+            reported_rejections: RefCell::new(HashMap::new()),
             context: Rc::new(ContextInner {
                 handle,
                 _group: Rc::clone(&self.inner),
+                isolate_id: NEXT_ISOLATE_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             }),
         };
         vm.set_name(name)?;
@@ -241,6 +249,8 @@ impl ContextGroup {
 /// assert_sync::<JscVm>();
 /// ```
 pub struct JscVm {
+    rejections: RefCell<Vec<crate::PromiseRejection>>,
+    reported_rejections: RefCell<HashMap<u64, JscError>>,
     context: Rc<ContextInner>,
 }
 
@@ -257,7 +267,7 @@ impl JscVm {
             supports_inspection: true,
             supports_deferred_promises: true,
             supports_native_modules: cfg!(feature = "bundled-jsc"),
-            supports_explicit_microtask_checkpoint: false,
+            supports_explicit_microtask_checkpoint: cfg!(feature = "bundled-jsc"),
         }
     }
 
@@ -498,6 +508,10 @@ impl JscVm {
 
 impl Drop for JscVm {
     fn drop(&mut self) {
+        // SAFETY: stop before revoking host state, including when protected
+        // values keep the context alive beyond this public VM owner.
+        let status = unsafe { sys::kunlun_jsc_microtasks_stop(self.context.as_context()) };
+        debug_assert_eq!(status, sys::KUNLUN_JSC_STATUS_OK);
         modules::revoke(self.context.as_context());
         let key = self.context.as_context() as usize;
         SLEEP_HOOKS.with(|hooks| {
@@ -755,7 +769,7 @@ impl DeferredPromise {
         let mut result = ptr::null();
         let mut exception = ptr::null();
         // SAFETY: the protected resolver and argument belong to the same live
-        // context. JSC invokes the Promise reactions before returning control.
+        // context. The pinned engine queues reactions until the next checkpoint.
         let status = unsafe {
             sys::kunlun_jsc_object_call_as_function(
                 self.context().as_context(),

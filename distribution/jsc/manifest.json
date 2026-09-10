@@ -295,6 +295,11 @@
       "path": "distribution/jsc/patches/webkit-kunlun-module-api.patch",
       "sha256": "2365786c240895881e156e59f51c97956dcba57205356b5337dadc60f40996a3",
       "purpose": "Add C extension points for Kunlun-owned canonical module resolve/fetch callbacks, native ESM linking and evaluation, and native Promise settlement without exporting WebKit C++ types."
+    },
+    {
+      "path": "distribution/jsc/patches/webkit-kunlun-microtask-api.patch",
+      "sha256": "cbb65e491bb04fd3a0c1a50ddb02bf7c918a799677eb1489dc1d62f3a90d4bc5",
+      "purpose": "Give Kunlun contexts explicit microtask queues and checkpoint-based Promise rejection transitions, with teardown that discards pending jobs and roots."
     }
   ],
   "licenses": [

@@ -1,0 +1,217 @@
+diff --git a/Source/JavaScriptCore/API/KunlunModuleAPI.inc b/Source/JavaScriptCore/API/KunlunModuleAPI.inc
+--- a/Source/JavaScriptCore/API/KunlunModuleAPI.inc
++++ b/Source/JavaScriptCore/API/KunlunModuleAPI.inc
+@@ -14,6 +14,8 @@
+ #include "SourceCode.h"
+ #include <unordered_map>
+
++#include "KunlunMicrotaskAPI.inc"
++
+ namespace {
+
+ using KunlunModuleCallback = JSValueRef (*)(void*, JSContextRef, uint32_t, JSValueRef, JSValueRef, JSValueRef*);
+@@ -26,7 +28,9 @@
+ // No GC-owned values or owning references live in this registry.
+ auto& kunlunModuleHooks()
+ {
+-    static NeverDestroyed<ThreadSpecific<std::unordered_map<JSC::JSGlobalObject*, KunlunModuleHook>>> hooks;
++    static LazyNeverDestroyed<ThreadSpecific<std::unordered_map<JSC::JSGlobalObject*, KunlunModuleHook>>> hooks;
++    static std::once_flag once;
++    std::call_once(once, [] { hooks.construct(); });
+     return *hooks.get();
+ }
+
+@@ -127,7 +131,7 @@
+     &kunlunModuleFetch,
+     &kunlunModuleMeta,
+     nullptr, // Use the engine's native module evaluation.
+-    &JSC::JSGlobalObject::promiseRejectionTracker,
++    &kunlunPromiseRejectionTracker,
+     &JSC::JSGlobalObject::reportUncaughtExceptionAtEventLoop,
+     &JSC::JSGlobalObject::currentScriptExecutionOwner,
+     &JSC::JSGlobalObject::scriptExecutionStatus,
+@@ -155,6 +159,8 @@
+     JSLockHolder locker(vm.ptr());
+     auto* globalObject = JSGlobalObject::createWithCustomMethodTable(vm.get(),
+         JSGlobalObject::createStructure(vm.get(), jsNull()), &kunlunGlobalObjectMethodTable);
++    globalObject->setMicrotaskQueue(MicrotaskQueue::create(vm.get()));
++    kunlunMicrotaskStates().emplace(globalObject, std::make_shared<KunlunMicrotasks>());
+     globalObject->setInspectable(false);
+     return JSGlobalContextRetain(toGlobalRef(globalObject));
+ }
+diff --git a/Source/JavaScriptCore/API/KunlunMicrotaskAPI.inc b/Source/JavaScriptCore/API/KunlunMicrotaskAPI.inc
+new file mode 100644
+--- /dev/null
++++ b/Source/JavaScriptCore/API/KunlunMicrotaskAPI.inc
+@@ -0,0 +1,171 @@
++/* Per-global queues prevent API lock release from running Promise jobs.
++ * All state is isolate-thread-affine and explicitly removed before release. */
++#include "MicrotaskQueueInlines.h"
++#include "StackVisitor.h"
++#include "WeakInlines.h"
++#include <algorithm>
++#include <memory>
++#include <mutex>
++#include <vector>
++
++using KunlunRejectionCallback = uint32_t (*)(void*, uint64_t, uint32_t, JSValueRef, JSStringRef);
++
++struct KunlunRejection {
++    JSC::Strong<JSC::JSPromise> promise;
++    WTF::String source;
++    uint64_t id;
++    bool reported { false };
++};
++
++struct KunlunPromiseOrigin {
++    JSC::Weak<JSC::JSPromise> promise;
++    WTF::String source;
++};
++
++struct KunlunMicrotasks {
++    std::vector<KunlunPromiseOrigin> origins;
++    std::vector<std::shared_ptr<KunlunRejection>> rejections;
++    uint64_t nextId { 1 };
++    bool busy { false };
++    bool stopped { false };
++};
++
++static auto& kunlunMicrotaskStates()
++{
++    // WebKit builds with -fno-threadsafe-statics; explicitly serialize TLS-key
++    // construction when independent isolates first enter on different threads.
++    static LazyNeverDestroyed<ThreadSpecific<std::unordered_map<JSC::JSGlobalObject*, std::shared_ptr<KunlunMicrotasks>>>> states;
++    static std::once_flag once;
++    std::call_once(once, [] { states.construct(); });
++    return *states.get();
++}
++
++static WTF::String kunlunCurrentSource(JSC::VM& vm)
++{
++    WTF::String source;
++    if (!vm.entryScope)
++        return source;
++    JSC::StackVisitor::visit(vm.topCallFrame, vm, [&](JSC::StackVisitor& visitor) {
++        if (visitor->isNativeCalleeFrame() || !visitor->codeBlock())
++            return IterationStatus::Continue;
++        source = visitor->sourceURL();
++        return source.isEmpty() ? IterationStatus::Continue : IterationStatus::Done;
++    });
++    return source;
++}
++
++static void kunlunPromiseRejectionTracker(JSC::JSGlobalObject* globalObject, JSC::JSPromise* promise, JSC::JSPromiseRejectionOperation operation)
++{
++    if (operation != JSC::JSPromiseRejectionOperation::Reject)
++        return; // isHandled() is authoritative at the checkpoint.
++    auto found = kunlunMicrotaskStates().find(globalObject);
++    if (found == kunlunMicrotaskStates().end() || found->second->stopped)
++        return;
++    auto state = found->second;
++    auto& vm = globalObject->vm();
++    auto source = kunlunCurrentSource(vm);
++    if (source.isEmpty()) {
++        for (auto& origin : state->origins) {
++            if (origin.promise.get() == promise) {
++                source = origin.source;
++                break;
++            }
++        }
++    }
++    state->rejections.push_back(std::make_shared<KunlunRejection>(KunlunRejection {
++        JSC::Strong<JSC::JSPromise>(vm, promise), WTF::move(source), state->nextId++ }));
++}
++
++extern "C" {
++JS_EXPORT uint32_t JSKunlunMicrotaskCheckpoint(JSGlobalContextRef, KunlunRejectionCallback, void*, bool*);
++JS_EXPORT uint32_t JSKunlunMicrotasksStop(JSGlobalContextRef);
++JS_EXPORT void JSKunlunTrackDeferredPromise(JSGlobalContextRef, JSObjectRef);
++}
++
++extern "C" JS_EXPORT void JSKunlunTrackDeferredPromise(JSGlobalContextRef context, JSObjectRef object)
++{
++    using namespace JSC;
++    auto* globalObject = toJS(context);
++    JSLockHolder locker(globalObject);
++    auto found = kunlunMicrotaskStates().find(globalObject);
++    if (found == kunlunMicrotaskStates().end())
++        return;
++    auto* promise = dynamicDowncast<JSPromise>(toJS(object));
++    if (!promise)
++        return;
++    found->second->origins.push_back({ Weak<JSPromise>(promise), kunlunCurrentSource(globalObject->vm()) });
++}
++
++extern "C" JS_EXPORT uint32_t JSKunlunMicrotaskCheckpoint(JSGlobalContextRef context, KunlunRejectionCallback callback, void* data, bool* pending)
++{
++    using namespace JSC;
++    auto* globalObject = toJS(context);
++    auto& vm = globalObject->vm();
++    JSLockHolder locker(vm);
++    auto found = kunlunMicrotaskStates().find(globalObject);
++    if (found == kunlunMicrotaskStates().end() || found->second->stopped || found->second->busy || vm.entryScope)
++        return 13; // INVALID_STATE, including calls from running JavaScript.
++    auto state = found->second;
++    SetForScope busy(state->busy, true);
++    globalObject->microtaskQueue().performMicrotaskCheckpoint<true>(vm, [](JSGlobalObject*, JSGlobalObject*) { });
++    vm.finalizeSynchronousJSExecution();
++
++    std::erase_if(state->origins, [](auto& origin) {
++        return !origin.promise || origin.promise->status() != JSPromise::Status::Pending;
++    });
++
++    // Freeze the batch before invoking foreign code. Conversions/callbacks may
++    // reject new Promises or attach handlers; those transitions wait until the
++    // next checkpoint. Mark delivery first so reentry cannot double-report.
++    std::vector<std::pair<std::shared_ptr<KunlunRejection>, uint32_t>> events;
++    for (auto& rejection : state->rejections) {
++        if (rejection->promise->isHandled()) {
++            if (rejection->reported)
++                events.emplace_back(rejection, 1);
++        } else if (!rejection->reported && callback) {
++            rejection->reported = true;
++            events.emplace_back(rejection, 0);
++        }
++    }
++    std::erase_if(state->rejections, [](auto& rejection) { return rejection->promise->isHandled(); });
++    uint32_t result = 0;
++    for (auto& [rejection, transition] : events) {
++        auto source = OpaqueJSString::tryCreate(rejection->source.isNull() ? WTF::emptyString() : rejection->source);
++        if (!source)
++            return 2;
++        auto status = callback(data, rejection->id, transition,
++            toRef(globalObject, rejection->promise->result()), source.get());
++        if (status && !result)
++            result = status;
++    }
++    *pending = !globalObject->microtaskQueue().isEmpty();
++    // A handled transition/new rejection created during notification also
++    // needs another boundary, even when no Promise job was queued.
++    for (auto& rejection : state->rejections) {
++        if (!rejection->reported || rejection->promise->isHandled())
++            *pending = true;
++    }
++    return result;
++}
++
++extern "C" JS_EXPORT uint32_t JSKunlunMicrotasksStop(JSGlobalContextRef context)
++{
++    auto* globalObject = toJS(context);
++    JSC::JSLockHolder locker(globalObject);
++    auto found = kunlunMicrotaskStates().find(globalObject);
++    if (globalObject->vm().entryScope)
++        return 13;
++    if (found == kunlunMicrotaskStates().end()) {
++        // Rooted values can outlive the public VM owner and their conversions
++        // can queue more jobs. A repeated/final stop must discard those too.
++        globalObject->microtaskQueue().clear();
++        return 0;
++    }
++    if (found->second->busy)
++        return 13;
++    // Never execute user JS during cancellation/teardown.
++    found->second->stopped = true;
++    globalObject->microtaskQueue().clear();
++    kunlunMicrotaskStates().erase(found);
++    return 0;
++}

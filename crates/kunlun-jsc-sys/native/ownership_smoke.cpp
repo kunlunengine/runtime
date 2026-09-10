@@ -86,6 +86,106 @@ static kunlun_jsc_status throwing_callback(void *, kunlun_jsc_context *,
 }
 
 #if defined(KUNLUN_JSC_BUNDLED) && defined(KUNLUN_JSC_TESTING)
+static kunlun_jsc_status ignore_rejection(void *, uint64_t, uint32_t,
+    const kunlun_jsc_value *, const kunlun_jsc_string *) { return 0; }
+
+static void checkpoint(Context &ctx)
+{
+    uint8_t pending = 0;
+    do {
+        assert(kunlun_jsc_microtask_checkpoint(ctx.raw, ignore_rejection, nullptr, &pending) == 0);
+    } while (pending);
+}
+
+struct Rejections {
+    Context *context;
+    unsigned unhandled = 0;
+    unsigned handled = 0;
+    uint64_t id = 0;
+};
+
+static kunlun_jsc_status rejection_callback(void *data, uint64_t id, uint32_t transition,
+    const kunlun_jsc_value *reason, const kunlun_jsc_string *source)
+{
+    auto &state = *static_cast<Rejections *>(data);
+    assert(reason && source);
+    uint8_t pending = 9;
+    assert(kunlun_jsc_microtask_checkpoint(state.context->raw, ignore_rejection, nullptr, &pending) == KUNLUN_JSC_STATUS_INVALID_STATE);
+    assert(pending == 0);
+    assert(kunlun_jsc_microtasks_stop(state.context->raw) == KUNLUN_JSC_STATUS_INVALID_STATE);
+    assert(kunlun_jsc_context_release(state.context->raw) == KUNLUN_JSC_STATUS_INVALID_STATE);
+    if (!transition) {
+        ++state.unhandled;
+        state.id = id;
+        evaluate(*state.context, "late.catch(() => {}); Promise.resolve().then(() => globalThis.ran = true);");
+    } else {
+        ++state.handled;
+        assert(state.id == id);
+    }
+    return 0;
+}
+
+static kunlun_jsc_status throwing_rejection(void *, uint64_t, uint32_t,
+    const kunlun_jsc_value *, const kunlun_jsc_string *)
+{
+    throw std::runtime_error("notification failed");
+}
+
+static kunlun_jsc_status reentrant_checkpoint(void *, kunlun_jsc_context *context,
+    uint32_t, const kunlun_jsc_value *const *, const kunlun_jsc_value **result,
+    const kunlun_jsc_value **)
+{
+    uint8_t pending = 0;
+    assert(kunlun_jsc_microtask_checkpoint(context, ignore_rejection, nullptr, &pending) == KUNLUN_JSC_STATUS_INVALID_STATE);
+    return kunlun_jsc_value_make_number(context, 42, result);
+}
+
+static void test_microtasks()
+{
+    for (unsigned round = 0; round < 32; ++round) {
+        Context ctx;
+        Rejections state { &ctx };
+        evaluate(ctx, "globalThis.ran = false; globalThis.late = Promise.reject(new Error('late')); Promise.reject('caught').catch(() => {});");
+        uint8_t pending = 0;
+        assert(kunlun_jsc_microtask_checkpoint(ctx.raw, rejection_callback, &state, &pending) == 0);
+        assert(state.unhandled == 1 && state.handled == 0 && pending == 1);
+        evaluate(ctx, "if (ran) throw Error('implicit drain');");
+        assert(kunlun_jsc_microtask_checkpoint(ctx.raw, rejection_callback, &state, &pending) == 0);
+        assert(state.unhandled == 1 && state.handled == 1 && pending == 0);
+        evaluate(ctx, "if (!ran) throw Error('missing drain'); Promise.reject('callback failure');");
+        assert(kunlun_jsc_microtask_checkpoint(ctx.raw, throwing_rejection, nullptr, &pending) == KUNLUN_JSC_STATUS_CPP_EXCEPTION);
+        assert(kunlun_jsc_microtask_checkpoint(ctx.raw, rejection_callback, &state, &pending) == 0);
+        assert(state.unhandled == 1 && state.handled == 1);
+        kunlun_jsc_object *function = nullptr, *global = nullptr;
+        const kunlun_jsc_value *exception = nullptr;
+        String name("reenter");
+        assert(kunlun_jsc_context_get_global_object(ctx.raw, &global) == 0);
+        assert(kunlun_jsc_object_make_function_with_data(ctx.raw, name.raw, reentrant_checkpoint, &state, &function, &exception) == 0);
+        assert(kunlun_jsc_object_set_property(ctx.raw, global, name.raw, function, 0, &exception) == 0);
+        evaluate(ctx, "reenter(); Promise.resolve().then(() => reenter());");
+        checkpoint(ctx);
+        // A rejection retains a shim-owned backing store through its reason.
+        // Releasing the context must release it even without a handler.
+        uint8_t byte = 42;
+        kunlun_jsc_object *buffer = nullptr;
+        assert(kunlun_jsc_array_buffer_create_copy(ctx.raw, &byte, 1, &buffer, &exception) == 0);
+        String reason_name("reason");
+        assert(kunlun_jsc_object_set_property(ctx.raw, global, reason_name.raw, buffer, 0, &exception) == 0);
+        evaluate(ctx, "Promise.reject(reason); globalThis.reason = null;");
+        checkpoint(ctx);
+        evaluate(ctx, "globalThis.ran = false; Promise.resolve().then(() => { ran = true; }); Promise.reject('teardown');");
+        assert(kunlun_jsc_microtasks_stop(ctx.raw) == 0);
+        assert(kunlun_jsc_microtasks_stop(ctx.raw) == 0);
+        assert(kunlun_jsc_microtask_checkpoint(ctx.raw, ignore_rejection, nullptr, &pending) == KUNLUN_JSC_STATUS_INVALID_STATE);
+        evaluate(ctx, "if (ran) throw Error('teardown executed user code');");
+        // A retained context may enqueue more work after its public owner has
+        // stopped it; final context release must clear that work as well.
+        assert(kunlun_jsc_array_buffer_create_copy(ctx.raw, &byte, 1, &buffer, &exception) == 0);
+        assert(kunlun_jsc_object_set_property(ctx.raw, global, reason_name.raw, buffer, 0, &exception) == 0);
+        evaluate(ctx, "(() => { const captured = reason; Promise.resolve().then(() => captured.byteLength); })(); globalThis.reason = null;");
+    }
+}
+
 extern "C" uint64_t kunlun_jsc_test_live_module_handles();
 static unsigned module_mode = 0;
 static unsigned module_fetches = 0;
@@ -101,7 +201,7 @@ static kunlun_jsc_status module_callback(kunlun_jsc_context *context, uint32_t o
         assert(kunlun_jsc_modules_revoke(context) == 0);
         assert(kunlun_jsc_modules_install(context, module_callback) == KUNLUN_JSC_STATUS_INVALID_STATE);
     }
-    String source(module_mode == 2 ? "import 'test:///dependency.mjs';" : "export const value = 42;");
+    String source(module_mode == 2 ? "import 'test:///dependency.mjs';" : "export const value = await Promise.resolve(42); import('test:///module.mjs').then(m => globalThis.dynamicValue = m.value);");
     return kunlun_jsc_value_make_string(context, source.raw, result);
 }
 
@@ -119,7 +219,7 @@ static void test_native_modules()
             assert(kunlun_jsc_module_load(ctx.raw, url.raw, &module, &exception) == 0);
             assert(module && !exception);
             assert(kunlun_jsc_test_live_module_handles() == 1);
-            evaluate(ctx, "undefined");
+            checkpoint(ctx);
             assert(kunlun_jsc_context_collect_garbage(ctx.raw) == 0);
             uint32_t state = 0;
             assert(kunlun_jsc_module_poll(module, &state, &exception) == 0);
@@ -135,12 +235,13 @@ static void test_native_modules()
                 });
                 other.join();
                 assert(kunlun_jsc_module_evaluate(module, &exception) == 0);
-                evaluate(ctx, "undefined");
+                checkpoint(ctx);
                 assert(kunlun_jsc_module_poll(module, &state, &exception) == 0 && state == 1);
+                evaluate(ctx, "if (globalThis.dynamicValue !== 42) throw Error('dynamic import did not settle');");
                 assert(kunlun_jsc_module_evaluate(module, &exception) == KUNLUN_JSC_STATUS_INVALID_STATE);
                 kunlun_jsc_module *duplicate = nullptr;
                 assert(kunlun_jsc_module_load(ctx.raw, url.raw, &duplicate, &exception) == 0);
-                evaluate(ctx, "undefined");
+                checkpoint(ctx);
                 assert(module_fetches == 1);
                 assert(kunlun_jsc_module_release(duplicate) == 0);
             }
@@ -155,6 +256,8 @@ int main()
 {
 #if defined(KUNLUN_JSC_BUNDLED) && defined(KUNLUN_JSC_TESTING)
     test_native_modules();
+    test_microtasks();
+    assert(ExternalBytes::live_allocations == 0);
 #endif
     // Exercise idempotent cleanup, including competing cleanup paths. State is
     // retained until all threads join; no reader races storage reclamation.

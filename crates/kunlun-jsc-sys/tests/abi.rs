@@ -32,6 +32,8 @@ fn generated_layout_matches_fixed_width_abi() {
 #[test]
 fn links_every_allowlisted_symbol() {
     let symbols = [
+        sys::kunlun_jsc_microtask_checkpoint as *const (),
+        sys::kunlun_jsc_microtasks_stop as *const (),
         sys::kunlun_jsc_modules_install as *const (),
         sys::kunlun_jsc_modules_revoke as *const (),
         sys::kunlun_jsc_module_load as *const (),
@@ -76,8 +78,8 @@ fn links_every_allowlisted_symbol() {
         sys::kunlun_jsc_value_unprotect as *const (),
     ];
 
-    assert_eq!(symbols.len(), 42);
-    assert_eq!(size_of_val(&symbols), 42 * size_of::<usize>());
+    assert_eq!(symbols.len(), 44);
+    assert_eq!(size_of_val(&symbols), 44 * size_of::<usize>());
     assert!(symbols.iter().all(|symbol| !symbol.is_null()));
 }
 

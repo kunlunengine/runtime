@@ -11,6 +11,7 @@ pub use builtins::{
     BUILTIN_MODULES, BuiltinModuleDescriptor, TYPESCRIPT_DECLARATIONS, is_builtin_specifier,
 };
 pub use host::HostPermissions;
+pub use kunlun_jsc::{PromiseRejection, PromiseRejectionTransition};
 pub use modules::{
     GENERATED_MODULE_SCHEME, ModuleKind, ModuleResolutionError, ModuleResolutionErrorKind,
     ModuleResolver, ModuleUrl,
@@ -149,11 +150,11 @@ impl TokioIsolate {
                     module.evaluate()?;
                 }
                 loop {
-                    timers.settle_expired()?;
-                    cleanup.host.settle_completions()?;
-                    // The bootstrap uses the engine's API-entry checkpoint.
-                    // General explicit checkpoint/rejection policy remains #30.
-                    vm.evaluate("undefined", "kunlun:module-checkpoint")?;
+                    checkpoint(vm)?;
+                    timers.settle_expired(vm)?;
+                    cleanup.host.settle_completions(vm)?;
+                    // Checkpoint before polling settlement or deciding to idle.
+                    checkpoint(vm)?;
                     if module.poll()? == ModuleState::Fulfilled {
                         break;
                     }
@@ -169,13 +170,20 @@ impl TokioIsolate {
             Ok(())
         }
         .await;
+        let final_checkpoint = checkpoint(vm).map_err(RuntimeError::from);
         cleanup.finished = true;
-        result
+        result.and(final_checkpoint)
     }
 
     pub fn evaluate(&mut self, source: &str, source_url: &str) -> Result<String, RuntimeError> {
         self.ensure_usable()?;
-        self.vm.evaluate(source, source_url).map_err(Into::into)
+        let result = self.vm.evaluate(source, source_url);
+        checkpoint(&self.vm)?;
+        result.map_err(Into::into)
+    }
+
+    pub fn take_promise_rejections(&self) -> Vec<PromiseRejection> {
+        self.vm.take_promise_rejections()
     }
 
     /// Evaluates JavaScript as the body of an async function.
@@ -195,6 +203,15 @@ impl TokioIsolate {
         } = self;
         run_async_body(vm, timers, host, source, source_url).await
     }
+}
+
+// The system framework keeps its development-only eager API behavior. Only
+// the pinned backend guarantees controlled queues and rejection transitions.
+fn checkpoint(vm: &JscVm) -> Result<(), JscError> {
+    if JscVm::backend_info().supports_explicit_microtask_checkpoint {
+        while vm.microtask_checkpoint()? {}
+    }
+    Ok(())
 }
 
 struct ModuleEvaluationCleanup<'a> {
@@ -234,7 +251,7 @@ impl TimerDispatcher {
         }
     }
 
-    fn settle_expired(&self) -> Result<(), JscError> {
+    fn settle_expired(&self, vm: &JscVm) -> Result<(), JscError> {
         let now = Instant::now();
         let ready = {
             let mut pending = self.pending.borrow_mut();
@@ -259,6 +276,7 @@ impl TimerDispatcher {
                     .promise
                     .reject_message("sleep duration exceeds the host clock range")?;
             }
+            checkpoint(vm)?;
         }
         Ok(())
     }
@@ -371,14 +389,16 @@ async fn run_async_body(
     );
 
     let mut cleanup = AsyncStateCleanup::new(vm, timers, host, id, state);
-    if let Err(error) = cleanup.vm().evaluate(&wrapper, source_url) {
-        return Err(error.into());
-    }
+    let initial = cleanup.vm().evaluate(&wrapper, source_url);
+    checkpoint(cleanup.vm)?;
+    initial?;
 
     let result = async {
         loop {
-            timers.settle_expired()?;
-            cleanup.host().settle_completions()?;
+            checkpoint(cleanup.vm)?;
+            timers.settle_expired(cleanup.vm)?;
+            cleanup.host.settle_completions(cleanup.vm)?;
+            checkpoint(cleanup.vm)?;
 
             let poll_source = format!("globalThis.{}.done", cleanup.state);
             let done = cleanup.vm().evaluate(&poll_source, "kunlun:async-poll")?;
@@ -392,6 +412,7 @@ async fn run_async_body(
                 cleanup.host().wait_for_completion().await;
             }
         }
+        checkpoint(cleanup.vm)?;
         let error_check = format!("globalThis.{}.error !== undefined", cleanup.state);
         let has_error = cleanup.vm().evaluate(&error_check, "kunlun:async-result")? == "true";
         if has_error {
@@ -416,8 +437,9 @@ async fn run_async_body(
         }
     }
     .await;
+    let final_checkpoint = checkpoint(cleanup.vm).map_err(RuntimeError::from);
     cleanup.cleanup();
-    result
+    result.and_then(|value| final_checkpoint.map(|()| value))
 }
 
 fn cleanup_state(vm: &mut JscVm, state: &str) {
@@ -609,7 +631,7 @@ mod tests {
         isolate
             .evaluate(
                 "globalThis.__timerOrder = [];\n\
-                 sleep(60_000).then(() => __timerOrder.push('A'));\n\
+                 sleep(60_000).then(() => { __timerOrder.push('A'); Promise.resolve().then(() => __timerOrder.push('A-job')); });\n\
                  sleep(60_000).then(() => __timerOrder.push('B'));\n\
                  sleep(60_000).then(() => __timerOrder.push('C'));",
                 "test:///same-deadline-timers.js",
@@ -624,14 +646,14 @@ mod tests {
         }
         drop(pending);
 
-        isolate.timers.settle_expired().unwrap();
+        isolate.timers.settle_expired(&isolate.vm).unwrap();
         let order = isolate
             .evaluate(
                 "globalThis.__timerOrder.join(',')",
                 "test:///same-deadline-result.js",
             )
             .unwrap();
-        assert_eq!(order, "A,B,C");
+        assert_eq!(order, "A,A-job,B,C");
     }
 
     #[test]

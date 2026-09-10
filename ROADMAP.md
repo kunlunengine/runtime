@@ -80,7 +80,7 @@ Goal: run real bundled server entrypoints rather than classic scripts.
 - [x] Native module linking, cyclic graph handling, dynamic import, `import.meta.url`, and source maps.
 - [x] Initial Deferred Promise bridge and native Promise/`async`/`await` continuation execution.
 - [x] Caller-driven Tokio host loop and Promise-returning timer primitive.
-- [ ] Promise rejection tracking and an explicit deterministic microtask checkpoint API.
+- [x] Promise rejection tracking and an explicit deterministic microtask checkpoint API.
 - [x] Extend the host loop from timers to plain-data filesystem/HTTP completion messages.
 - [ ] Add signals, cancellation/AbortSignal, streaming I/O, and graceful shutdown.
 - Execution deadlines, cooperative cancellation, heap telemetry, and out-of-memory policy.

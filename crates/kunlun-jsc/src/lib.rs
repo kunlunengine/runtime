@@ -21,6 +21,21 @@ pub struct HostCall {
     pub payload: String,
 }
 
+/// A checkpoint transition containing no JSC handles.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PromiseRejection {
+    pub isolate_id: u64,
+    pub rejection_id: u64,
+    pub transition: PromiseRejectionTransition,
+    pub exception: JscError,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PromiseRejectionTransition {
+    Unhandled,
+    Handled,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BackendInfo {
     pub name: &'static str,

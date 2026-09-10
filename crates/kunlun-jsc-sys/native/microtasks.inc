@@ -1,4 +1,10 @@
 #if defined(KUNLUN_JSC_BUNDLED)
+static_assert(KUNLUN_JSC_STATUS_OK == 0,
+    "KunlunMicrotaskAPI.inc uses 0 for success");
+static_assert(KUNLUN_JSC_STATUS_OUT_OF_MEMORY == 2,
+    "KunlunMicrotaskAPI.inc uses 2 for allocation failure");
+static_assert(KUNLUN_JSC_STATUS_INVALID_STATE == 13,
+    "KunlunMicrotaskAPI.inc uses 13 for invalid state");
 using EngineRejectionCallback = uint32_t (*)(void *, uint64_t, uint32_t, JSValueRef, JSStringRef);
 extern "C" uint32_t JSKunlunMicrotaskCheckpoint(JSGlobalContextRef, EngineRejectionCallback, void *, bool *);
 extern "C" uint32_t JSKunlunMicrotasksStop(JSGlobalContextRef);

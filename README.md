@@ -63,6 +63,7 @@ availability and checks leap-day arithmetic. See [Temporal](./docs/module-loadin
 - [docs/devtools.md](./docs/devtools.md) — Inspector backend and the standalone DevTools platform.
 - [docs/builtins.md](./docs/builtins.md) — built-in module ABI, permissions, and TypeScript types.
 - [docs/microtasks.md](./docs/microtasks.md) — explicit Promise checkpoints and rejection transitions.
+- [docs/lifecycle.md](./docs/lifecycle.md) — AbortSignal, bounded host streams, and graceful shutdown.
 - [docs/module-loading.md](./docs/module-loading.md) — M2 URL resolver contract and native ESM boundary.
 - [docs/kunlun-cli.md](./docs/kunlun-cli.md) — the Vite+-class `kunlun` command surface and generator model.
 - [docs/cli-toolchain-plan.md](./docs/cli-toolchain-plan.md) — package-manager, toolchain, native-build,

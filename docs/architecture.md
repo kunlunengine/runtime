@@ -72,11 +72,15 @@ WebKit's unstable C++ ABI. High-level host code never handles an unrooted raw `J
 - Contexts, values, callbacks, and module records are `!Send + !Sync`.
 - Work crosses isolate boundaries through owned byte buffers and structured-clone messages.
 - Host async operations return opaque request IDs; completion is posted to the isolate queue.
+- Filesystem and HTTP byte streams use two-slot channels of 64 KiB owned chunks. JavaScript pulls
+  one chunk at a time, so a slow consumer applies backpressure without moving JSC handles.
 - Pinned JSC checkpoints occur after evaluation and each timer/host completion, and before
   idle/completion decisions. Queues are context-local and never drained from foreign threads.
   See [checkpoint and rejection policy](./microtasks.md); system JSC remains an eager development backend.
 - Execution deadlines require an engine watchdog in the pinned JSC shim; the bootstrap API does not
   claim that Tokio timers can interrupt synchronous JavaScript.
+- SIGINT/SIGTERM stop admission, cancel evaluation-owned work, checkpoint, drain tracked workers for
+  a finite grace period, and then release the isolate. See [lifecycle policy](./lifecycle.md).
 
 This makes illegal cross-thread JSC access difficult to express in safe Rust.
 

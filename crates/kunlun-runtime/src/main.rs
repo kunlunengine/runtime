@@ -1,12 +1,17 @@
 use kunlun_jsc::{JscVm, PromiseRejection, PromiseRejectionTransition};
 use kunlun_runtime::{
-    EVENT_LOOP_BACKEND, HostPermissions, ModuleSources, TYPESCRIPT_DECLARATIONS, TokioIsolate,
+    DEFAULT_SHUTDOWN_GRACE, EVENT_LOOP_BACKEND, HostPermissions, ModuleSources, ShutdownOutcome,
+    TYPESCRIPT_DECLARATIONS, TokioIsolate,
 };
 use std::env;
 use std::fs;
 use std::path::Path;
 use std::process::ExitCode;
+use std::time::Duration;
 use tokio::runtime::Builder;
+
+#[cfg(unix)]
+use tokio::signal::unix::{Signal, SignalKind};
 
 fn main() -> ExitCode {
     match run(env::args().skip(1).collect()) {
@@ -59,6 +64,7 @@ fn eval_async_command(args: &[String]) -> Result<(), String> {
         "kunlun:eval-async",
         "kunlun-runtime eval-async",
         options.permissions,
+        options.shutdown_grace,
     )
 }
 
@@ -72,7 +78,13 @@ fn run_async_command(args: &[String]) -> Result<(), String> {
     let options = parse_async_options(args, "run-async <file>")?;
     let file_args = [options.subject];
     let (source, source_url, display_name) = read_script(&file_args, "run-async")?;
-    evaluate_async(&source, &source_url, &display_name, options.permissions)
+    evaluate_async(
+        &source,
+        &source_url,
+        &display_name,
+        options.permissions,
+        options.shutdown_grace,
+    )
 }
 
 fn run_module_command(args: &[String]) -> Result<(), String> {
@@ -95,9 +107,9 @@ fn run_module_command(args: &[String]) -> Result<(), String> {
         .install_module_sources(sources)
         .map_err(|e| e.to_string())?;
     let entry = entry.to_str().ok_or("module entry is not valid UTF-8")?;
-    let result = runtime.block_on(isolate.evaluate_module(entry));
+    let result = drive_module(&runtime, &mut isolate, entry, options.shutdown_grace);
     report_rejections(isolate.take_promise_rejections());
-    result.map_err(|e| e.to_string())
+    result
 }
 
 fn evaluate_script(vm: &JscVm, source: &str, source_url: &str) -> Result<(), String> {
@@ -146,6 +158,7 @@ fn evaluate_async(
     source_url: &str,
     name: &str,
     permissions: HostPermissions,
+    shutdown_grace: Duration,
 ) -> Result<(), String> {
     let runtime = Builder::new_current_thread()
         .enable_all()
@@ -153,20 +166,186 @@ fn evaluate_async(
         .map_err(|error| format!("could not create Tokio event loop: {error}"))?;
     let mut isolate =
         TokioIsolate::new_with_permissions(name, permissions).map_err(|error| error.to_string())?;
-    let result = runtime.block_on(isolate.evaluate_async_body(source, source_url));
+    let result = drive_async_body(&runtime, &mut isolate, source, source_url, shutdown_grace);
     report_rejections(isolate.take_promise_rejections());
-    println!("{}", result.map_err(|error| error.to_string())?);
+    println!("{}", result?);
     Ok(())
+}
+
+#[derive(Clone, Copy)]
+enum ShutdownSignal {
+    Interrupt,
+    Terminate,
+}
+
+impl ShutdownSignal {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Interrupt => "SIGINT",
+            Self::Terminate => "SIGTERM",
+        }
+    }
+}
+
+#[cfg(unix)]
+struct ShutdownSignals {
+    interrupt: Signal,
+    terminate: Signal,
+}
+
+#[cfg(unix)]
+impl ShutdownSignals {
+    fn new() -> Result<Self, String> {
+        Ok(Self {
+            interrupt: tokio::signal::unix::signal(SignalKind::interrupt())
+                .map_err(|error| format!("could not install SIGINT handler: {error}"))?,
+            terminate: tokio::signal::unix::signal(SignalKind::terminate())
+                .map_err(|error| format!("could not install SIGTERM handler: {error}"))?,
+        })
+    }
+
+    async fn recv(&mut self) -> Result<ShutdownSignal, String> {
+        tokio::select! {
+            signal = self.interrupt.recv() => signal
+                .map(|()| ShutdownSignal::Interrupt)
+                .ok_or_else(|| "SIGINT handler closed unexpectedly".to_owned()),
+            signal = self.terminate.recv() => signal
+                .map(|()| ShutdownSignal::Terminate)
+                .ok_or_else(|| "SIGTERM handler closed unexpectedly".to_owned()),
+        }
+    }
+}
+
+#[cfg(not(unix))]
+struct ShutdownSignals;
+
+#[cfg(not(unix))]
+impl ShutdownSignals {
+    fn new() -> Result<Self, String> {
+        Ok(Self)
+    }
+
+    async fn recv(&mut self) -> Result<ShutdownSignal, String> {
+        tokio::signal::ctrl_c()
+            .await
+            .map(|()| ShutdownSignal::Interrupt)
+            .map_err(|error| format!("could not wait for Ctrl-C: {error}"))
+    }
+}
+
+enum Execution<T> {
+    Complete(T),
+    Shutdown(ShutdownSignal),
+}
+
+fn drive_async_body(
+    runtime: &tokio::runtime::Runtime,
+    isolate: &mut TokioIsolate,
+    source: &str,
+    source_url: &str,
+    grace: Duration,
+) -> Result<String, String> {
+    let mut signals = runtime.block_on(async { ShutdownSignals::new() })?;
+    let shutdown = isolate.shutdown_handle();
+    let execution = runtime.block_on(async {
+        Ok::<_, String>(tokio::select! {
+            result = isolate.evaluate_async_body(source, source_url) => {
+                Execution::Complete(result.map_err(|error| error.to_string()))
+            }
+            signal = signals.recv() => {
+                let signal = signal?;
+                shutdown.request();
+                Execution::Shutdown(signal)
+            },
+        })
+    })?;
+    match execution {
+        Execution::Complete(result) => result,
+        Execution::Shutdown(signal) => {
+            finish_shutdown(runtime, isolate, &mut signals, signal, grace)?;
+            Err(format!("execution interrupted by {}", signal.name()))
+        }
+    }
+}
+
+fn drive_module(
+    runtime: &tokio::runtime::Runtime,
+    isolate: &mut TokioIsolate,
+    entry: &str,
+    grace: Duration,
+) -> Result<(), String> {
+    let mut signals = runtime.block_on(async { ShutdownSignals::new() })?;
+    let shutdown = isolate.shutdown_handle();
+    let execution = runtime.block_on(async {
+        Ok::<_, String>(tokio::select! {
+            result = isolate.evaluate_module(entry) => {
+                Execution::Complete(result.map_err(|error| error.to_string()))
+            }
+            signal = signals.recv() => {
+                let signal = signal?;
+                shutdown.request();
+                Execution::Shutdown(signal)
+            },
+        })
+    })?;
+    match execution {
+        Execution::Complete(result) => result,
+        Execution::Shutdown(signal) => {
+            finish_shutdown(runtime, isolate, &mut signals, signal, grace)?;
+            Err(format!("execution interrupted by {}", signal.name()))
+        }
+    }
+}
+
+fn finish_shutdown(
+    runtime: &tokio::runtime::Runtime,
+    isolate: &mut TokioIsolate,
+    signals: &mut ShutdownSignals,
+    first: ShutdownSignal,
+    grace: Duration,
+) -> Result<(), String> {
+    eprintln!(
+        "received {}; stopping admission and draining for up to {} ms",
+        first.name(),
+        grace.as_millis()
+    );
+    enum ShutdownWait {
+        Finished(Result<ShutdownOutcome, String>),
+        Repeated(ShutdownSignal),
+    }
+    let wait = runtime.block_on(async {
+        Ok::<_, String>(tokio::select! {
+            biased;
+            signal = signals.recv() => ShutdownWait::Repeated(signal?),
+            outcome = isolate.shutdown(grace) => {
+                ShutdownWait::Finished(outcome.map_err(|error| error.to_string()))
+            }
+        })
+    })?;
+    match wait {
+        ShutdownWait::Finished(Ok(ShutdownOutcome::Graceful)) => Ok(()),
+        ShutdownWait::Finished(Ok(ShutdownOutcome::Forced)) => Err(format!(
+            "shutdown grace period of {} ms expired; forcing termination",
+            grace.as_millis()
+        )),
+        ShutdownWait::Finished(Err(error)) => Err(error),
+        ShutdownWait::Repeated(signal) => Err(format!(
+            "received {} during graceful shutdown; forcing termination",
+            signal.name()
+        )),
+    }
 }
 
 struct AsyncCommandOptions {
     subject: String,
     permissions: HostPermissions,
+    shutdown_grace: Duration,
 }
 
 fn parse_async_options(args: &[String], usage: &str) -> Result<AsyncCommandOptions, String> {
     let mut subject = None;
     let mut permissions = HostPermissions::none();
+    let mut shutdown_grace = DEFAULT_SHUTDOWN_GRACE;
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
@@ -186,6 +365,16 @@ fn parse_async_options(args: &[String], usage: &str) -> Result<AsyncCommandOptio
                 permissions = permissions.allow_net_host(host);
                 index += 2;
             }
+            "--shutdown-grace-ms" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| "--shutdown-grace-ms requires milliseconds".to_owned())?;
+                let milliseconds = value.parse::<u64>().map_err(|_| {
+                    format!("invalid --shutdown-grace-ms value {value}; expected an integer")
+                })?;
+                shutdown_grace = Duration::from_millis(milliseconds);
+                index += 2;
+            }
             value if value.starts_with('-') => {
                 return Err(format!("unknown async option: {value}"));
             }
@@ -200,6 +389,7 @@ fn parse_async_options(args: &[String], usage: &str) -> Result<AsyncCommandOptio
     Ok(AsyncCommandOptions {
         subject: subject.ok_or_else(|| format!("usage: kunlun-runtime {usage}"))?,
         permissions,
+        shutdown_grace,
     })
 }
 
@@ -224,6 +414,11 @@ fn doctor_command() -> Result<(), String> {
         backend.supports_explicit_microtask_checkpoint
     );
     println!("event loop: {EVENT_LOOP_BACKEND}");
+    println!("AbortSignal and bounded host streams: true");
+    println!(
+        "default shutdown grace: {} ms",
+        DEFAULT_SHUTDOWN_GRACE.as_millis()
+    );
     println!("built-in modules: kunlun:fs, kunlun:http (capability-gated)");
 
     let vm = JscVm::new("kunlun-runtime doctor").map_err(|error| error.to_string())?;
@@ -304,9 +499,44 @@ fn print_help() {
          Async permissions:\n  \
            --allow-read <dir>  Grant kunlun:fs read access to a directory\n  \
            --allow-net <host>  Grant kunlun:http access to an exact host\n\n\
+           --shutdown-grace-ms <ms>  Set the SIGINT/SIGTERM drain deadline\n\n\
          The async bootstrap supports Promise/async/await and Tokio timers.\n\
          run-module supports native ESM and top-level await with bundled JSC.\n\
          The portable remote inspector is not implemented yet.",
         version = env!("CARGO_PKG_VERSION")
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_configurable_shutdown_grace() {
+        let options = parse_async_options(
+            &[
+                "return 'ok'".to_owned(),
+                "--shutdown-grace-ms".to_owned(),
+                "275".to_owned(),
+            ],
+            "eval-async <body>",
+        )
+        .unwrap();
+        assert_eq!(options.shutdown_grace, Duration::from_millis(275));
+    }
+
+    #[test]
+    fn rejects_invalid_shutdown_grace() {
+        let error = parse_async_options(
+            &[
+                "return 'ok'".to_owned(),
+                "--shutdown-grace-ms".to_owned(),
+                "forever".to_owned(),
+            ],
+            "eval-async <body>",
+        )
+        .err()
+        .unwrap();
+        assert!(error.contains("expected an integer"));
+    }
 }

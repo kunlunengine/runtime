@@ -23,11 +23,38 @@ use std::error::Error;
 use std::fmt::{self, Display, Formatter};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 use tokio::time::Instant;
 
 static NEXT_EVALUATION_ID: AtomicU64 = AtomicU64::new(1);
 
 pub const EVENT_LOOP_BACKEND: &str = "caller-provided Tokio runtime";
+pub const DEFAULT_SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShutdownOutcome {
+    Graceful,
+    Forced,
+}
+
+/// A thread-affine, cloneable stop-admission handle. Signal handlers should
+/// request shutdown before dropping an active evaluation future.
+#[derive(Clone)]
+pub struct ShutdownHandle {
+    requested: Rc<Cell<bool>>,
+    host_accepting: Rc<Cell<bool>>,
+}
+
+impl ShutdownHandle {
+    pub fn request(&self) {
+        self.requested.set(true);
+        self.host_accepting.set(false);
+    }
+
+    pub fn is_requested(&self) -> bool {
+        self.requested.get()
+    }
+}
 
 #[derive(Debug)]
 pub enum RuntimeError {
@@ -72,6 +99,7 @@ pub struct TokioIsolate {
     host: host::HostDispatcher,
     vm: JscVm,
     module_cancelled: Cell<bool>,
+    shutting_down: Rc<Cell<bool>>,
 }
 
 impl TokioIsolate {
@@ -105,10 +133,16 @@ impl TokioIsolate {
             host,
             vm,
             module_cancelled: Cell::new(false),
+            shutting_down: Rc::new(Cell::new(false)),
         })
     }
 
     fn ensure_usable(&self) -> Result<(), RuntimeError> {
+        if self.shutting_down.get() {
+            return Err(RuntimeError::Module(
+                "isolate shutdown has started; discard this isolate".to_owned(),
+            ));
+        }
         if self.module_cancelled.get() {
             return Err(RuntimeError::Module("native module evaluation was cancelled; discard this isolate before executing more JavaScript".to_owned()));
         }
@@ -132,6 +166,7 @@ impl TokioIsolate {
             host,
             vm,
             module_cancelled,
+            ..
         } = self;
         let id = NEXT_EVALUATION_ID.fetch_add(1, Ordering::Relaxed);
         timers.begin_evaluation(id);
@@ -184,6 +219,28 @@ impl TokioIsolate {
 
     pub fn take_promise_rejections(&self) -> Vec<PromiseRejection> {
         self.vm.take_promise_rejections()
+    }
+
+    pub fn shutdown_handle(&self) -> ShutdownHandle {
+        ShutdownHandle {
+            requested: Rc::clone(&self.shutting_down),
+            host_accepting: self.host.admission_flag(),
+        }
+    }
+
+    /// Stops admission, cancels isolate-owned timers and host work, runs the
+    /// final Promise checkpoint, and waits up to `grace` for host workers.
+    /// A forced outcome means a blocking worker outlived the grace period; the
+    /// caller must drop the isolate and its Tokio runtime without reusing it.
+    pub async fn shutdown(&mut self, grace: Duration) -> Result<ShutdownOutcome, RuntimeError> {
+        self.shutdown_handle().request();
+        self.timers.cancel_all();
+        let graceful = self.host.shutdown(&self.vm, grace).await?;
+        Ok(if graceful {
+            ShutdownOutcome::Graceful
+        } else {
+            ShutdownOutcome::Forced
+        })
     }
 
     /// Evaluates JavaScript as the body of an async function.
@@ -305,6 +362,11 @@ impl TimerDispatcher {
             .iter()
             .filter_map(|timer| timer.deadline)
             .min()
+    }
+
+    fn cancel_all(&self) {
+        self.active_evaluation.set(None);
+        self.pending.borrow_mut().clear();
     }
 }
 
@@ -699,6 +761,169 @@ mod tests {
     }
 
     #[test]
+    fn abort_signal_preserves_reason_and_cancels_an_in_flight_host_call_once() {
+        let runtime = test_runtime();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 1024];
+            let _ = stream.read(&mut request);
+            thread::sleep(Duration::from_millis(100));
+            let _ = stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok");
+        });
+        let permissions = HostPermissions::none().allow_net_host("127.0.0.1");
+        let mut isolate =
+            TokioIsolate::new_with_permissions("abort-host-call-test", permissions).unwrap();
+        let url = serde_json::to_string(&format!("http://{address}/slow")).unwrap();
+        let value = runtime
+            .block_on(isolate.evaluate_async_body(
+                &format!(
+                    "const http = await kunlun.import('kunlun:http');\n\
+                     const controller = new AbortController();\n\
+                     const reason = {{ code: 'stop' }};\n\
+                     let events = 0;\n\
+                     controller.signal.addEventListener('abort', () => events++);\n\
+                     const request = http.request({url}, {{ signal: controller.signal }});\n\
+                     await sleep(5);\n\
+                     controller.abort(reason);\n\
+                     controller.abort(new Error('ignored'));\n\
+                     try {{ await request; }} catch (error) {{\n\
+                       return [error === reason, controller.signal.reason === reason, events].join(':');\n\
+                     }}"
+                ),
+                "test:///abort-host-call.js",
+            ))
+            .unwrap();
+        assert_eq!(value, "true:true:1");
+        assert_eq!(isolate.host.pending_count(), 0);
+        let shutdown = runtime
+            .block_on(isolate.shutdown(Duration::from_secs(1)))
+            .unwrap();
+        assert_eq!(shutdown, ShutdownOutcome::Graceful);
+        assert_eq!(isolate.host.active_task_count(), 0);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn pre_aborted_signal_never_admits_work_and_default_reason_is_abort_error() {
+        let runtime = test_runtime();
+        let mut isolate = TokioIsolate::new("pre-abort-test").unwrap();
+        let value = runtime
+            .block_on(isolate.evaluate_async_body(
+                "const fs = await kunlun.import('kunlun:fs');\n\
+                 const signal = AbortSignal.abort();\n\
+                 try { await fs.readTextFile('/not-admitted', { signal }); }\n\
+                 catch (error) { return error === signal.reason && error.name === 'AbortError'; }",
+                "test:///pre-abort.js",
+            ))
+            .unwrap();
+        assert_eq!(value, "true");
+        assert_eq!(isolate.host.pending_count(), 0);
+    }
+
+    #[test]
+    fn shutdown_handle_stops_admission_before_isolate_drain() {
+        let mut isolate = TokioIsolate::new("shutdown-handle-test").unwrap();
+        let shutdown = isolate.shutdown_handle();
+        assert!(!shutdown.is_requested());
+        shutdown.request();
+        assert!(shutdown.is_requested());
+        let error = isolate
+            .evaluate("'not-run'", "test:///after-shutdown.js")
+            .unwrap_err();
+        assert!(error.to_string().contains("shutdown has started"));
+    }
+
+    #[test]
+    fn file_stream_is_bounded_pull_driven_and_releases_on_eof() {
+        let runtime = test_runtime();
+        let root = std::env::temp_dir().join(format!(
+            "kunlun-runtime-stream-test-{}-{}",
+            std::process::id(),
+            NEXT_EVALUATION_ID.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let file = root.join("bytes.bin");
+        let bytes: Vec<_> = (0..host::STREAM_CHUNK_BYTES * 3 + 7)
+            .map(|index| (index % 251) as u8)
+            .collect();
+        let expected_sum: u64 = bytes.iter().map(|byte| u64::from(*byte)).sum();
+        std::fs::write(&file, &bytes).unwrap();
+        let permissions = HostPermissions::none().allow_read_root(&root).unwrap();
+        let mut isolate =
+            TokioIsolate::new_with_permissions("file-stream-test", permissions).unwrap();
+        let path = serde_json::to_string(file.to_str().unwrap()).unwrap();
+        let value = runtime
+            .block_on(isolate.evaluate_async_body(
+                &format!(
+                    "const fs = await kunlun.import('kunlun:fs');\n\
+                     const stream = await fs.openReadStream({path});\n\
+                     let count = 0; let sum = 0;\n\
+                     for await (const chunk of stream) {{\n\
+                       count += chunk.length;\n\
+                       for (const byte of chunk) sum += byte;\n\
+                       await sleep(1);\n\
+                     }}\n\
+                     return count + ':' + sum;"
+                ),
+                "test:///file-stream.js",
+            ))
+            .unwrap();
+        assert_eq!(value, format!("{}:{expected_sum}", bytes.len()));
+        assert_eq!(isolate.host.stream_count(), 0);
+        assert_eq!(isolate.host.pending_count(), 0);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn cancelling_a_stream_closes_it_and_releases_the_producer() {
+        let runtime = test_runtime();
+        let root = std::env::temp_dir().join(format!(
+            "kunlun-runtime-stream-cancel-test-{}-{}",
+            std::process::id(),
+            NEXT_EVALUATION_ID.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let file = root.join("bytes.bin");
+        std::fs::write(&file, vec![7_u8; host::STREAM_CHUNK_BYTES * 4]).unwrap();
+        let permissions = HostPermissions::none().allow_read_root(&root).unwrap();
+        let mut isolate =
+            TokioIsolate::new_with_permissions("stream-cancel-test", permissions).unwrap();
+        let path = serde_json::to_string(file.to_str().unwrap()).unwrap();
+        let value = runtime
+            .block_on(isolate.evaluate_async_body(
+                &format!(
+                    "const fs = await kunlun.import('kunlun:fs');\n\
+                     const stream = await fs.openReadStream({path});\n\
+                     const firstRead = stream.read();\n\
+                     const duplicate = stream.read().then(\n\
+                       () => false, error => String(error).includes('in-flight read'));\n\
+                     const first = await firstRead;\n\
+                     const duplicateRejected = await duplicate;\n\
+                     await stream.cancel('done');\n\
+                     await stream.cancel('again');\n\
+                     const final = await stream.read();\n\
+                     return first.done + ':' + first.value.length + ':' + final.done + ':' + duplicateRejected;"
+                ),
+                "test:///stream-cancel.js",
+            ))
+            .unwrap();
+        assert_eq!(
+            value,
+            format!("false:{}:true:true", host::STREAM_CHUNK_BYTES)
+        );
+        assert_eq!(isolate.host.stream_count(), 0);
+        let shutdown = runtime
+            .block_on(isolate.shutdown(Duration::from_secs(1)))
+            .unwrap();
+        assert_eq!(shutdown, ShutdownOutcome::Graceful);
+        assert_eq!(isolate.host.active_task_count(), 0);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn rejects_text_files_over_the_bootstrap_limit() {
         let runtime = test_runtime();
         let root = std::env::temp_dir().join(format!(
@@ -780,6 +1005,128 @@ mod tests {
             .unwrap();
         server.join().unwrap();
         assert_eq!(value, "200:hello from server");
+    }
+
+    #[test]
+    fn streams_fragmented_http_response_bytes_to_a_slow_consumer() {
+        let runtime = test_runtime();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 1024];
+            let _ = stream.read(&mut request).unwrap();
+            stream
+                .write_all(
+                    b"HTTP/1.1 206 Partial Content\r\nContent-Length: 11\r\nConnection: close\r\n\r\nhello ",
+                )
+                .unwrap();
+            thread::sleep(Duration::from_millis(5));
+            stream.write_all(b"world").unwrap();
+        });
+        let permissions = HostPermissions::none().allow_net_host("127.0.0.1");
+        let mut isolate =
+            TokioIsolate::new_with_permissions("http-stream-test", permissions).unwrap();
+        let url = serde_json::to_string(&format!("http://{address}/stream")).unwrap();
+        let value = runtime
+            .block_on(isolate.evaluate_async_body(
+                &format!(
+                    "const http = await kunlun.import('kunlun:http');\n\
+                     const response = await http.requestStream({url});\n\
+                     let body = '';\n\
+                     for await (const chunk of response.body) {{\n\
+                       for (const byte of chunk) body += String.fromCharCode(byte);\n\
+                       await sleep(1);\n\
+                     }}\n\
+                     return response.status + ':' + body;"
+                ),
+                "test:///http-stream.js",
+            ))
+            .unwrap();
+        server.join().unwrap();
+        assert_eq!(value, "206:hello world");
+        assert_eq!(isolate.host.stream_count(), 0);
+    }
+
+    #[test]
+    fn aborting_an_in_flight_stream_read_preserves_reason_and_drops_receiver() {
+        let runtime = test_runtime();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 1024];
+            let _ = stream.read(&mut request).unwrap();
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\n")
+                .unwrap();
+            thread::sleep(Duration::from_millis(100));
+            let _ = stream.write_all(b"late");
+        });
+        let permissions = HostPermissions::none().allow_net_host("127.0.0.1");
+        let mut isolate =
+            TokioIsolate::new_with_permissions("http-stream-abort-test", permissions).unwrap();
+        let url = serde_json::to_string(&format!("http://{address}/abort-stream")).unwrap();
+        let value = runtime
+            .block_on(isolate.evaluate_async_body(
+                &format!(
+                    "const http = await kunlun.import('kunlun:http');\n\
+                     const controller = new AbortController();\n\
+                     const reason = new Error('stop stream');\n\
+                     const response = await http.requestStream(\
+                       {url}, {{ signal: controller.signal }});\n\
+                     const reading = response.body.read();\n\
+                     await sleep(5);\n\
+                     controller.abort(reason);\n\
+                     try {{ await reading; }} catch (error) {{ return error === reason; }}"
+                ),
+                "test:///http-stream-abort.js",
+            ))
+            .unwrap();
+        server.join().unwrap();
+        assert_eq!(value, "true");
+        assert_eq!(isolate.host.pending_count(), 0);
+        assert_eq!(isolate.host.stream_count(), 0);
+        let shutdown = runtime
+            .block_on(isolate.shutdown(Duration::from_secs(1)))
+            .unwrap();
+        assert_eq!(shutdown, ShutdownOutcome::Graceful);
+        assert_eq!(isolate.host.active_task_count(), 0);
+    }
+
+    #[test]
+    fn reports_truncated_http_stream_as_a_typed_producer_failure() {
+        let runtime = test_runtime();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 1024];
+            let _ = stream.read(&mut request).unwrap();
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\nConnection: close\r\n\r\nshort",
+                )
+                .unwrap();
+        });
+        let permissions = HostPermissions::none().allow_net_host("127.0.0.1");
+        let mut isolate =
+            TokioIsolate::new_with_permissions("http-stream-error-test", permissions).unwrap();
+        let url = serde_json::to_string(&format!("http://{address}/truncated")).unwrap();
+        let value = runtime
+            .block_on(isolate.evaluate_async_body(
+                &format!(
+                    "const http = await kunlun.import('kunlun:http');\n\
+                     const response = await http.requestStream({url});\n\
+                     try {{ for await (const chunk of response.body) {{ void chunk; }} }}\n\
+                     catch (error) {{ return String(error).includes('HTTP response body'); }}"
+                ),
+                "test:///http-stream-error.js",
+            ))
+            .unwrap();
+        server.join().unwrap();
+        assert_eq!(value, "true");
+        assert_eq!(isolate.host.stream_count(), 0);
     }
 
     #[test]

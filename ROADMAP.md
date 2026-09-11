@@ -82,7 +82,7 @@ Goal: run real bundled server entrypoints rather than classic scripts.
 - [x] Caller-driven Tokio host loop and Promise-returning timer primitive.
 - [x] Promise rejection tracking and an explicit deterministic microtask checkpoint API.
 - [x] Extend the host loop from timers to plain-data filesystem/HTTP completion messages.
-- [ ] Add signals, cancellation/AbortSignal, streaming I/O, and graceful shutdown.
+- [x] Add signals, cancellation/AbortSignal, bounded response/file streaming, and graceful shutdown.
 - Execution deadlines, cooperative cancellation, heap telemetry, and out-of-memory policy.
 - Console, text encoding, URL, streams, and crypto primitives required by the runtime profile.
 

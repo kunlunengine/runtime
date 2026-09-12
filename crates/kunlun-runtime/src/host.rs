@@ -118,9 +118,9 @@ impl TaskTracker {
         F: Future<Output = ()> + Send + 'static,
     {
         self.active.fetch_add(1, Ordering::AcqRel);
-        let tracker = self.clone();
+        let guard = TaskGuard(self.clone());
         tokio::spawn(async move {
-            let _guard = TaskGuard(tracker);
+            let _guard = guard;
             future.await;
         })
         .abort_handle()
@@ -131,9 +131,9 @@ impl TaskTracker {
         F: FnOnce() + Send + 'static,
     {
         self.active.fetch_add(1, Ordering::AcqRel);
-        let tracker = self.clone();
+        let guard = TaskGuard(self.clone());
         tokio::task::spawn_blocking(move || {
-            let _guard = TaskGuard(tracker);
+            let _guard = guard;
             function();
         })
         .abort_handle()
@@ -1205,6 +1205,33 @@ mod checkpoint_tests {
             let tracker = TaskTracker::default();
             tracker.spawn_blocking(|| std::thread::sleep(Duration::from_millis(50)));
             assert!(!tracker.wait_empty(Duration::from_millis(1)).await);
+            assert!(tracker.wait_empty(Duration::from_secs(1)).await);
+        });
+    }
+
+    #[test]
+    fn task_tracker_releases_guards_for_tasks_aborted_before_execution() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .max_blocking_threads(1)
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let tracker = TaskTracker::default();
+            let asynchronous = tracker.spawn(std::future::pending());
+            asynchronous.abort();
+
+            let (started_tx, started_rx) = std::sync::mpsc::channel();
+            let (release_tx, release_rx) = std::sync::mpsc::channel();
+            tracker.spawn_blocking(move || {
+                started_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+            });
+            started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+            let queued = tracker.spawn_blocking(|| {});
+            queued.abort();
+            release_tx.send(()).unwrap();
+
             assert!(tracker.wait_empty(Duration::from_secs(1)).await);
         });
     }

@@ -109,7 +109,14 @@ fn run_module_command(args: &[String]) -> Result<(), String> {
     let entry = entry.to_str().ok_or("module entry is not valid UTF-8")?;
     let result = drive_module(&runtime, &mut isolate, entry, options.shutdown_grace);
     report_rejections(isolate.take_promise_rejections());
-    result
+    match result? {
+        RuntimeExecution::Finished(result) => result,
+        RuntimeExecution::Forced(error) => {
+            drop(isolate);
+            runtime.shutdown_background();
+            Err(error)
+        }
+    }
 }
 
 fn evaluate_script(vm: &JscVm, source: &str, source_url: &str) -> Result<(), String> {
@@ -168,8 +175,17 @@ fn evaluate_async(
         TokioIsolate::new_with_permissions(name, permissions).map_err(|error| error.to_string())?;
     let result = drive_async_body(&runtime, &mut isolate, source, source_url, shutdown_grace);
     report_rejections(isolate.take_promise_rejections());
-    println!("{}", result?);
-    Ok(())
+    match result? {
+        RuntimeExecution::Finished(result) => {
+            println!("{}", result?);
+            Ok(())
+        }
+        RuntimeExecution::Forced(error) => {
+            drop(isolate);
+            runtime.shutdown_background();
+            Err(error)
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -238,14 +254,29 @@ enum Execution<T> {
     Shutdown(ShutdownSignal),
 }
 
+enum RuntimeExecution<T> {
+    Finished(Result<T, String>),
+    Forced(String),
+}
+
+const TEST_SIGNAL_READY_ENV: &str = "KUNLUN_RUNTIME_TEST_SIGNAL_READY";
+const TEST_SIGNAL_READY_MESSAGE: &str = "kunlun-runtime signal handlers ready\n";
+
+fn announce_test_signal_readiness() {
+    if env::var(TEST_SIGNAL_READY_ENV).as_deref() == Ok("1") {
+        eprint!("{TEST_SIGNAL_READY_MESSAGE}");
+    }
+}
+
 fn drive_async_body(
     runtime: &tokio::runtime::Runtime,
     isolate: &mut TokioIsolate,
     source: &str,
     source_url: &str,
     grace: Duration,
-) -> Result<String, String> {
+) -> Result<RuntimeExecution<String>, String> {
     let mut signals = runtime.block_on(async { ShutdownSignals::new() })?;
+    announce_test_signal_readiness();
     let shutdown = isolate.shutdown_handle();
     let execution = runtime.block_on(async {
         Ok::<_, String>(tokio::select! {
@@ -260,10 +291,15 @@ fn drive_async_body(
         })
     })?;
     match execution {
-        Execution::Complete(result) => result,
+        Execution::Complete(result) => Ok(RuntimeExecution::Finished(result)),
         Execution::Shutdown(signal) => {
-            finish_shutdown(runtime, isolate, &mut signals, signal, grace)?;
-            Err(format!("execution interrupted by {}", signal.name()))
+            match finish_shutdown(runtime, isolate, &mut signals, signal, grace)? {
+                ShutdownCompletion::Graceful => Ok(RuntimeExecution::Finished(Err(format!(
+                    "execution interrupted by {}",
+                    signal.name()
+                )))),
+                ShutdownCompletion::Forced(error) => Ok(RuntimeExecution::Forced(error)),
+            }
         }
     }
 }
@@ -273,7 +309,7 @@ fn drive_module(
     isolate: &mut TokioIsolate,
     entry: &str,
     grace: Duration,
-) -> Result<(), String> {
+) -> Result<RuntimeExecution<()>, String> {
     let mut signals = runtime.block_on(async { ShutdownSignals::new() })?;
     let shutdown = isolate.shutdown_handle();
     let execution = runtime.block_on(async {
@@ -289,12 +325,22 @@ fn drive_module(
         })
     })?;
     match execution {
-        Execution::Complete(result) => result,
+        Execution::Complete(result) => Ok(RuntimeExecution::Finished(result)),
         Execution::Shutdown(signal) => {
-            finish_shutdown(runtime, isolate, &mut signals, signal, grace)?;
-            Err(format!("execution interrupted by {}", signal.name()))
+            match finish_shutdown(runtime, isolate, &mut signals, signal, grace)? {
+                ShutdownCompletion::Graceful => Ok(RuntimeExecution::Finished(Err(format!(
+                    "execution interrupted by {}",
+                    signal.name()
+                )))),
+                ShutdownCompletion::Forced(error) => Ok(RuntimeExecution::Forced(error)),
+            }
         }
     }
+}
+
+enum ShutdownCompletion {
+    Graceful,
+    Forced(String),
 }
 
 fn finish_shutdown(
@@ -303,7 +349,7 @@ fn finish_shutdown(
     signals: &mut ShutdownSignals,
     first: ShutdownSignal,
     grace: Duration,
-) -> Result<(), String> {
+) -> Result<ShutdownCompletion, String> {
     eprintln!(
         "received {}; stopping admission and draining for up to {} ms",
         first.name(),
@@ -323,16 +369,18 @@ fn finish_shutdown(
         })
     })?;
     match wait {
-        ShutdownWait::Finished(Ok(ShutdownOutcome::Graceful)) => Ok(()),
-        ShutdownWait::Finished(Ok(ShutdownOutcome::Forced)) => Err(format!(
-            "shutdown grace period of {} ms expired; forcing termination",
-            grace.as_millis()
-        )),
+        ShutdownWait::Finished(Ok(ShutdownOutcome::Graceful)) => Ok(ShutdownCompletion::Graceful),
+        ShutdownWait::Finished(Ok(ShutdownOutcome::Forced)) => {
+            Ok(ShutdownCompletion::Forced(format!(
+                "shutdown grace period of {} ms expired; forcing termination",
+                grace.as_millis()
+            )))
+        }
         ShutdownWait::Finished(Err(error)) => Err(error),
-        ShutdownWait::Repeated(signal) => Err(format!(
+        ShutdownWait::Repeated(signal) => Ok(ShutdownCompletion::Forced(format!(
             "received {} during graceful shutdown; forcing termination",
             signal.name()
-        )),
+        ))),
     }
 }
 

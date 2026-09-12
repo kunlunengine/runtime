@@ -142,23 +142,37 @@ const BOOTSTRAP_SOURCE: &str = r#"
     });
   };
 
+  const base64Digits = new Int16Array(128);
+  base64Digits.fill(-1);
+  const base64Alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+  for (let digit = 0; digit < base64Alphabet.length; digit++) {
+    base64Digits[base64Alphabet.charCodeAt(digit)] = digit;
+  }
+
   const decodeBase64 = (encoded) => {
-    const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
-    const output = [];
+    let validDigits = 0;
+    for (const character of encoded) {
+      if (character === '=') break;
+      const code = character.charCodeAt(0);
+      if (code < base64Digits.length && base64Digits[code] >= 0) validDigits++;
+    }
+    const output = new Uint8Array(Math.floor(validDigits * 6 / 8));
+    let offset = 0;
     let bits = 0;
     let value = 0;
     for (const character of encoded) {
       if (character === '=') break;
-      const digit = alphabet.indexOf(character);
+      const code = character.charCodeAt(0);
+      const digit = code < base64Digits.length ? base64Digits[code] : -1;
       if (digit < 0) continue;
       value = (value << 6) | digit;
       bits += 6;
       if (bits >= 8) {
         bits -= 8;
-        output.push((value >> bits) & 255);
+        output[offset++] = (value >> bits) & 255;
       }
     }
-    return new Uint8Array(output);
+    return output;
   };
 
   class HostByteStream {

@@ -1,3 +1,52 @@
+interface KunlunAbortEvent {
+  readonly type: "abort"
+  readonly target: AbortSignal
+  readonly currentTarget: AbortSignal
+}
+
+interface KunlunAbortEventListener {
+  (event: KunlunAbortEvent): void
+}
+
+interface KunlunAbortEventListenerObject {
+  handleEvent(event: KunlunAbortEvent): void
+}
+
+interface KunlunAbortEventListenerOptions {
+  once?: boolean
+}
+
+interface AbortSignal {
+  readonly aborted: boolean
+  readonly reason: unknown
+  onabort: ((this: AbortSignal, event: KunlunAbortEvent) => unknown) | null
+  throwIfAborted(): void
+  addEventListener(
+    type: "abort",
+    listener: KunlunAbortEventListener | KunlunAbortEventListenerObject | null,
+    options?: boolean | KunlunAbortEventListenerOptions,
+  ): void
+  removeEventListener(
+    type: "abort",
+    listener: KunlunAbortEventListener | KunlunAbortEventListenerObject | null,
+  ): void
+}
+
+declare const AbortSignal: {
+  readonly prototype: AbortSignal
+  abort(reason?: unknown): AbortSignal
+}
+
+interface AbortController {
+  readonly signal: AbortSignal
+  abort(reason?: unknown): void
+}
+
+declare const AbortController: {
+  readonly prototype: AbortController
+  new (): AbortController
+}
+
 declare module "kunlun:fs" {
   export interface ReadOptions {
     signal?: AbortSignal

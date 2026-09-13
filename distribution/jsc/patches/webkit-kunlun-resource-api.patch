@@ -1,0 +1,38 @@
+diff --git a/Source/JavaScriptCore/API/JSContextRef.cpp b/Source/JavaScriptCore/API/JSContextRef.cpp
+--- a/Source/JavaScriptCore/API/JSContextRef.cpp
++++ b/Source/JavaScriptCore/API/JSContextRef.cpp
+@@ -61,4 +61,5 @@ using namespace JSC;
+
+ #include "KunlunModuleAPI.inc"
++#include "KunlunResourceAPI.inc"
+
+ // From the API's perspective, a context group remains alive iff
+diff --git a/Source/JavaScriptCore/API/KunlunResourceAPI.inc b/Source/JavaScriptCore/API/KunlunResourceAPI.inc
+new file mode 100644
+--- /dev/null
++++ b/Source/JavaScriptCore/API/KunlunResourceAPI.inc
+@@ -0,0 +1,24 @@
++/* Kunlun's heap telemetry adapter. Values are copied across the private C
++ * extension boundary; no Heap, VM, or GC-owned pointer is exposed. */
++#include "Heap.h"
++
++extern "C" {
++JS_EXPORT bool JSKunlunGetHeapStatistics(
++    JSGlobalContextRef, uint64_t*, uint64_t*, uint64_t*);
++}
++
++extern "C" JS_EXPORT bool JSKunlunGetHeapStatistics(
++    JSGlobalContextRef context, uint64_t* size, uint64_t* capacity,
++    uint64_t* extraMemorySize)
++{
++    if (!context || !size || !capacity || !extraMemorySize)
++        return false;
++    auto* globalObject = toJS(context);
++    JSC::JSLockHolder locker(globalObject);
++    auto& heap = globalObject->vm().heap;
++    static_assert(sizeof(size_t) <= sizeof(uint64_t));
++    *size = static_cast<uint64_t>(heap.size());
++    *capacity = static_cast<uint64_t>(heap.capacity());
++    *extraMemorySize = static_cast<uint64_t>(heap.extraMemorySize());
++    return true;
++}

@@ -182,7 +182,9 @@ fn malformed_and_outside_source_maps_preserve_the_original_error() {
 mod native {
     use super::*;
     use kunlun_jsc::{JscVm, ModuleState};
-    use kunlun_runtime::{HostPermissions, TokioIsolate};
+    use kunlun_runtime::{
+        HostPermissions, RuntimeError, RuntimeLimits, TerminationReason, TokioIsolate,
+    };
     use std::future::{Future, poll_fn};
     use std::task::Poll;
     use std::time::Duration;
@@ -299,6 +301,31 @@ mod native {
             let error = run(&rt, &mut isolate, "entry.mjs").unwrap_err();
             assert!(error.to_string().contains(message), "{error}");
         }
+    }
+
+    #[test]
+    fn deadline_interrupts_javascript_running_during_module_evaluation() {
+        let f = Fixture::new();
+        f.write("entry.mjs", "for (;;) {} export const unreachable = true;");
+        let limits = RuntimeLimits {
+            execution_timeout: Duration::from_millis(25),
+            watchdog_interval: Duration::from_millis(2),
+            ..RuntimeLimits::default()
+        };
+        let mut isolate = TokioIsolate::new_with_permissions_and_limits(
+            "module-deadline",
+            HostPermissions::none(),
+            limits,
+        )
+        .unwrap();
+        isolate.install_module_sources(f.sources()).unwrap();
+
+        let error = run(&runtime(), &mut isolate, "entry.mjs").unwrap_err();
+        assert!(matches!(
+            error,
+            RuntimeError::Jsc(ref error)
+                if error.termination_reason() == Some(TerminationReason::DeadlineExceeded)
+        ));
     }
 
     #[test]

@@ -184,7 +184,9 @@ evaluate/poll/release on an active native handle returns `InvalidState`.
 The Tokio driver runs explicit JSC microtask checkpoints and settles host work on the owning thread.
 Dropping a pending module future cancels its timers and host operations and retires the isolate;
 subsequent evaluation is rejected until the embedder creates a new isolate. Dropping a handle
-alone is not cancellation of JSC's graph. Synchronous JS still has no execution deadline (#32).
+alone is not cancellation of JSC's graph. The enclosing isolate execution scope now supplies one
+deadline and terminal cancellation policy for module loading, evaluation, TLA, and checkpoints; see
+[resource policy](./resource-policy.md).
 
 ## Source fetching and diagnostics
 

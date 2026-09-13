@@ -61,6 +61,24 @@ typedef struct kunlun_jsc_string kunlun_jsc_string;
 typedef struct kunlun_jsc_value kunlun_jsc_value;
 typedef kunlun_jsc_value kunlun_jsc_object;
 
+/* Snapshot values are copied while holding the isolate API lock. `heap_size`
+ * is live GC-managed storage, `heap_capacity` is committed GC capacity, and
+ * `extra_memory_size` is non-GC storage retained by GC objects. The system-JSC
+ * bootstrap cannot provide these fields and returns UNSUPPORTED. */
+typedef struct kunlun_jsc_heap_statistics {
+    uint64_t heap_size;
+    uint64_t heap_capacity;
+    uint64_t extra_memory_size;
+} kunlun_jsc_heap_statistics;
+
+/* The engine invokes this callback on the isolate thread at watchdog
+ * checkpoints. Returning nonzero terminates the current JS entry. The callback
+ * and user_data are borrowed until the group watchdog is cleared or the group
+ * is released and must not unwind. Foreign threads request cancellation only
+ * through callback-owned synchronization; they never call this ABI. */
+typedef uint32_t (*kunlun_jsc_watchdog_callback)(
+    void *user_data, const kunlun_jsc_heap_statistics *statistics);
+
 /* Explicit checkpoints are available only on the pinned engine. Each context
  * owns a FIFO microtask queue; ordinary API calls never drain it. A checkpoint
  * drains nested jobs, then delivers a snapshot of rejection transitions:
@@ -156,6 +174,8 @@ KUNLUN_JSC_API kunlun_jsc_status kunlun_jsc_value_make_boolean(
     kunlun_jsc_context *context, uint8_t boolean, const kunlun_jsc_value **out_value);
 KUNLUN_JSC_API kunlun_jsc_status kunlun_jsc_context_collect_garbage(
     kunlun_jsc_context *context);
+KUNLUN_JSC_API kunlun_jsc_status kunlun_jsc_context_heap_statistics(
+    kunlun_jsc_context *context, kunlun_jsc_heap_statistics *out_statistics);
 
 /* Stable element kinds; these are not casts of WebKit's enum. */
 typedef uint32_t kunlun_jsc_array_kind;
@@ -202,6 +222,14 @@ KUNLUN_JSC_API kunlun_jsc_status
 kunlun_jsc_context_group_create(kunlun_jsc_context_group **out_group);
 KUNLUN_JSC_API kunlun_jsc_status
 kunlun_jsc_context_group_release(kunlun_jsc_context_group *group);
+/* The interval is CPU time between engine checkpoints. Deadline decisions use
+ * the host callback's monotonic clock. Configuration and clearing are
+ * isolate-thread-affine even though the callback state may be synchronized. */
+KUNLUN_JSC_API kunlun_jsc_status kunlun_jsc_context_group_set_watchdog(
+    kunlun_jsc_context_group *group, double interval_seconds,
+    kunlun_jsc_watchdog_callback callback, void *user_data);
+KUNLUN_JSC_API kunlun_jsc_status
+kunlun_jsc_context_group_clear_watchdog(kunlun_jsc_context_group *group);
 /* Creates a non-inspectable context in an independent default group. */
 KUNLUN_JSC_API kunlun_jsc_status
 kunlun_jsc_context_create(kunlun_jsc_context **out_context);

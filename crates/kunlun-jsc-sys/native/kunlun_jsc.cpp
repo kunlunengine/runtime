@@ -4,6 +4,7 @@
 
 #include <JavaScriptCore/JavaScript.h>
 
+#include <cmath>
 #include <cstring>
 #include <limits>
 #include <memory>
@@ -17,6 +18,15 @@ using kunlun::jsc::detail::guard;
 
 static_assert(sizeof(int) == sizeof(int32_t));
 static_assert(sizeof(JSPropertyAttributes) == sizeof(kunlun_jsc_property_attributes));
+
+using PrivateWatchdogCallback = bool (*)(JSContextRef, void *);
+extern "C" void JSContextGroupSetExecutionTimeLimit(
+    JSContextGroupRef, double, PrivateWatchdogCallback, void *);
+extern "C" void JSContextGroupClearExecutionTimeLimit(JSContextGroupRef);
+#if defined(KUNLUN_JSC_BUNDLED)
+extern "C" bool JSKunlunGetHeapStatistics(
+    JSGlobalContextRef, uint64_t *, uint64_t *, uint64_t *);
+#endif
 
 template <typename To, typename From>
 To opaque_cast(From value) noexcept
@@ -36,6 +46,44 @@ bool to_size(uint64_t value, size_t &out) noexcept
         return false;
     out = static_cast<size_t>(value);
     return true;
+}
+
+struct WatchdogState {
+    JSContextGroupRef group;
+    double interval_seconds;
+    kunlun_jsc_watchdog_callback callback;
+    void *user_data;
+};
+
+thread_local std::unordered_map<JSContextGroupRef, std::unique_ptr<WatchdogState>> watchdog_states;
+
+bool watchdog_bridge(JSContextRef context, void *data) noexcept
+{
+    try {
+        auto *state = static_cast<WatchdogState *>(data);
+        if (!state || !state->callback)
+            return true;
+        kunlun_jsc_heap_statistics statistics { 0, 0, 0 };
+#if defined(KUNLUN_JSC_BUNDLED)
+        if (!JSKunlunGetHeapStatistics(
+                opaque_cast<JSGlobalContextRef>(const_cast<OpaqueJSContext *>(context)),
+                &statistics.heap_size, &statistics.heap_capacity,
+                &statistics.extra_memory_size))
+            return true;
+#else
+        (void)context;
+#endif
+        if (state->callback(state->user_data, &statistics) != 0)
+            return true;
+        // Re-arm explicitly before returning. This is permitted by JSC's
+        // watchdog callback contract and keeps optimized loops observable on
+        // engines that do not reliably schedule a second implicit interval.
+        JSContextGroupSetExecutionTimeLimit(
+            state->group, state->interval_seconds, watchdog_bridge, state);
+        return false;
+    } catch (...) {
+        return true;
+    }
 }
 
 JSObjectRef make_error(JSContextRef context, JSStringRef message, JSValueRef *exception)
@@ -187,7 +235,43 @@ kunlun_jsc_status kunlun_jsc_context_group_release(kunlun_jsc_context_group *gro
     return guard([&] {
         if (!group)
             return KUNLUN_JSC_STATUS_INVALID_ARGUMENT;
+        auto clear_status = kunlun_jsc_context_group_clear_watchdog(group);
+        if (clear_status != KUNLUN_JSC_STATUS_OK)
+            return clear_status;
         JSContextGroupRelease(opaque_cast<JSContextGroupRef>(group));
+        return KUNLUN_JSC_STATUS_OK;
+    });
+}
+
+kunlun_jsc_status kunlun_jsc_context_group_set_watchdog(
+    kunlun_jsc_context_group *group, double interval_seconds,
+    kunlun_jsc_watchdog_callback callback, void *user_data)
+{
+    return guard([&] {
+        if (!group || !callback || !user_data || !std::isfinite(interval_seconds)
+            || interval_seconds <= 0)
+            return KUNLUN_JSC_STATUS_INVALID_ARGUMENT;
+        auto raw_group = opaque_cast<JSContextGroupRef>(group);
+        JSContextGroupClearExecutionTimeLimit(raw_group);
+        watchdog_states.erase(raw_group);
+        auto state = std::make_unique<WatchdogState>(WatchdogState {
+            raw_group, interval_seconds, callback, user_data });
+        auto *borrowed = state.get();
+        watchdog_states.emplace(raw_group, std::move(state));
+        JSContextGroupSetExecutionTimeLimit(
+            raw_group, interval_seconds, watchdog_bridge, borrowed);
+        return KUNLUN_JSC_STATUS_OK;
+    });
+}
+
+kunlun_jsc_status kunlun_jsc_context_group_clear_watchdog(kunlun_jsc_context_group *group)
+{
+    return guard([&] {
+        if (!group)
+            return KUNLUN_JSC_STATUS_INVALID_ARGUMENT;
+        auto raw_group = opaque_cast<JSContextGroupRef>(group);
+        JSContextGroupClearExecutionTimeLimit(raw_group);
+        watchdog_states.erase(raw_group);
         return KUNLUN_JSC_STATUS_OK;
     });
 }

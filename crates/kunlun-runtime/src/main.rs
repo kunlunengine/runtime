@@ -1,7 +1,8 @@
 use kunlun_jsc::{JscVm, PromiseRejection, PromiseRejectionTransition};
 use kunlun_runtime::{
-    DEFAULT_SHUTDOWN_GRACE, EVENT_LOOP_BACKEND, HostPermissions, ModuleSources, ShutdownOutcome,
-    TYPESCRIPT_DECLARATIONS, TokioIsolate,
+    DEFAULT_EXECUTION_TIMEOUT, DEFAULT_HARD_HEAP_LIMIT, DEFAULT_SHUTDOWN_GRACE,
+    DEFAULT_SOFT_HEAP_LIMIT, DEFAULT_WATCHDOG_INTERVAL, EVENT_LOOP_BACKEND, HostPermissions,
+    ModuleSources, RuntimeLimits, ShutdownOutcome, TYPESCRIPT_DECLARATIONS, TokioIsolate,
 };
 use std::env;
 use std::fs;
@@ -53,8 +54,9 @@ fn eval_command(args: &[String]) -> Result<(), String> {
     let source = args
         .first()
         .ok_or_else(|| "usage: kunlun-runtime eval <source>".to_owned())?;
-    let vm = JscVm::new("kunlun-runtime eval").map_err(|error| error.to_string())?;
-    evaluate_script(&vm, source, "kunlun:eval")
+    let mut isolate =
+        TokioIsolate::new("kunlun-runtime eval").map_err(|error| error.to_string())?;
+    evaluate_script(&mut isolate, source, "kunlun:eval")
 }
 
 fn eval_async_command(args: &[String]) -> Result<(), String> {
@@ -65,13 +67,14 @@ fn eval_async_command(args: &[String]) -> Result<(), String> {
         "kunlun-runtime eval-async",
         options.permissions,
         options.shutdown_grace,
+        options.limits,
     )
 }
 
 fn run_command(args: &[String]) -> Result<(), String> {
     let (source, source_url, display_name) = read_script(args, "run")?;
-    let vm = JscVm::new(&display_name).map_err(|error| error.to_string())?;
-    evaluate_script(&vm, &source, &source_url)
+    let mut isolate = TokioIsolate::new(&display_name).map_err(|error| error.to_string())?;
+    evaluate_script(&mut isolate, &source, &source_url)
 }
 
 fn run_async_command(args: &[String]) -> Result<(), String> {
@@ -84,6 +87,7 @@ fn run_async_command(args: &[String]) -> Result<(), String> {
         &display_name,
         options.permissions,
         options.shutdown_grace,
+        options.limits,
     )
 }
 
@@ -100,9 +104,12 @@ fn run_module_command(args: &[String]) -> Result<(), String> {
         .enable_all()
         .build()
         .map_err(|e| e.to_string())?;
-    let mut isolate =
-        TokioIsolate::new_with_permissions("kunlun-runtime run-module", options.permissions)
-            .map_err(|e| e.to_string())?;
+    let mut isolate = TokioIsolate::new_with_permissions_and_limits(
+        "kunlun-runtime run-module",
+        options.permissions,
+        options.limits,
+    )
+    .map_err(|e| e.to_string())?;
     isolate
         .install_module_sources(sources)
         .map_err(|e| e.to_string())?;
@@ -119,15 +126,13 @@ fn run_module_command(args: &[String]) -> Result<(), String> {
     }
 }
 
-fn evaluate_script(vm: &JscVm, source: &str, source_url: &str) -> Result<(), String> {
-    let result = vm.evaluate(source, source_url);
-    if JscVm::backend_info().supports_explicit_microtask_checkpoint {
-        while vm
-            .microtask_checkpoint()
-            .map_err(|error| error.to_string())?
-        {}
-    }
-    report_rejections(vm.take_promise_rejections());
+fn evaluate_script(
+    isolate: &mut TokioIsolate,
+    source: &str,
+    source_url: &str,
+) -> Result<(), String> {
+    let result = isolate.evaluate(source, source_url);
+    report_rejections(isolate.take_promise_rejections());
     println!("{}", result.map_err(|error| error.to_string())?);
     Ok(())
 }
@@ -166,13 +171,14 @@ fn evaluate_async(
     name: &str,
     permissions: HostPermissions,
     shutdown_grace: Duration,
+    limits: RuntimeLimits,
 ) -> Result<(), String> {
     let runtime = Builder::new_current_thread()
         .enable_all()
         .build()
         .map_err(|error| format!("could not create Tokio event loop: {error}"))?;
-    let mut isolate =
-        TokioIsolate::new_with_permissions(name, permissions).map_err(|error| error.to_string())?;
+    let mut isolate = TokioIsolate::new_with_permissions_and_limits(name, permissions, limits)
+        .map_err(|error| error.to_string())?;
     let result = drive_async_body(&runtime, &mut isolate, source, source_url, shutdown_grace);
     report_rejections(isolate.take_promise_rejections());
     match result? {
@@ -388,12 +394,14 @@ struct AsyncCommandOptions {
     subject: String,
     permissions: HostPermissions,
     shutdown_grace: Duration,
+    limits: RuntimeLimits,
 }
 
 fn parse_async_options(args: &[String], usage: &str) -> Result<AsyncCommandOptions, String> {
     let mut subject = None;
     let mut permissions = HostPermissions::none();
     let mut shutdown_grace = DEFAULT_SHUTDOWN_GRACE;
+    let mut limits = RuntimeLimits::default();
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
@@ -423,6 +431,28 @@ fn parse_async_options(args: &[String], usage: &str) -> Result<AsyncCommandOptio
                 shutdown_grace = Duration::from_millis(milliseconds);
                 index += 2;
             }
+            "--execution-timeout-ms" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| "--execution-timeout-ms requires milliseconds".to_owned())?;
+                let milliseconds = parse_positive_u64_option("--execution-timeout-ms", value)?;
+                limits.execution_timeout = Duration::from_millis(milliseconds);
+                index += 2;
+            }
+            "--heap-soft-limit-mb" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| "--heap-soft-limit-mb requires mebibytes".to_owned())?;
+                limits.soft_heap_limit = mebibytes_option("--heap-soft-limit-mb", value)?;
+                index += 2;
+            }
+            "--heap-hard-limit-mb" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| "--heap-hard-limit-mb requires mebibytes".to_owned())?;
+                limits.hard_heap_limit = mebibytes_option("--heap-hard-limit-mb", value)?;
+                index += 2;
+            }
             value if value.starts_with('-') => {
                 return Err(format!("unknown async option: {value}"));
             }
@@ -434,11 +464,34 @@ fn parse_async_options(args: &[String], usage: &str) -> Result<AsyncCommandOptio
         }
     }
 
+    if limits.soft_heap_limit > limits.hard_heap_limit {
+        return Err("--heap-soft-limit-mb cannot exceed --heap-hard-limit-mb".to_owned());
+    }
+
     Ok(AsyncCommandOptions {
         subject: subject.ok_or_else(|| format!("usage: kunlun-runtime {usage}"))?,
         permissions,
         shutdown_grace,
+        limits,
     })
+}
+
+fn parse_positive_u64_option(name: &str, value: &str) -> Result<u64, String> {
+    let parsed = value
+        .parse::<u64>()
+        .map_err(|_| format!("invalid {name} value {value}; expected a positive integer"))?;
+    if parsed == 0 {
+        return Err(format!(
+            "invalid {name} value {value}; expected a positive integer"
+        ));
+    }
+    Ok(parsed)
+}
+
+fn mebibytes_option(name: &str, value: &str) -> Result<u64, String> {
+    parse_positive_u64_option(name, value)?
+        .checked_mul(1024 * 1024)
+        .ok_or_else(|| format!("invalid {name} value {value}; byte count overflowed"))
 }
 
 fn doctor_command() -> Result<(), String> {
@@ -467,6 +520,21 @@ fn doctor_command() -> Result<(), String> {
         "default shutdown grace: {} ms",
         DEFAULT_SHUTDOWN_GRACE.as_millis()
     );
+    println!(
+        "execution watchdog: {}",
+        backend.supports_execution_watchdog
+    );
+    println!("heap telemetry: {}", backend.supports_heap_telemetry);
+    println!(
+        "default execution timeout: {} ms",
+        DEFAULT_EXECUTION_TIMEOUT.as_millis()
+    );
+    println!(
+        "default watchdog interval: {} ms",
+        DEFAULT_WATCHDOG_INTERVAL.as_millis()
+    );
+    println!("default heap soft limit: {DEFAULT_SOFT_HEAP_LIMIT} bytes");
+    println!("default heap hard limit: {DEFAULT_HARD_HEAP_LIMIT} bytes");
     println!("built-in modules: kunlun:fs, kunlun:http (capability-gated)");
 
     let vm = JscVm::new("kunlun-runtime doctor").map_err(|error| error.to_string())?;
@@ -548,6 +616,10 @@ fn print_help() {
            --allow-read <dir>  Grant kunlun:fs read access to a directory\n  \
            --allow-net <host>  Grant kunlun:http access to an exact host\n\n\
            --shutdown-grace-ms <ms>  Set the SIGINT/SIGTERM drain deadline\n\n\
+         Resource policy:\n  \
+           --execution-timeout-ms <ms>  Set one monotonic evaluation deadline\n  \
+           --heap-soft-limit-mb <MiB>   Collect at event-loop boundaries above this usage\n  \
+           --heap-hard-limit-mb <MiB>   Terminate above this accounted heap usage\n\n\
          The async bootstrap supports Promise/async/await and Tokio timers.\n\
          run-module supports native ESM and top-level await with bundled JSC.\n\
          The portable remote inspector is not implemented yet.",
@@ -586,5 +658,39 @@ mod tests {
         .err()
         .unwrap();
         assert!(error.contains("expected an integer"));
+    }
+
+    #[test]
+    fn parses_and_validates_resource_limits() {
+        let options = parse_async_options(
+            &[
+                "return 'ok'".to_owned(),
+                "--execution-timeout-ms".to_owned(),
+                "250".to_owned(),
+                "--heap-soft-limit-mb".to_owned(),
+                "8".to_owned(),
+                "--heap-hard-limit-mb".to_owned(),
+                "16".to_owned(),
+            ],
+            "eval-async <body>",
+        )
+        .unwrap();
+        assert_eq!(options.limits.execution_timeout, Duration::from_millis(250));
+        assert_eq!(options.limits.soft_heap_limit, 8 * 1024 * 1024);
+        assert_eq!(options.limits.hard_heap_limit, 16 * 1024 * 1024);
+
+        let error = parse_async_options(
+            &[
+                "return 'ok'".to_owned(),
+                "--heap-soft-limit-mb".to_owned(),
+                "17".to_owned(),
+                "--heap-hard-limit-mb".to_owned(),
+                "16".to_owned(),
+            ],
+            "eval-async <body>",
+        )
+        .err()
+        .unwrap();
+        assert!(error.contains("cannot exceed"));
     }
 }

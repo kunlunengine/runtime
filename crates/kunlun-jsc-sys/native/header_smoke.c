@@ -6,6 +6,7 @@ _Static_assert(
     "property attribute width changed");
 
 _Static_assert(sizeof(kunlun_jsc_array_kind) == sizeof(uint32_t), "array kind width changed");
+_Static_assert(sizeof(kunlun_jsc_heap_statistics) == 3 * sizeof(uint64_t), "heap statistics layout changed");
 
 kunlun_jsc_status kunlun_jsc_c_header_smoke(void)
 {

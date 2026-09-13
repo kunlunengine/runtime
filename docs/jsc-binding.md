@@ -71,8 +71,9 @@ handles remain private to the platform module and the deliberately unsafe `kunlu
 
 [`crates/kunlun-jsc-sys/include/kunlun_jsc.h`](../crates/kunlun-jsc-sys/include/kunlun_jsc.h) is the
 authoritative public ABI. ABI v1 wraps the context, string, evaluation, property, callback, Deferred
-Promise, conversion, rooting, revocable callback state, and checked ArrayBuffer/TypedArray primitives.
-The callback/buffer additions preserve all existing ABI v1 symbols. Keeping the
+Promise, conversion, rooting, revocable callback state, checked ArrayBuffer/TypedArray primitives,
+watchdog configuration, and copied heap telemetry. These additive capabilities preserve ABI v1.
+Keeping the
 public JSC calls behind the same boundary means Rust declarations cannot drift from either the shim
 or the eventual pinned engine build.
 
@@ -96,9 +97,13 @@ The pinned shim also exposes explicit microtask checkpoints, plain-data Promise 
 transitions, reentry rejection, and queue disposal before context release. See
 [checkpoint ownership and host boundaries](./microtasks.md).
 
+The resource boundary configures JSC's engine watchdog through an isolate-thread-affine group API.
+Its callback receives copied heap size/capacity/extra-memory fields on the pinned engine. Rust owns
+the synchronized cancellation/deadline state, so foreign threads never receive a context or call
+JSC. See [execution and memory policy](./resource-policy.md).
+
 Later versions of the shim will provide the smallest additional API needed for:
 
-- execution deadlines, termination, and memory telemetry;
 - Inspector frontend/backend message callbacks and pause-loop events;
 - additional zero-copy buffer adoption APIs, only after a separate ownership review.
 
@@ -235,6 +240,8 @@ binary distribution.
 6. Context teardown disconnects Inspector sessions and cancels host operations first.
 7. Execution termination is followed by a documented recovery or isolate disposal path; the host
    does not assume a terminated VM is reusable.
+8. Foreign-thread execution cancellation mutates only synchronized host state; JSC observes it from
+   its own watchdog callback on the isolate thread.
 
 Each invariant needs a targeted test, not only a code comment.
 

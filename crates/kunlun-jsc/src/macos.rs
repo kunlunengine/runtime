@@ -6,9 +6,12 @@ mod callbacks;
 mod microtasks;
 #[path = "modules.rs"]
 mod modules;
+#[path = "resources.rs"]
+mod resources;
 pub use buffers::{ArrayBuffer, TypedArray, TypedArrayKind};
 pub use callbacks::{CallbackReturn, CallbackValue, HostFunction};
 pub use modules::{ModuleLoader, ModuleRecord, ModuleState};
+pub use resources::{ExecutionHandle, ExecutionScope, HeapStatistics, ResourcePolicy};
 
 use crate::ownership::{OwnedHandle, ProtectedHandle, catch_callback_panic};
 use crate::{BackendInfo, HostCall, JscError};
@@ -78,6 +81,7 @@ thread_local! {
 
 struct ContextGroupInner {
     handle: OwnedHandle<sys::kunlun_jsc_context_group>,
+    resources: std::sync::Arc<resources::ResourceState>,
 }
 
 struct ContextInner {
@@ -203,7 +207,10 @@ impl ContextGroup {
                 )
             })?;
         Ok(Self {
-            inner: Rc::new(ContextGroupInner { handle }),
+            inner: Rc::new(ContextGroupInner {
+                handle,
+                resources: std::sync::Arc::new(resources::ResourceState::new()),
+            }),
         })
     }
 
@@ -268,6 +275,8 @@ impl JscVm {
             supports_deferred_promises: true,
             supports_native_modules: cfg!(feature = "bundled-jsc"),
             supports_explicit_microtask_checkpoint: cfg!(feature = "bundled-jsc"),
+            supports_execution_watchdog: true,
+            supports_heap_telemetry: cfg!(feature = "bundled-jsc"),
         }
     }
 
@@ -460,7 +469,11 @@ impl JscVm {
     }
 
     pub fn evaluate(&self, source: &str, source_url: &str) -> Result<String, JscError> {
-        self.evaluate_rooted(source, source_url)?.to_string()
+        let _scope = self.context.execution_scope("evaluate")?;
+        let result = self.evaluate_rooted(source, source_url)?.to_string();
+        self.enforce_resource_policy()
+            .map_err(|error| error.with_source_url(source_url))?;
+        result
     }
 
     /// Evaluates a script and returns an owned, GC-rooted result tied to this
@@ -470,6 +483,7 @@ impl JscVm {
         source: &str,
         source_url: &str,
     ) -> Result<RootedValue<'context>, JscError> {
+        let _scope = self.context.execution_scope("evaluate")?;
         let source = OwnedJsString::new(source, "evaluate")
             .map_err(|error| error.with_source_url(source_url))?;
         let source_url_handle = OwnedJsString::new(source_url, "evaluate")
@@ -490,13 +504,23 @@ impl JscVm {
             )
         };
 
+        if let Some(error) = self.context.resource_error("evaluate") {
+            return Err(error.with_source_url(source_url));
+        }
         if status == sys::KUNLUN_JSC_STATUS_JS_EXCEPTION && !exception.is_null() {
             return Err(self
                 .context
                 .exception_error("evaluate", Some(source_url), exception));
         }
-        expect_status("evaluate", status).map_err(|error| error.with_source_url(source_url))?;
+        if status != sys::KUNLUN_JSC_STATUS_OK {
+            return Err(self
+                .context
+                .status_error("evaluate", status)
+                .with_source_url(source_url));
+        }
         let protected = ProtectedValue::new(Rc::clone(&self.context), value, "evaluate")
+            .map_err(|error| error.with_source_url(source_url))?;
+        self.enforce_resource_policy()
             .map_err(|error| error.with_source_url(source_url))?;
         Ok(RootedValue {
             protected,
@@ -765,6 +789,10 @@ impl DeferredPromise {
         value: ValueRef,
         operation: &'static str,
     ) -> Result<(), JscError> {
+        let _scope = self.context().execution_scope(operation)?;
+        if let Some(error) = self.context().resource_error(operation) {
+            return Err(error);
+        }
         let arguments = [value];
         let mut result = ptr::null();
         let mut exception = ptr::null();
@@ -781,10 +809,16 @@ impl DeferredPromise {
                 &mut exception,
             )
         };
+        if let Some(error) = self.context().resource_error(operation) {
+            return Err(error);
+        }
         if status == sys::KUNLUN_JSC_STATUS_JS_EXCEPTION && !exception.is_null() {
             return Err(self.context().exception_error(operation, None, exception));
         }
-        expect_status(operation, status)
+        if status != sys::KUNLUN_JSC_STATUS_OK {
+            return Err(self.context().status_error(operation, status));
+        }
+        Ok(())
     }
 }
 

@@ -40,6 +40,9 @@ impl JscVm {
         url: &str,
         exception: ValueRef,
     ) -> JscError {
+        if let Some(error) = self.context.resource_error(operation) {
+            return error.with_source_url(url);
+        }
         // Root before stringification: a user-defined toString can reenter JS
         // and trigger collection just like a stack getter can.
         let root =
@@ -130,6 +133,7 @@ impl JscVm {
     /// Fetches and parses a native ESM graph under the installed loader. The
     /// entry is resolved with a null referrer before touching the engine cache.
     pub fn load_module(&self, specifier: &str) -> Result<ModuleRecord<'_>, JscError> {
+        let _scope = self.context.execution_scope("module_load")?;
         let hook = MODULE_HOOKS
             .with(|hooks| {
                 hooks
@@ -156,13 +160,19 @@ impl JscVm {
                 &mut exception,
             )
         };
+        if let Some(error) = self.context.resource_error("module_load") {
+            return Err(error.with_source_url(&url));
+        }
         if !exception.is_null() {
             return Err(self.module_error("module_load", &url, exception));
         }
-        expect_status("module_load", status)?;
+        if status != sys::KUNLUN_JSC_STATUS_OK {
+            return Err(self.context.status_error("module_load", status));
+        }
         // SAFETY: a successful native call transfers exactly one module owner.
         let handle = unsafe { OwnedHandle::from_raw(raw, release_module) }
             .ok_or_else(|| JscError::missing_value("module_load", "JSC returned no module"))?;
+        self.enforce_resource_policy()?;
         Ok(ModuleRecord {
             handle,
             vm: self,
@@ -220,21 +230,30 @@ impl ModuleRecord<'_> {
     /// Links/evaluates a successfully loaded graph. Pending TLA is observed
     /// through `poll`; this function never blocks waiting for host work.
     pub fn evaluate(&mut self) -> Result<(), JscError> {
+        let _scope = self.vm.context.execution_scope("module_evaluate")?;
         let mut exception = ptr::null();
         // SAFETY: the record owns its native root and borrows a live VM.
         let status =
             unsafe { sys::kunlun_jsc_module_evaluate(self.handle.as_ptr(), &mut exception) };
+        if let Some(error) = self.vm.context.resource_error("module_evaluate") {
+            return Err(error.with_source_url(&self.url));
+        }
         if !exception.is_null() {
             return Err(self
                 .vm
                 .module_error("module_evaluate", &self.url, exception));
         }
-        expect_status("module_evaluate", status)
+        if status != sys::KUNLUN_JSC_STATUS_OK {
+            return Err(self.vm.context.status_error("module_evaluate", status));
+        }
+        self.vm.enforce_resource_policy()?;
+        Ok(())
     }
 
     /// Observes the native Promise state without invoking replaceable JS
     /// properties. Rejections are returned as structured JavaScript errors.
     pub fn poll(&self) -> Result<ModuleState, JscError> {
+        self.vm.enforce_resource_policy()?;
         let mut state = 0;
         let mut exception = ptr::null();
         // SAFETY: the native record and its retained Promise belong to this VM.

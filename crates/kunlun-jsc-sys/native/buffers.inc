@@ -32,6 +32,26 @@ kunlun_jsc_status kunlun_jsc_context_collect_garbage(kunlun_jsc_context *context
     });
 }
 
+kunlun_jsc_status kunlun_jsc_context_heap_statistics(
+    kunlun_jsc_context *context, kunlun_jsc_heap_statistics *out_statistics)
+{
+    return guard([&] {
+        if (!context || !out_statistics)
+            return KUNLUN_JSC_STATUS_INVALID_ARGUMENT;
+        *out_statistics = { 0, 0, 0 };
+#if defined(KUNLUN_JSC_BUNDLED)
+        return JSKunlunGetHeapStatistics(
+                   opaque_cast<JSGlobalContextRef>(context),
+                   &out_statistics->heap_size, &out_statistics->heap_capacity,
+                   &out_statistics->extra_memory_size)
+            ? KUNLUN_JSC_STATUS_OK
+            : KUNLUN_JSC_STATUS_INVALID_STATE;
+#else
+        return KUNLUN_JSC_STATUS_UNSUPPORTED;
+#endif
+    });
+}
+
 static void external_bytes_finalize(void *, void *data) noexcept
 {
     // JSC invokes this once, potentially on a collector thread. This allocation

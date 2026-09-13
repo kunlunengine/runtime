@@ -85,7 +85,72 @@ static kunlun_jsc_status throwing_callback(void *, kunlun_jsc_context *,
     throw std::runtime_error("native callback exception");
 }
 
+static uint32_t terminate_watchdog(void *data, const kunlun_jsc_heap_statistics *statistics)
+{
+    assert(data && statistics);
+    ++*static_cast<unsigned *>(data);
+    return 1;
+}
+
+static void test_watchdog()
+{
+    Context ctx;
+    unsigned calls = 0;
+    assert(kunlun_jsc_context_group_set_watchdog(
+               ctx.group, 0.001, terminate_watchdog, &calls)
+        == 0);
+    String script("for (;;) {}");
+    String url("test:///native-watchdog.js");
+    const kunlun_jsc_value *value = nullptr, *exception = nullptr;
+    assert(kunlun_jsc_evaluate(
+               ctx.raw, script.raw, nullptr, url.raw, 1, &value, &exception)
+        == KUNLUN_JSC_STATUS_JS_EXCEPTION);
+    assert(!value && exception && calls == 1);
+    assert(kunlun_jsc_context_group_clear_watchdog(ctx.group) == 0);
+}
+
 #if defined(KUNLUN_JSC_BUNDLED) && defined(KUNLUN_JSC_TESTING)
+struct AllocationPressure {
+    uint64_t baseline = 0;
+    unsigned calls = 0;
+    bool saw_growth = false;
+};
+
+static uint32_t allocation_watchdog(
+    void *data, const kunlun_jsc_heap_statistics *statistics)
+{
+    assert(data && statistics);
+    auto &pressure = *static_cast<AllocationPressure *>(data);
+    ++pressure.calls;
+    auto accounted = statistics->heap_size + statistics->extra_memory_size;
+    if (!pressure.baseline)
+        pressure.baseline = accounted;
+    if (accounted > pressure.baseline + 4 * 1024 * 1024) {
+        pressure.saw_growth = true;
+        return 1;
+    }
+    return pressure.calls >= 1000;
+}
+
+static void test_allocation_pressure_watchdog()
+{
+    Context ctx;
+    AllocationPressure pressure;
+    assert(kunlun_jsc_context_group_set_watchdog(
+               ctx.group, 0.001, allocation_watchdog, &pressure)
+        == 0);
+    String script(
+        "globalThis.allocations = []; for (;;) allocations.push(new "
+        "Array(16384).fill(42));");
+    String url("test:///native-allocation-watchdog.js");
+    const kunlun_jsc_value *value = nullptr, *exception = nullptr;
+    assert(kunlun_jsc_evaluate(
+               ctx.raw, script.raw, nullptr, url.raw, 1, &value, &exception)
+        == KUNLUN_JSC_STATUS_JS_EXCEPTION);
+    assert(!value && exception && pressure.saw_growth);
+    assert(kunlun_jsc_context_group_clear_watchdog(ctx.group) == 0);
+}
+
 static kunlun_jsc_status ignore_rejection(void *, uint64_t, uint32_t,
     const kunlun_jsc_value *, const kunlun_jsc_string *) { return 0; }
 
@@ -254,7 +319,9 @@ static void test_native_modules()
 
 int main()
 {
+    test_watchdog();
 #if defined(KUNLUN_JSC_BUNDLED) && defined(KUNLUN_JSC_TESTING)
+    test_allocation_pressure_watchdog();
     test_native_modules();
     test_microtasks();
     assert(ExternalBytes::live_allocations == 0);

@@ -14,8 +14,10 @@ that raced with cancellation carries only owned data and is discarded when its t
 a pending Promise. Operation listeners are removed on resolve, reject, EOF, cancellation, and
 producer failure.
 
-This cancellation boundary can interrupt timers and asynchronous host work. It cannot preempt
-synchronous JavaScript; the engine watchdog and execution deadlines are owned by #32.
+This request-local cancellation boundary interrupts timers and asynchronous host work. Isolate-wide
+cooperative cancellation additionally uses the engine watchdog and is described in
+[resource policy](./resource-policy.md); it can terminate synchronous JavaScript without moving a
+JSC handle to the requesting thread.
 
 ## Bounded streams
 

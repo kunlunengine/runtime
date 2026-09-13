@@ -303,7 +303,7 @@
     },
     {
       "path": "distribution/jsc/patches/webkit-kunlun-resource-api.patch",
-      "sha256": "517cb547ca8df0b521ccf5cf95008393da63cc9dd8d79262488428c1875018e3",
+      "sha256": "4ea4984dfbb323060dc797fd3ff9cb20992f8c465a0ca50c9ce55db28fc1c77e",
       "purpose": "Expose copied heap size, capacity, and extra-memory telemetry for Kunlun watchdog and boundary policy without exporting WebKit C++ types."
     }
   ],

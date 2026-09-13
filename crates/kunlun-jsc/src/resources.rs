@@ -591,13 +591,21 @@ mod tests {
     #[test]
     fn heap_telemetry_is_copied_and_hard_limit_is_terminal() {
         let vm = JscVm::new("heap-policy").unwrap();
+        vm.evaluate(
+            "globalThis.retained = Array.from({ length: 131072 }, (_, value) => ({ value }));",
+            "test:///heap-policy.js",
+        )
+        .unwrap();
+        vm.collect_garbage().unwrap();
         let statistics = vm.heap_statistics().unwrap();
         assert!(statistics.heap_capacity >= statistics.heap_size);
+        assert!(statistics.accounted_bytes() > 1);
+        let limit = statistics.accounted_bytes() / 2;
         vm.set_resource_policy(ResourcePolicy {
             execution_timeout: Some(Duration::from_secs(1)),
             watchdog_interval: Duration::from_millis(2),
-            soft_heap_limit: Some(1),
-            hard_heap_limit: Some(1),
+            soft_heap_limit: Some(limit),
+            hard_heap_limit: Some(limit),
         })
         .unwrap();
         let _scope = vm.execution_scope().unwrap();

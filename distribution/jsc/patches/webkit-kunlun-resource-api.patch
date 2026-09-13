@@ -11,7 +11,7 @@ diff --git a/Source/JavaScriptCore/API/KunlunResourceAPI.inc b/Source/JavaScript
 new file mode 100644
 --- /dev/null
 +++ b/Source/JavaScriptCore/API/KunlunResourceAPI.inc
-@@ -0,0 +1,24 @@
+@@ -0,0 +1,25 @@
 +/* Kunlun's heap telemetry adapter. Values are copied across the private C
 + * extension boundary; no Heap, VM, or GC-owned pointer is exposed. */
 +#include "Heap.h"
@@ -30,9 +30,10 @@ new file mode 100644
 +    auto* globalObject = toJS(context);
 +    JSC::JSLockHolder locker(globalObject);
 +    auto& heap = globalObject->vm().heap;
++    auto& objectSpace = heap.objectSpace();
 +    static_assert(sizeof(size_t) <= sizeof(uint64_t));
-+    *size = static_cast<uint64_t>(heap.size());
-+    *capacity = static_cast<uint64_t>(heap.capacity());
++    *size = static_cast<uint64_t>(objectSpace.size());
++    *capacity = static_cast<uint64_t>(objectSpace.capacity());
 +    *extraMemorySize = static_cast<uint64_t>(heap.extraMemorySize());
 +    return true;
 +}

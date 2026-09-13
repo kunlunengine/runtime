@@ -133,7 +133,8 @@ impl ContextInner {
         if status == sys::KUNLUN_JSC_STATUS_JS_EXCEPTION && !exception.is_null() {
             return Err(ValueToStringError::Exception(exception));
         }
-        expect_status(operation, status).map_err(ValueToStringError::Conversion)?;
+        self.expect_status(operation, status)
+            .map_err(ValueToStringError::Conversion)?;
         if !exception.is_null() {
             return Err(ValueToStringError::Conversion(JscError::missing_value(
                 operation,
@@ -159,10 +160,18 @@ impl ContextInner {
         source_url: Option<&str>,
         exception: ValueRef,
     ) -> JscError {
-        let message = self
-            .value_to_string_once(exception, "exception_to_string")
-            .unwrap_or_else(|_| EXCEPTION_STRINGIFICATION_FALLBACK.to_owned());
-        JscError::exception(operation, source_url, message)
+        match self.value_to_string_once(exception, "exception_to_string") {
+            Ok(message) => JscError::exception(operation, source_url, message),
+            Err(ValueToStringError::Conversion(error)) if error.termination_reason().is_some() => {
+                match source_url {
+                    Some(url) => error.with_source_url(url),
+                    None => error,
+                }
+            }
+            Err(ValueToStringError::Exception(_) | ValueToStringError::Conversion(_)) => {
+                JscError::exception(operation, source_url, EXCEPTION_STRINGIFICATION_FALLBACK)
+            }
+        }
     }
 }
 
@@ -290,7 +299,7 @@ impl JscVm {
         // call; JSC copies the context name.
         let status =
             unsafe { sys::kunlun_jsc_context_set_name(self.context.as_context(), name.as_ptr()) };
-        expect_status("context_set_name", status)
+        self.context.expect_status("context_set_name", status)
     }
 
     pub fn set_inspectable(&self, inspectable: bool) -> Result<(), JscError> {
@@ -301,7 +310,8 @@ impl JscVm {
                 u8::from(inspectable),
             )
         };
-        expect_status("context_set_inspectable", status)
+        self.context
+            .expect_status("context_set_inspectable", status)
     }
 
     pub fn is_inspectable(&self) -> Result<bool, JscError> {
@@ -310,7 +320,8 @@ impl JscVm {
         let status = unsafe {
             sys::kunlun_jsc_context_is_inspectable(self.context.as_context(), &mut inspectable)
         };
-        expect_status("context_is_inspectable", status)?;
+        self.context
+            .expect_status("context_is_inspectable", status)?;
         Ok(inspectable != 0)
     }
 
@@ -337,7 +348,8 @@ impl JscVm {
         // the global object retains the created function.
         let mut global = ptr::null_mut();
         let status = unsafe { sys::kunlun_jsc_context_get_global_object(context, &mut global) };
-        expect_status("context_get_global_object", status)?;
+        self.context
+            .expect_status("context_get_global_object", status)?;
         // SAFETY: `name` and `context` are live. The callback has the exact C
         // ABI expected by JavaScriptCore.
         let mut function = ptr::null_mut();
@@ -358,7 +370,7 @@ impl JscVm {
                 function_exception,
             ));
         }
-        expect_status("object_make_function", status)?;
+        self.context.expect_status("object_make_function", status)?;
         if global.is_null() || function.is_null() {
             return Err(JscError::host_function(
                 "install_sleep_scheduler",
@@ -384,7 +396,7 @@ impl JscVm {
                 .context
                 .exception_error("install_sleep_scheduler", None, exception));
         }
-        expect_status("object_set_property", status)?;
+        self.context.expect_status("object_set_property", status)?;
 
         let hook = SleepHook {
             context: Rc::clone(&self.context),
@@ -408,7 +420,8 @@ impl JscVm {
         // SAFETY: the global object belongs to this live context.
         let mut global = ptr::null_mut();
         let status = unsafe { sys::kunlun_jsc_context_get_global_object(context, &mut global) };
-        expect_status("context_get_global_object", status)?;
+        self.context
+            .expect_status("context_get_global_object", status)?;
         // SAFETY: the callback has JSC's exact C ABI and dispatches only
         // through the context-local registry.
         let mut function = ptr::null_mut();
@@ -429,7 +442,7 @@ impl JscVm {
                 function_exception,
             ));
         }
-        expect_status("object_make_function", status)?;
+        self.context.expect_status("object_make_function", status)?;
         if global.is_null() || function.is_null() {
             return Err(JscError::host_function(
                 "install_host_call_scheduler",
@@ -456,7 +469,7 @@ impl JscVm {
                 exception,
             ));
         }
-        expect_status("object_set_property", status)?;
+        self.context.expect_status("object_set_property", status)?;
 
         let hook = HostHook {
             context: Rc::clone(&self.context),
@@ -553,7 +566,7 @@ unsafe fn protect_value(
 ) -> Result<(), JscError> {
     // SAFETY: the caller proves `raw` belongs to this live context.
     let status = unsafe { sys::kunlun_jsc_value_protect(context.as_context(), raw.as_ptr()) };
-    expect_status("value_protect", status)
+    context.expect_status("value_protect", status)
 }
 
 unsafe fn unprotect_value(context: &ContextInner, raw: NonNull<sys::kunlun_jsc_value>) {
@@ -634,7 +647,7 @@ impl RootedValue<'_> {
         let context = self.protected.context();
         let mut global = ptr::null_mut();
         // SAFETY: the retained context owns both the global and the value.
-        expect_status("get_global", unsafe {
+        context.expect_status("get_global", unsafe {
             sys::kunlun_jsc_context_get_global_object(context.as_context(), &mut global)
         })?;
         let mut exception = ptr::null();
@@ -652,7 +665,7 @@ impl RootedValue<'_> {
         if !exception.is_null() {
             return Err(context.exception_error("set_global", None, exception));
         }
-        expect_status("set_global", status)
+        context.expect_status("set_global", status)
     }
 
     pub fn try_clone(&self) -> Result<Self, JscError> {
@@ -720,7 +733,7 @@ impl DeferredPromise {
         if status == sys::KUNLUN_JSC_STATUS_JS_EXCEPTION && !exception.is_null() {
             return Err(context.exception_error("deferred_promise_create", None, exception));
         }
-        expect_status("deferred_promise_create", status)?;
+        context.expect_status("deferred_promise_create", status)?;
         if promise.is_null() || resolve.is_null() || reject.is_null() {
             return Err(JscError::missing_value(
                 "deferred_promise_create",
@@ -749,7 +762,8 @@ impl DeferredPromise {
         let status = unsafe {
             sys::kunlun_jsc_value_make_undefined(self.context().as_context(), &mut value)
         };
-        expect_status("value_make_undefined", status)?;
+        self.context()
+            .expect_status("value_make_undefined", status)?;
         self.settle(&self.resolve, value, "promise_resolve")
     }
 
@@ -764,7 +778,7 @@ impl DeferredPromise {
                 &mut raw_value,
             )
         };
-        expect_status("value_make_string", status)?;
+        self.context().expect_status("value_make_string", status)?;
         self.settle(&self.resolve, raw_value, "promise_resolve")
     }
 
@@ -779,7 +793,7 @@ impl DeferredPromise {
                 &mut value,
             )
         };
-        expect_status("value_make_string", status)?;
+        self.context().expect_status("value_make_string", status)?;
         self.settle(&self.reject, value, "promise_reject")
     }
 

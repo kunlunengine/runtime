@@ -62,7 +62,8 @@ impl CallbackValue<'_> {
                 .context
                 .exception_error("callback_value_to_number", None, exception));
         }
-        expect_status("callback_value_to_number", status)?;
+        self.context
+            .expect_status("callback_value_to_number", status)?;
         Ok(number)
     }
 }
@@ -153,7 +154,7 @@ impl JscVm {
                 .context
                 .exception_error("host_function", None, exception));
         }
-        expect_status("host_function", status)?;
+        self.context.expect_status("host_function", status)?;
         let protected =
             match ProtectedValue::new(Rc::clone(&self.context), function, "host_function") {
                 Ok(value) => value,

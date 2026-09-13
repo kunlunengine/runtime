@@ -56,13 +56,26 @@ struct WatchdogState {
 };
 
 thread_local std::unordered_map<JSContextGroupRef, std::unique_ptr<WatchdogState>> watchdog_states;
+thread_local bool watchdog_callback_active = false;
+
+struct WatchdogCallbackScope {
+    WatchdogCallbackScope() { watchdog_callback_active = true; }
+    ~WatchdogCallbackScope() { watchdog_callback_active = false; }
+};
 
 bool watchdog_bridge(JSContextRef context, void *data) noexcept
 {
     try {
+        if (watchdog_callback_active)
+            return true;
+        WatchdogCallbackScope callback_scope;
         auto *state = static_cast<WatchdogState *>(data);
         if (!state || !state->callback)
             return true;
+        auto group = state->group;
+        auto interval_seconds = state->interval_seconds;
+        auto callback = state->callback;
+        auto user_data = state->user_data;
         kunlun_jsc_heap_statistics statistics { 0, 0, 0 };
 #if defined(KUNLUN_JSC_BUNDLED)
         if (!JSKunlunGetHeapStatistics(
@@ -73,13 +86,16 @@ bool watchdog_bridge(JSContextRef context, void *data) noexcept
 #else
         (void)context;
 #endif
-        if (state->callback(state->user_data, &statistics) != 0)
+        if (callback(user_data, &statistics) != 0)
             return true;
+        auto current = watchdog_states.find(group);
+        if (current == watchdog_states.end() || current->second.get() != state)
+            return false;
         // Re-arm explicitly before returning. This is permitted by JSC's
         // watchdog callback contract and keeps optimized loops observable on
         // engines that do not reliably schedule a second implicit interval.
         JSContextGroupSetExecutionTimeLimit(
-            state->group, state->interval_seconds, watchdog_bridge, state);
+            group, interval_seconds, watchdog_bridge, state);
         return false;
     } catch (...) {
         return true;
@@ -251,13 +267,16 @@ kunlun_jsc_status kunlun_jsc_context_group_set_watchdog(
         if (!group || !callback || !user_data || !std::isfinite(interval_seconds)
             || interval_seconds <= 0)
             return KUNLUN_JSC_STATUS_INVALID_ARGUMENT;
+        if (watchdog_callback_active)
+            return KUNLUN_JSC_STATUS_INVALID_STATE;
         auto raw_group = opaque_cast<JSContextGroupRef>(group);
-        JSContextGroupClearExecutionTimeLimit(raw_group);
-        watchdog_states.erase(raw_group);
         auto state = std::make_unique<WatchdogState>(WatchdogState {
             raw_group, interval_seconds, callback, user_data });
-        auto *borrowed = state.get();
-        watchdog_states.emplace(raw_group, std::move(state));
+        auto position = watchdog_states.try_emplace(raw_group, nullptr).first;
+        auto previous = std::move(position->second);
+        position->second = std::move(state);
+        auto *borrowed = position->second.get();
+        JSContextGroupClearExecutionTimeLimit(raw_group);
         JSContextGroupSetExecutionTimeLimit(
             raw_group, interval_seconds, watchdog_bridge, borrowed);
         return KUNLUN_JSC_STATUS_OK;
@@ -269,6 +288,8 @@ kunlun_jsc_status kunlun_jsc_context_group_clear_watchdog(kunlun_jsc_context_gro
     return guard([&] {
         if (!group)
             return KUNLUN_JSC_STATUS_INVALID_ARGUMENT;
+        if (watchdog_callback_active)
+            return KUNLUN_JSC_STATUS_INVALID_STATE;
         auto raw_group = opaque_cast<JSContextGroupRef>(group);
         JSContextGroupClearExecutionTimeLimit(raw_group);
         watchdog_states.erase(raw_group);

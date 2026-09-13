@@ -275,6 +275,18 @@ impl Drop for ExecutionScope {
 }
 
 impl ContextInner {
+    pub(super) fn expect_status(
+        &self,
+        operation: &'static str,
+        status: sys::kunlun_jsc_status,
+    ) -> Result<(), JscError> {
+        if status == sys::KUNLUN_JSC_STATUS_OK {
+            Ok(())
+        } else {
+            Err(self.status_error(operation, status))
+        }
+    }
+
     pub(super) fn execution_scope(
         &self,
         operation: &'static str,
@@ -316,7 +328,8 @@ impl JscVm {
                 Arc::as_ptr(resources).cast_mut().cast(),
             )
         };
-        expect_status("context_group_set_watchdog", status)?;
+        self.context
+            .expect_status("context_group_set_watchdog", status)?;
         resources.configure(policy);
         Ok(())
     }
@@ -340,7 +353,8 @@ impl JscVm {
         // SAFETY: output storage and the isolate-thread-affine context are live.
         let status =
             unsafe { sys::kunlun_jsc_context_heap_statistics(self.context.as_context(), &mut raw) };
-        expect_status("context_heap_statistics", status)?;
+        self.context
+            .expect_status("context_heap_statistics", status)?;
         Ok(HeapStatistics {
             heap_size: raw.heap_size,
             heap_capacity: raw.heap_capacity,
@@ -479,6 +493,23 @@ mod tests {
         );
         assert_eq!(error.kind(), crate::JscErrorKind::ExecutionTerminated);
         assert_eq!(JscStatus::OutOfMemory.as_raw(), 2);
+    }
+
+    #[test]
+    fn context_status_out_of_memory_prevents_isolate_reuse() {
+        let vm = JscVm::new("context-oom").unwrap();
+        let error = vm
+            .context
+            .expect_status("allocate", sys::KUNLUN_JSC_STATUS_OUT_OF_MEMORY)
+            .unwrap_err();
+        assert_eq!(
+            error.termination_reason(),
+            Some(TerminationReason::OutOfMemory)
+        );
+        assert_eq!(
+            vm.execution_scope().err().unwrap().termination_reason(),
+            Some(TerminationReason::OutOfMemory)
+        );
     }
 
     #[test]

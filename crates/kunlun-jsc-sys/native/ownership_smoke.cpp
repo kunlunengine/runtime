@@ -92,6 +92,20 @@ static uint32_t terminate_watchdog(void *data, const kunlun_jsc_heap_statistics 
     return 1;
 }
 
+struct ReentrantWatchdog {
+    kunlun_jsc_context_group *group;
+    kunlun_jsc_status clear_status = KUNLUN_JSC_STATUS_OK;
+};
+
+static uint32_t try_reentrant_watchdog_clear(
+    void *data, const kunlun_jsc_heap_statistics *statistics)
+{
+    assert(data && statistics);
+    auto &watchdog = *static_cast<ReentrantWatchdog *>(data);
+    watchdog.clear_status = kunlun_jsc_context_group_clear_watchdog(watchdog.group);
+    return 1;
+}
+
 static void test_watchdog()
 {
     Context ctx;
@@ -106,6 +120,24 @@ static void test_watchdog()
                ctx.raw, script.raw, nullptr, url.raw, 1, &value, &exception)
         == KUNLUN_JSC_STATUS_JS_EXCEPTION);
     assert(!value && exception && calls == 1);
+    assert(kunlun_jsc_context_group_clear_watchdog(ctx.group) == 0);
+}
+
+static void test_watchdog_rejects_reentrant_configuration()
+{
+    Context ctx;
+    ReentrantWatchdog watchdog { ctx.group };
+    assert(kunlun_jsc_context_group_set_watchdog(
+               ctx.group, 0.001, try_reentrant_watchdog_clear, &watchdog)
+        == 0);
+    String script("for (;;) {}");
+    String url("test:///native-watchdog-reentry.js");
+    const kunlun_jsc_value *value = nullptr, *exception = nullptr;
+    assert(kunlun_jsc_evaluate(
+               ctx.raw, script.raw, nullptr, url.raw, 1, &value, &exception)
+        == KUNLUN_JSC_STATUS_JS_EXCEPTION);
+    assert(!value && exception);
+    assert(watchdog.clear_status == KUNLUN_JSC_STATUS_INVALID_STATE);
     assert(kunlun_jsc_context_group_clear_watchdog(ctx.group) == 0);
 }
 
@@ -320,6 +352,7 @@ static void test_native_modules()
 int main()
 {
     test_watchdog();
+    test_watchdog_rejects_reentrant_configuration();
 #if defined(KUNLUN_JSC_BUNDLED) && defined(KUNLUN_JSC_TESTING)
     test_allocation_pressure_watchdog();
     test_native_modules();

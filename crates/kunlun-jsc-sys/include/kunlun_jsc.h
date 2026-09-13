@@ -74,8 +74,9 @@ typedef struct kunlun_jsc_heap_statistics {
 /* The engine invokes this callback on the isolate thread at watchdog
  * checkpoints. Returning nonzero terminates the current JS entry. The callback
  * and user_data are borrowed until the group watchdog is cleared or the group
- * is released and must not unwind. Foreign threads request cancellation only
- * through callback-owned synchronization; they never call this ABI. */
+ * is released and must not unwind or call the watchdog set/clear/group-release
+ * APIs reentrantly. Foreign threads request cancellation only through
+ * callback-owned synchronization; they never call this ABI. */
 typedef uint32_t (*kunlun_jsc_watchdog_callback)(
     void *user_data, const kunlun_jsc_heap_statistics *statistics);
 

@@ -123,7 +123,7 @@ impl JscVm {
         // SAFETY: the trampoline has static code lifetime; the registry owns
         // Rust state before native registration, and no borrow spans this call.
         let status = unsafe { sys::kunlun_jsc_modules_install(context, Some(module_callback)) };
-        if let Err(error) = expect_status("modules_install", status) {
+        if let Err(error) = self.context.expect_status("modules_install", status) {
             revoke(context);
             return Err(error);
         }
@@ -260,7 +260,7 @@ impl ModuleRecord<'_> {
         let status = unsafe {
             sys::kunlun_jsc_module_poll(self.handle.as_ptr(), &mut state, &mut exception)
         };
-        expect_status("module_poll", status)?;
+        self.vm.context.expect_status("module_poll", status)?;
         match state {
             0 => Ok(ModuleState::Pending),
             1 => Ok(ModuleState::Fulfilled),

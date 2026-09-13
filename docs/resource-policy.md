@@ -13,6 +13,10 @@ re-arms the next watchdog interval. Tokio waits use the earlier of the next time
 execution deadline, and watchdog polling interval, so an idle async evaluation also observes
 cancellation and deadlines without relying on an arbitrary test sleep.
 
+Watchdog configuration is isolate-thread-affine and cannot be changed or cleared reentrantly from
+inside its callback. Replacement prepares all fallible native state before it removes the active
+configuration, so an allocation failure cannot silently turn a limited isolate into an unlimited one.
+
 `ExecutionHandle` is `Send + Sync` because it contains only an `Arc<Mutex<...>>`, no context, value,
 callback, or VM pointer. `cancel()` affects an active evaluation and is a no-op while the isolate is
 idle. The first cancellation, deadline, memory-limit, or OOM terminal reason wins. Once engine

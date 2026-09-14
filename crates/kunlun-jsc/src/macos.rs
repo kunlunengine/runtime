@@ -766,6 +766,15 @@ impl DeferredPromise {
         self.resolve.context()
     }
 
+    fn map_string_error(&self, error: JscError, operation: &'static str) -> JscError {
+        if error.status() == Some(crate::JscStatus::OutOfMemory) {
+            self.context()
+                .status_error(operation, sys::KUNLUN_JSC_STATUS_OUT_OF_MEMORY)
+        } else {
+            error
+        }
+    }
+
     pub fn resolve_undefined(self) -> Result<(), JscError> {
         let mut value = ptr::null();
         // SAFETY: undefined is created in the same live context.
@@ -778,7 +787,8 @@ impl DeferredPromise {
     }
 
     pub fn resolve_string(self, value: &str) -> Result<(), JscError> {
-        let value = OwnedJsString::new(value, "promise_resolve")?;
+        let value = OwnedJsString::new(value, "promise_resolve")
+            .map_err(|error| self.map_string_error(error, "promise_resolve"))?;
         let mut raw_value = ptr::null();
         // SAFETY: the JS string and resulting value belong to the same context.
         let status = unsafe {
@@ -793,7 +803,8 @@ impl DeferredPromise {
     }
 
     pub fn reject_message(self, message: &str) -> Result<(), JscError> {
-        let message = OwnedJsString::new(message, "promise_reject")?;
+        let message = OwnedJsString::new(message, "promise_reject")
+            .map_err(|error| self.map_string_error(error, "promise_reject"))?;
         let mut value = ptr::null();
         // SAFETY: the JS string and resulting value belong to the same context.
         let status = unsafe {
@@ -1228,6 +1239,34 @@ mod tests {
             Some(crate::TerminationReason::OutOfMemory)
         );
         assert_eq!(error.source_url(), Some("test:///string-oom.js"));
+        assert_eq!(
+            vm.execution_scope().err().unwrap().termination_reason(),
+            Some(crate::TerminationReason::OutOfMemory)
+        );
+    }
+
+    #[test]
+    fn deferred_string_out_of_memory_marks_the_context_terminal() {
+        let vm = JscVm::new("kunlun-deferred-string-oom-test").expect("create VM");
+        let (_, deferred) =
+            DeferredPromise::new(Rc::clone(&vm.context)).expect("create deferred Promise");
+        let invalid = JscError::invalid_input("promise_resolve", "invalid string");
+
+        assert_eq!(
+            deferred.map_string_error(invalid.clone(), "promise_resolve"),
+            invalid
+        );
+
+        let error = deferred.map_string_error(
+            JscError::native("promise_resolve", sys::KUNLUN_JSC_STATUS_OUT_OF_MEMORY),
+            "promise_resolve",
+        );
+
+        assert_eq!(error.operation(), "promise_resolve");
+        assert_eq!(
+            error.termination_reason(),
+            Some(crate::TerminationReason::OutOfMemory)
+        );
         assert_eq!(
             vm.execution_scope().err().unwrap().termination_reason(),
             Some(crate::TerminationReason::OutOfMemory)

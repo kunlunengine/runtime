@@ -47,4 +47,4 @@ profile:
 #    failOnUnknown: false
 
 #Specify Qodana linter for analysis (Applied in CI/CD pipeline)
-linter: jetbrains/qodana-<linter>:2026.2
+linter: qodana-rust

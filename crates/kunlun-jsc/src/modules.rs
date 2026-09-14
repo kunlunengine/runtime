@@ -365,15 +365,14 @@ mod tests {
         let handle = vm.execution_handle();
         vm.install_module_loader(CancellingMapper { handle })
             .unwrap();
-        let _scope = vm.execution_scope().unwrap();
         let mut module = vm.load_module("test:///throw.mjs").unwrap();
+        // Loading settles asynchronously; evaluation is valid only after the
+        // load promise has fulfilled at an explicit checkpoint.
         vm.microtask_checkpoint().unwrap();
         assert_eq!(module.poll().unwrap(), ModuleState::Fulfilled);
-        module.evaluate().unwrap();
-        vm.microtask_checkpoint().unwrap();
-        let error = module.poll().unwrap_err();
+        let error = module.evaluate().unwrap_err();
 
-        assert_eq!(error.operation(), "module_poll");
+        assert_eq!(error.operation(), "module_evaluate");
         assert_eq!(error.source_url(), Some("test:///throw.mjs"));
         assert_eq!(
             error.termination_reason(),

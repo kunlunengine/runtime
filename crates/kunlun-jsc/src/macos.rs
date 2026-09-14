@@ -481,6 +481,16 @@ impl JscVm {
         Ok(())
     }
 
+    fn map_evaluate_string_error(&self, error: JscError, source_url: &str) -> JscError {
+        let error = if error.status() == Some(crate::JscStatus::OutOfMemory) {
+            self.context
+                .status_error("evaluate", sys::KUNLUN_JSC_STATUS_OUT_OF_MEMORY)
+        } else {
+            error
+        };
+        error.with_source_url(source_url)
+    }
+
     pub fn evaluate(&self, source: &str, source_url: &str) -> Result<String, JscError> {
         let _scope = self.context.execution_scope("evaluate")?;
         let result = self.evaluate_rooted(source, source_url)?.to_string();
@@ -498,9 +508,9 @@ impl JscVm {
     ) -> Result<RootedValue<'context>, JscError> {
         let _scope = self.context.execution_scope("evaluate")?;
         let source = OwnedJsString::new(source, "evaluate")
-            .map_err(|error| error.with_source_url(source_url))?;
+            .map_err(|error| self.map_evaluate_string_error(error, source_url))?;
         let source_url_handle = OwnedJsString::new(source_url, "evaluate")
-            .map_err(|error| error.with_source_url(source_url))?;
+            .map_err(|error| self.map_evaluate_string_error(error, source_url))?;
         let mut exception = ptr::null();
         let mut value = ptr::null();
         // SAFETY: all handles belong to this live context; null `thisObject`
@@ -1202,6 +1212,26 @@ mod tests {
         assert_eq!(error.source_url(), Some("test:///invalid-source.js"));
         assert_eq!(error.status(), None);
         assert!(error.detail().unwrap().contains("interior NUL"));
+    }
+
+    #[test]
+    fn evaluate_string_out_of_memory_marks_the_context_terminal() {
+        let vm = JscVm::new("kunlun-string-oom-test").expect("create VM");
+        let error = vm.map_evaluate_string_error(
+            JscError::native("evaluate", sys::KUNLUN_JSC_STATUS_OUT_OF_MEMORY),
+            "test:///string-oom.js",
+        );
+
+        assert_eq!(error.operation(), "evaluate");
+        assert_eq!(
+            error.termination_reason(),
+            Some(crate::TerminationReason::OutOfMemory)
+        );
+        assert_eq!(error.source_url(), Some("test:///string-oom.js"));
+        assert_eq!(
+            vm.execution_scope().err().unwrap().termination_reason(),
+            Some(crate::TerminationReason::OutOfMemory)
+        );
     }
 
     #[test]

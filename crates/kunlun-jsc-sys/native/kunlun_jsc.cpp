@@ -82,7 +82,7 @@ bool watchdog_bridge(JSContextRef context, void *data) noexcept
                 opaque_cast<JSGlobalContextRef>(const_cast<OpaqueJSContext *>(context)),
                 &statistics.heap_size, &statistics.heap_capacity,
                 &statistics.extra_memory_size))
-            return true;
+            statistics = { 0, 0, 0 };
 #else
         (void)context;
 #endif

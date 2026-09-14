@@ -281,7 +281,10 @@ impl ContextInner {
         status: sys::kunlun_jsc_status,
     ) -> Result<(), JscError> {
         if status == sys::KUNLUN_JSC_STATUS_OK {
-            Ok(())
+            match self.resource_error(operation) {
+                Some(error) => Err(error),
+                None => Ok(()),
+            }
         } else {
             Err(self.status_error(operation, status))
         }
@@ -509,6 +512,23 @@ mod tests {
         assert_eq!(
             vm.execution_scope().err().unwrap().termination_reason(),
             Some(TerminationReason::OutOfMemory)
+        );
+    }
+
+    #[test]
+    fn context_ok_status_preserves_a_recorded_terminal_error() {
+        let vm = JscVm::new("context-cancelled-ok-status").unwrap();
+        let _scope = vm.context.execution_scope("test").unwrap();
+        vm.context._group.resources.cancel();
+
+        let error = vm
+            .context
+            .expect_status("complete", sys::KUNLUN_JSC_STATUS_OK)
+            .unwrap_err();
+        assert_eq!(error.operation(), "complete");
+        assert_eq!(
+            error.termination_reason(),
+            Some(TerminationReason::Cancelled)
         );
     }
 

@@ -91,6 +91,9 @@ impl JscVm {
                 description = mapped;
             }
         }
+        if let Some(error) = self.context.resource_error(operation) {
+            return error.with_source_url(url);
+        }
         JscError::exception(operation, Some(url), description)
     }
 
@@ -326,5 +329,50 @@ unsafe extern "C" fn module_callback(
     }) {
         Ok(status) => status,
         Err(_) => callback_error(context, out_exception, "Kunlun module callback panicked"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct CancellingMapper {
+        handle: ExecutionHandle,
+    }
+
+    impl ModuleLoader for CancellingMapper {
+        fn resolve(&self, specifier: &str, _: Option<&str>) -> Result<String, String> {
+            Ok(specifier.to_owned())
+        }
+
+        fn fetch(&self, _: &str) -> Result<String, String> {
+            Ok("throw new Error('boom');".to_owned())
+        }
+
+        fn map_error(&self, description: &str) -> String {
+            self.handle.cancel();
+            description.to_owned()
+        }
+    }
+
+    #[test]
+    fn terminal_error_during_mapping_preempts_the_module_exception() {
+        if !JscVm::backend_info().supports_native_modules {
+            return;
+        }
+
+        let mut vm = JscVm::new("module-error-cancellation").unwrap();
+        let handle = vm.execution_handle();
+        vm.install_module_loader(CancellingMapper { handle })
+            .unwrap();
+        let mut module = vm.load_module("test:///throw.mjs").unwrap();
+        let error = module.evaluate().unwrap_err();
+
+        assert_eq!(error.operation(), "module_evaluate");
+        assert_eq!(error.source_url(), Some("test:///throw.mjs"));
+        assert_eq!(
+            error.termination_reason(),
+            Some(crate::TerminationReason::Cancelled)
+        );
     }
 }

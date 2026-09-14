@@ -83,7 +83,7 @@ Goal: run real bundled server entrypoints rather than classic scripts.
 - [x] Promise rejection tracking and an explicit deterministic microtask checkpoint API.
 - [x] Extend the host loop from timers to plain-data filesystem/HTTP completion messages.
 - [x] Add signals, cancellation/AbortSignal, bounded response/file streaming, and graceful shutdown.
-- Execution deadlines, cooperative cancellation, heap telemetry, and out-of-memory policy.
+- [x] Execution deadlines, cooperative cancellation, heap telemetry, and out-of-memory policy (#32).
 - Console, text encoding, URL, streams, and crypto primitives required by the runtime profile.
 
 Exit gate: ESM/TLA/dynamic-import/Promise tests are deterministic, leak checks are clean, and a

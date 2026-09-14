@@ -1,5 +1,10 @@
 use kunlun_jsc::{ContextGroup, JscStatus, JscVm, PromiseRejectionTransition as Transition};
 
+#[cfg(feature = "bundled-jsc")]
+use kunlun_jsc::{ResourcePolicy, TerminationReason};
+#[cfg(feature = "bundled-jsc")]
+use std::time::{Duration, Instant};
+
 fn checkpoint(vm: &JscVm) {
     assert!(!vm.microtask_checkpoint().unwrap());
 }
@@ -124,4 +129,30 @@ fn rejection_conversion_is_reentrant_safe_and_new_work_waits_for_next_checkpoint
     while vm.microtask_checkpoint().unwrap() {}
     assert!(vm.take_promise_rejections().is_empty());
     assert_eq!(vm.evaluate("followup", "test:///read.js").unwrap(), "42");
+}
+
+#[cfg(feature = "bundled-jsc")]
+#[test]
+fn deadline_interrupts_javascript_running_during_a_microtask_checkpoint() {
+    let vm = JscVm::new("microtask-deadline").unwrap();
+    vm.set_resource_policy(ResourcePolicy {
+        execution_timeout: Some(Duration::from_millis(25)),
+        watchdog_interval: Duration::from_millis(2),
+        soft_heap_limit: None,
+        hard_heap_limit: None,
+    })
+    .unwrap();
+    vm.evaluate(
+        "Promise.resolve().then(() => { for (;;) {} });",
+        "test:///microtask-deadline.js",
+    )
+    .unwrap();
+
+    let started = Instant::now();
+    let error = vm.microtask_checkpoint().unwrap_err();
+    assert_eq!(
+        error.termination_reason(),
+        Some(TerminationReason::DeadlineExceeded)
+    );
+    assert!(started.elapsed() < Duration::from_secs(2));
 }

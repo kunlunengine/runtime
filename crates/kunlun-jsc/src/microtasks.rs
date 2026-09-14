@@ -11,6 +11,7 @@ impl JscVm {
     /// Returns true if callbacks queued work requiring another checkpoint.
     /// Records retrieved with `take_promise_rejections` contain owned text only.
     pub fn microtask_checkpoint(&self) -> Result<bool, JscError> {
+        let _scope = self.context.execution_scope("microtask_checkpoint")?;
         let mut pending = 0;
         let mut sink = RejectionSink {
             vm: self,
@@ -27,7 +28,10 @@ impl JscVm {
             )
         };
         self.rejections.borrow_mut().extend(sink.records);
-        expect_status("microtask_checkpoint", status)?;
+        if status != sys::KUNLUN_JSC_STATUS_OK {
+            return Err(self.context.status_error("microtask_checkpoint", status));
+        }
+        self.enforce_resource_policy()?;
         Ok(pending != 0)
     }
 

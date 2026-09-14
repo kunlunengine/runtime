@@ -300,6 +300,11 @@
       "path": "distribution/jsc/patches/webkit-kunlun-microtask-api.patch",
       "sha256": "cbb65e491bb04fd3a0c1a50ddb02bf7c918a799677eb1489dc1d62f3a90d4bc5",
       "purpose": "Give Kunlun contexts explicit microtask queues and checkpoint-based Promise rejection transitions, with teardown that discards pending jobs and roots."
+    },
+    {
+      "path": "distribution/jsc/patches/webkit-kunlun-resource-api.patch",
+      "sha256": "4ea4984dfbb323060dc797fd3ff9cb20992f8c465a0ca50c9ce55db28fc1c77e",
+      "purpose": "Expose copied heap size, capacity, and extra-memory telemetry for Kunlun watchdog and boundary policy without exporting WebKit C++ types."
     }
   ],
   "licenses": [

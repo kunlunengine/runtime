@@ -11,13 +11,16 @@ pub use builtins::{
     BUILTIN_MODULES, BuiltinModuleDescriptor, TYPESCRIPT_DECLARATIONS, is_builtin_specifier,
 };
 pub use host::HostPermissions;
-pub use kunlun_jsc::{PromiseRejection, PromiseRejectionTransition};
+pub use kunlun_jsc::{
+    ExecutionHandle, HeapStatistics, PromiseRejection, PromiseRejectionTransition,
+    TerminationReason,
+};
 pub use modules::{
     GENERATED_MODULE_SCHEME, ModuleKind, ModuleResolutionError, ModuleResolutionErrorKind,
     ModuleResolver, ModuleUrl,
 };
 
-use kunlun_jsc::{DeferredPromise, JscError, JscVm, ModuleState};
+use kunlun_jsc::{DeferredPromise, JscError, JscVm, ModuleState, ResourcePolicy};
 use std::cell::{Cell, RefCell};
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
@@ -30,6 +33,29 @@ static NEXT_EVALUATION_ID: AtomicU64 = AtomicU64::new(1);
 
 pub const EVENT_LOOP_BACKEND: &str = "caller-provided Tokio runtime";
 pub const DEFAULT_SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
+pub const DEFAULT_EXECUTION_TIMEOUT: Duration = Duration::from_secs(30);
+pub const DEFAULT_WATCHDOG_INTERVAL: Duration = Duration::from_millis(10);
+pub const DEFAULT_SOFT_HEAP_LIMIT: u64 = 128 * 1024 * 1024;
+pub const DEFAULT_HARD_HEAP_LIMIT: u64 = 256 * 1024 * 1024;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RuntimeLimits {
+    pub execution_timeout: Duration,
+    pub watchdog_interval: Duration,
+    pub soft_heap_limit: u64,
+    pub hard_heap_limit: u64,
+}
+
+impl Default for RuntimeLimits {
+    fn default() -> Self {
+        Self {
+            execution_timeout: DEFAULT_EXECUTION_TIMEOUT,
+            watchdog_interval: DEFAULT_WATCHDOG_INTERVAL,
+            soft_heap_limit: DEFAULT_SOFT_HEAP_LIMIT,
+            hard_heap_limit: DEFAULT_HARD_HEAP_LIMIT,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ShutdownOutcome {
@@ -111,8 +137,22 @@ impl TokioIsolate {
         name: &str,
         permissions: HostPermissions,
     ) -> Result<Self, RuntimeError> {
+        Self::new_with_permissions_and_limits(name, permissions, RuntimeLimits::default())
+    }
+
+    pub fn new_with_permissions_and_limits(
+        name: &str,
+        permissions: HostPermissions,
+        limits: RuntimeLimits,
+    ) -> Result<Self, RuntimeError> {
         let timers = TimerDispatcher::new();
         let mut vm = JscVm::new(name)?;
+        vm.set_resource_policy(ResourcePolicy {
+            execution_timeout: Some(limits.execution_timeout),
+            watchdog_interval: limits.watchdog_interval,
+            soft_heap_limit: Some(limits.soft_heap_limit),
+            hard_heap_limit: Some(limits.hard_heap_limit),
+        })?;
         let host = host::HostDispatcher::new(permissions)
             .map_err(|error| RuntimeError::HostInitialization(error.to_string()))?;
         let pending_timers = Rc::clone(&timers.pending);
@@ -138,6 +178,7 @@ impl TokioIsolate {
     }
 
     fn ensure_usable(&self) -> Result<(), RuntimeError> {
+        self.vm.enforce_resource_policy()?;
         if self.shutting_down.get() {
             return Err(RuntimeError::Module(
                 "isolate shutdown has started; discard this isolate".to_owned(),
@@ -168,6 +209,7 @@ impl TokioIsolate {
             module_cancelled,
             ..
         } = self;
+        let _execution = vm.execution_scope()?;
         let id = NEXT_EVALUATION_ID.fetch_add(1, Ordering::Relaxed);
         timers.begin_evaluation(id);
         host.begin_evaluation(id);
@@ -185,6 +227,7 @@ impl TokioIsolate {
                     module.evaluate()?;
                 }
                 loop {
+                    vm.enforce_resource_policy()?;
                     checkpoint(vm)?;
                     timers.settle_expired(vm)?;
                     cleanup.host.settle_completions(vm)?;
@@ -193,7 +236,7 @@ impl TokioIsolate {
                     if module.poll()? == ModuleState::Fulfilled {
                         break;
                     }
-                    if let Some(deadline) = timers.next_deadline() {
+                    if let Some(deadline) = next_runtime_wake(vm, timers) {
                         let _ =
                             tokio::time::timeout_at(deadline, cleanup.host.wait_for_completion())
                                 .await;
@@ -212,6 +255,7 @@ impl TokioIsolate {
 
     pub fn evaluate(&mut self, source: &str, source_url: &str) -> Result<String, RuntimeError> {
         self.ensure_usable()?;
+        let _execution = self.vm.execution_scope()?;
         let result = self.vm.evaluate(source, source_url);
         checkpoint(&self.vm)?;
         result.map_err(Into::into)
@@ -219,6 +263,17 @@ impl TokioIsolate {
 
     pub fn take_promise_rejections(&self) -> Vec<PromiseRejection> {
         self.vm.take_promise_rejections()
+    }
+
+    /// Returns thread-safe cancellation authority containing no JSC handle.
+    /// Cancellation is observed by the engine watchdog during synchronous JS
+    /// and by event-loop resource checks while the isolate is idle.
+    pub fn execution_handle(&self) -> ExecutionHandle {
+        self.vm.execution_handle()
+    }
+
+    pub fn heap_statistics(&self) -> Result<HeapStatistics, RuntimeError> {
+        self.vm.heap_statistics().map_err(Into::into)
     }
 
     pub fn shutdown_handle(&self) -> ShutdownHandle {
@@ -247,8 +302,8 @@ impl TokioIsolate {
     ///
     /// The body may use `await`, call the Promise-returning `sleep(ms)` host
     /// function, and return a value. Use `evaluate_module` for ESM and top-level
-    /// await. This bootstrap API has no execution deadline:
-    /// cancelling the Rust future cannot preempt synchronous JavaScript.
+    /// await. The configured monotonic deadline spans synchronous JavaScript,
+    /// Promise checkpoints, host callbacks, and time spent awaiting host I/O.
     pub async fn evaluate_async_body(
         &mut self,
         source: &str,
@@ -265,10 +320,25 @@ impl TokioIsolate {
 // The system framework keeps its development-only eager API behavior. Only
 // the pinned backend guarantees controlled queues and rejection transitions.
 fn checkpoint(vm: &JscVm) -> Result<(), JscError> {
+    vm.enforce_resource_policy()?;
     if JscVm::backend_info().supports_explicit_microtask_checkpoint {
         while vm.microtask_checkpoint()? {}
     }
     Ok(())
+}
+
+fn next_runtime_wake(vm: &JscVm, timers: &TimerDispatcher) -> Option<Instant> {
+    let now = Instant::now();
+    let resource = vm
+        .resource_poll_interval()
+        .map(|interval| vm.deadline_remaining().unwrap_or(interval).min(interval))
+        .and_then(|duration| now.checked_add(duration));
+    match (timers.next_deadline(), resource) {
+        (Some(timer), Some(resource)) => Some(timer.min(resource)),
+        (Some(timer), None) => Some(timer),
+        (None, Some(resource)) => Some(resource),
+        (None, None) => None,
+    }
 }
 
 struct ModuleEvaluationCleanup<'a> {
@@ -432,6 +502,7 @@ async fn run_async_body(
     source: &str,
     source_url: &str,
 ) -> Result<String, RuntimeError> {
+    let _execution = vm.execution_scope()?;
     let id = NEXT_EVALUATION_ID.fetch_add(1, Ordering::Relaxed);
     let state = format!("__kunlunAsyncState{id}");
     let wrapper = format!(
@@ -457,6 +528,7 @@ async fn run_async_body(
 
     let result = async {
         loop {
+            cleanup.vm().enforce_resource_policy()?;
             checkpoint(cleanup.vm)?;
             timers.settle_expired(cleanup.vm)?;
             cleanup.host.settle_completions(cleanup.vm)?;
@@ -467,7 +539,7 @@ async fn run_async_body(
             if done == "true" {
                 break;
             }
-            if let Some(deadline) = timers.next_deadline() {
+            if let Some(deadline) = next_runtime_wake(cleanup.vm, timers) {
                 let _ =
                     tokio::time::timeout_at(deadline, cleanup.host().wait_for_completion()).await;
             } else {
@@ -549,6 +621,41 @@ mod tests {
             .unwrap();
         assert_eq!(first, "first");
         assert_eq!(second, "second");
+    }
+
+    #[test]
+    fn async_deadline_cancels_pending_work_and_poisoned_isolate_cannot_be_reused() {
+        let runtime = test_runtime();
+        let limits = RuntimeLimits {
+            execution_timeout: Duration::from_millis(25),
+            watchdog_interval: Duration::from_millis(2),
+            ..RuntimeLimits::default()
+        };
+        let mut isolate = TokioIsolate::new_with_permissions_and_limits(
+            "async-deadline-test",
+            HostPermissions::none(),
+            limits,
+        )
+        .unwrap();
+
+        let error = runtime
+            .block_on(isolate.evaluate_async_body(
+                "await sleep(60_000); return 'late';",
+                "test:///async-deadline.js",
+            ))
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            RuntimeError::Jsc(ref error)
+                if error.termination_reason() == Some(TerminationReason::DeadlineExceeded)
+        ));
+        assert!(isolate.timers.pending.borrow().is_empty());
+        assert_eq!(isolate.host.pending_count(), 0);
+        assert!(matches!(
+            isolate.evaluate("'not-run'", "test:///after-deadline.js"),
+            Err(RuntimeError::Jsc(ref error))
+                if error.termination_reason() == Some(TerminationReason::DeadlineExceeded)
+        ));
     }
 
     #[test]

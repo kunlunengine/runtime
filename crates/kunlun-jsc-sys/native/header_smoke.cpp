@@ -6,6 +6,7 @@
 static_assert(sizeof(kunlun_jsc_array_kind) == sizeof(std::uint32_t));
 static_assert(sizeof(kunlun_jsc_status) == sizeof(std::uint32_t));
 static_assert(sizeof(kunlun_jsc_property_attributes) == sizeof(std::uint32_t));
+static_assert(sizeof(kunlun_jsc_heap_statistics) == 3 * sizeof(std::uint64_t));
 static_assert(std::is_standard_layout_v<kunlun_jsc_context_group *>);
 static_assert(std::is_standard_layout_v<kunlun_jsc_context *>);
 static_assert(std::is_standard_layout_v<kunlun_jsc_value *>);

@@ -12,6 +12,11 @@ fn generated_layout_matches_fixed_width_abi() {
         size_of::<usize>()
     );
     assert_eq!(size_of::<sys::kunlun_jsc_array_kind>(), 4);
+    assert_eq!(size_of::<sys::kunlun_jsc_heap_statistics>(), 24);
+    assert_eq!(
+        size_of::<sys::kunlun_jsc_watchdog_callback>(),
+        size_of::<usize>()
+    );
     assert_eq!(
         size_of::<sys::kunlun_jsc_stateful_callback>(),
         size_of::<usize>()
@@ -46,6 +51,7 @@ fn links_every_allowlisted_symbol() {
         sys::kunlun_jsc_value_make_number as *const (),
         sys::kunlun_jsc_value_make_boolean as *const (),
         sys::kunlun_jsc_context_collect_garbage as *const (),
+        sys::kunlun_jsc_context_heap_statistics as *const (),
         sys::kunlun_jsc_array_buffer_create_copy as *const (),
         sys::kunlun_jsc_array_buffer_length as *const (),
         sys::kunlun_jsc_array_buffer_read as *const (),
@@ -53,6 +59,8 @@ fn links_every_allowlisted_symbol() {
         sys::kunlun_jsc_typed_array_create as *const (),
         sys::kunlun_jsc_context_group_create as *const (),
         sys::kunlun_jsc_context_group_release as *const (),
+        sys::kunlun_jsc_context_group_set_watchdog as *const (),
+        sys::kunlun_jsc_context_group_clear_watchdog as *const (),
         sys::kunlun_jsc_context_create as *const (),
         sys::kunlun_jsc_context_create_in_group as *const (),
         sys::kunlun_jsc_context_release as *const (),
@@ -78,8 +86,8 @@ fn links_every_allowlisted_symbol() {
         sys::kunlun_jsc_value_unprotect as *const (),
     ];
 
-    assert_eq!(symbols.len(), 44);
-    assert_eq!(size_of_val(&symbols), 44 * size_of::<usize>());
+    assert_eq!(symbols.len(), 47);
+    assert_eq!(size_of_val(&symbols), 47 * size_of::<usize>());
     assert!(symbols.iter().all(|symbol| !symbol.is_null()));
 }
 

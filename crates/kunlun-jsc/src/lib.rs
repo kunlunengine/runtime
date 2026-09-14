@@ -11,9 +11,18 @@ use std::fmt::{self, Display, Formatter};
 
 #[cfg(kunlun_jsc_native)]
 pub use native::{
-    ArrayBuffer, CallbackReturn, CallbackValue, ContextGroup, DeferredPromise, HostFunction, JscVm,
-    ModuleLoader, ModuleRecord, ModuleState, RootedValue, TypedArray, TypedArrayKind,
+    ArrayBuffer, CallbackReturn, CallbackValue, ContextGroup, DeferredPromise, ExecutionHandle,
+    ExecutionScope, HeapStatistics, HostFunction, JscVm, ModuleLoader, ModuleRecord, ModuleState,
+    ResourcePolicy, RootedValue, TypedArray, TypedArrayKind,
 };
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TerminationReason {
+    Cancelled,
+    DeadlineExceeded,
+    MemoryLimitExceeded,
+    OutOfMemory,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HostCall {
@@ -49,6 +58,8 @@ pub struct BackendInfo {
     pub supports_deferred_promises: bool,
     pub supports_native_modules: bool,
     pub supports_explicit_microtask_checkpoint: bool,
+    pub supports_execution_watchdog: bool,
+    pub supports_heap_telemetry: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,6 +71,7 @@ pub enum JscErrorKind {
     MissingValue,
     HostFunction,
     NativeFailure,
+    ExecutionTerminated,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -156,6 +168,7 @@ pub struct JscError {
     source_url: Option<String>,
     exception_text: Option<String>,
     detail: Option<String>,
+    termination_reason: Option<TerminationReason>,
 }
 
 impl JscError {
@@ -181,6 +194,10 @@ impl JscError {
 
     pub fn detail(&self) -> Option<&str> {
         self.detail.as_deref()
+    }
+
+    pub const fn termination_reason(&self) -> Option<TerminationReason> {
+        self.termination_reason
     }
 
     /// Constructs an exception captured by a higher-level JavaScript host
@@ -210,7 +227,29 @@ impl JscError {
 
     #[cfg(kunlun_jsc_native)]
     pub(crate) fn native(operation: &'static str, status: u32) -> Self {
-        Self::new(JscErrorKind::NativeFailure, operation).with_status(JscStatus::from_raw(status))
+        if status == JscStatus::OutOfMemory.as_raw() {
+            let mut error = Self::new(JscErrorKind::ExecutionTerminated, operation)
+                .with_status(JscStatus::OutOfMemory)
+                .with_detail(
+                    "JavaScriptCore reported an out-of-memory failure; discard this isolate",
+                );
+            error.termination_reason = Some(TerminationReason::OutOfMemory);
+            error
+        } else {
+            Self::new(JscErrorKind::NativeFailure, operation)
+                .with_status(JscStatus::from_raw(status))
+        }
+    }
+
+    #[cfg(kunlun_jsc_native)]
+    pub(crate) fn terminated(
+        operation: &'static str,
+        reason: TerminationReason,
+        detail: impl Into<String>,
+    ) -> Self {
+        let mut error = Self::new(JscErrorKind::ExecutionTerminated, operation).with_detail(detail);
+        error.termination_reason = Some(reason);
+        error
     }
 
     pub(crate) fn exception(
@@ -238,6 +277,7 @@ impl JscError {
             source_url: None,
             exception_text: None,
             detail: None,
+            termination_reason: None,
         }
     }
 

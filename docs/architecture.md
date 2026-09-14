@@ -77,8 +77,9 @@ WebKit's unstable C++ ABI. High-level host code never handles an unrooted raw `J
 - Pinned JSC checkpoints occur after evaluation and each timer/host completion, and before
   idle/completion decisions. Queues are context-local and never drained from foreign threads.
   See [checkpoint and rejection policy](./microtasks.md); system JSC remains an eager development backend.
-- Execution deadlines require an engine watchdog in the pinned JSC shim; the bootstrap API does not
-  claim that Tokio timers can interrupt synchronous JavaScript.
+- The JSC watchdog checks one host monotonic deadline across synchronous evaluation, modules,
+  microtasks, callback reentry, and event-loop waits. A thread-safe cancellation handle contains no
+  JSC pointer; only the isolate thread enters the engine. See [resource policy](./resource-policy.md).
 - SIGINT/SIGTERM stop admission, cancel evaluation-owned work, checkpoint, drain tracked workers for
   a finite grace period, and then release the isolate. See [lifecycle policy](./lifecycle.md).
 

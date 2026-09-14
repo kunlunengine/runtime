@@ -15,8 +15,8 @@ name = "kunlun_jsc_sys"
 path = "src/lib.rs"
 
 [build-dependencies]
-bindgen = "0.72.1"
-cc = "1.4.4"
+bindgen = "0.73.2"
+cc = "1.4.6"
 serde_json.workspace = true
 sha2.workspace = true
 

@@ -40,6 +40,9 @@ impl JscVm {
         url: &str,
         exception: ValueRef,
     ) -> JscError {
+        if let Some(error) = self.context.resource_error(operation) {
+            return error.with_source_url(url);
+        }
         // Root before stringification: a user-defined toString can reenter JS
         // and trigger collection just like a stack getter can.
         let root =
@@ -88,6 +91,9 @@ impl JscVm {
                 description = mapped;
             }
         }
+        if let Some(error) = self.context.resource_error(operation) {
+            return error.with_source_url(url);
+        }
         JscError::exception(operation, Some(url), description)
     }
 
@@ -120,7 +126,7 @@ impl JscVm {
         // SAFETY: the trampoline has static code lifetime; the registry owns
         // Rust state before native registration, and no borrow spans this call.
         let status = unsafe { sys::kunlun_jsc_modules_install(context, Some(module_callback)) };
-        if let Err(error) = expect_status("modules_install", status) {
+        if let Err(error) = self.context.expect_status("modules_install", status) {
             revoke(context);
             return Err(error);
         }
@@ -130,6 +136,7 @@ impl JscVm {
     /// Fetches and parses a native ESM graph under the installed loader. The
     /// entry is resolved with a null referrer before touching the engine cache.
     pub fn load_module(&self, specifier: &str) -> Result<ModuleRecord<'_>, JscError> {
+        let _scope = self.context.execution_scope("module_load")?;
         let hook = MODULE_HOOKS
             .with(|hooks| {
                 hooks
@@ -156,13 +163,19 @@ impl JscVm {
                 &mut exception,
             )
         };
+        if let Some(error) = self.context.resource_error("module_load") {
+            return Err(error.with_source_url(&url));
+        }
         if !exception.is_null() {
             return Err(self.module_error("module_load", &url, exception));
         }
-        expect_status("module_load", status)?;
+        if status != sys::KUNLUN_JSC_STATUS_OK {
+            return Err(self.context.status_error("module_load", status));
+        }
         // SAFETY: a successful native call transfers exactly one module owner.
         let handle = unsafe { OwnedHandle::from_raw(raw, release_module) }
             .ok_or_else(|| JscError::missing_value("module_load", "JSC returned no module"))?;
+        self.enforce_resource_policy()?;
         Ok(ModuleRecord {
             handle,
             vm: self,
@@ -220,28 +233,37 @@ impl ModuleRecord<'_> {
     /// Links/evaluates a successfully loaded graph. Pending TLA is observed
     /// through `poll`; this function never blocks waiting for host work.
     pub fn evaluate(&mut self) -> Result<(), JscError> {
+        let _scope = self.vm.context.execution_scope("module_evaluate")?;
         let mut exception = ptr::null();
         // SAFETY: the record owns its native root and borrows a live VM.
         let status =
             unsafe { sys::kunlun_jsc_module_evaluate(self.handle.as_ptr(), &mut exception) };
+        if let Some(error) = self.vm.context.resource_error("module_evaluate") {
+            return Err(error.with_source_url(&self.url));
+        }
         if !exception.is_null() {
             return Err(self
                 .vm
                 .module_error("module_evaluate", &self.url, exception));
         }
-        expect_status("module_evaluate", status)
+        if status != sys::KUNLUN_JSC_STATUS_OK {
+            return Err(self.vm.context.status_error("module_evaluate", status));
+        }
+        self.vm.enforce_resource_policy()?;
+        Ok(())
     }
 
     /// Observes the native Promise state without invoking replaceable JS
     /// properties. Rejections are returned as structured JavaScript errors.
     pub fn poll(&self) -> Result<ModuleState, JscError> {
+        self.vm.enforce_resource_policy()?;
         let mut state = 0;
         let mut exception = ptr::null();
         // SAFETY: the native record and its retained Promise belong to this VM.
         let status = unsafe {
             sys::kunlun_jsc_module_poll(self.handle.as_ptr(), &mut state, &mut exception)
         };
-        expect_status("module_poll", status)?;
+        self.vm.context.expect_status("module_poll", status)?;
         match state {
             0 => Ok(ModuleState::Pending),
             1 => Ok(ModuleState::Fulfilled),
@@ -307,5 +329,54 @@ unsafe extern "C" fn module_callback(
     }) {
         Ok(status) => status,
         Err(_) => callback_error(context, out_exception, "Kunlun module callback panicked"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct CancellingMapper {
+        handle: ExecutionHandle,
+    }
+
+    impl ModuleLoader for CancellingMapper {
+        fn resolve(&self, specifier: &str, _: Option<&str>) -> Result<String, String> {
+            Ok(specifier.to_owned())
+        }
+
+        fn fetch(&self, _: &str) -> Result<String, String> {
+            Ok("throw new Error('boom');".to_owned())
+        }
+
+        fn map_error(&self, description: &str) -> String {
+            self.handle.cancel();
+            description.to_owned()
+        }
+    }
+
+    #[test]
+    fn terminal_error_during_mapping_preempts_the_module_exception() {
+        if !JscVm::backend_info().supports_native_modules {
+            return;
+        }
+
+        let mut vm = JscVm::new("module-error-cancellation").unwrap();
+        let handle = vm.execution_handle();
+        vm.install_module_loader(CancellingMapper { handle })
+            .unwrap();
+        let mut module = vm.load_module("test:///throw.mjs").unwrap();
+        // Loading settles asynchronously; evaluation is valid only after the
+        // load promise has fulfilled at an explicit checkpoint.
+        vm.microtask_checkpoint().unwrap();
+        assert_eq!(module.poll().unwrap(), ModuleState::Fulfilled);
+        let error = module.evaluate().unwrap_err();
+
+        assert_eq!(error.operation(), "module_evaluate");
+        assert_eq!(error.source_url(), Some("test:///throw.mjs"));
+        assert_eq!(
+            error.termination_reason(),
+            Some(crate::TerminationReason::Cancelled)
+        );
     }
 }

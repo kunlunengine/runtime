@@ -94,7 +94,7 @@ fn check(
     if !exception.is_null() {
         return Err(context.exception_error(operation, None, exception));
     }
-    expect_status(operation, status)
+    context.expect_status(operation, status)
 }
 
 impl JscVm {
@@ -130,7 +130,7 @@ impl JscVm {
     /// objects. This is not an exact or synchronous finalization guarantee.
     pub fn collect_garbage(&self) -> Result<(), JscError> {
         // SAFETY: this live context is confined to the current thread.
-        expect_status("collect_garbage", unsafe {
+        self.context.expect_status("collect_garbage", unsafe {
             sys::kunlun_jsc_context_collect_garbage(self.context.as_context())
         })
     }

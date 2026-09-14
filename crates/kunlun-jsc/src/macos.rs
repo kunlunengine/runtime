@@ -6,9 +6,12 @@ mod callbacks;
 mod microtasks;
 #[path = "modules.rs"]
 mod modules;
+#[path = "resources.rs"]
+mod resources;
 pub use buffers::{ArrayBuffer, TypedArray, TypedArrayKind};
 pub use callbacks::{CallbackReturn, CallbackValue, HostFunction};
 pub use modules::{ModuleLoader, ModuleRecord, ModuleState};
+pub use resources::{ExecutionHandle, ExecutionScope, HeapStatistics, ResourcePolicy};
 
 use crate::ownership::{OwnedHandle, ProtectedHandle, catch_callback_panic};
 use crate::{BackendInfo, HostCall, JscError};
@@ -78,6 +81,7 @@ thread_local! {
 
 struct ContextGroupInner {
     handle: OwnedHandle<sys::kunlun_jsc_context_group>,
+    resources: std::sync::Arc<resources::ResourceState>,
 }
 
 struct ContextInner {
@@ -129,7 +133,8 @@ impl ContextInner {
         if status == sys::KUNLUN_JSC_STATUS_JS_EXCEPTION && !exception.is_null() {
             return Err(ValueToStringError::Exception(exception));
         }
-        expect_status(operation, status).map_err(ValueToStringError::Conversion)?;
+        self.expect_status(operation, status)
+            .map_err(ValueToStringError::Conversion)?;
         if !exception.is_null() {
             return Err(ValueToStringError::Conversion(JscError::missing_value(
                 operation,
@@ -155,10 +160,18 @@ impl ContextInner {
         source_url: Option<&str>,
         exception: ValueRef,
     ) -> JscError {
-        let message = self
-            .value_to_string_once(exception, "exception_to_string")
-            .unwrap_or_else(|_| EXCEPTION_STRINGIFICATION_FALLBACK.to_owned());
-        JscError::exception(operation, source_url, message)
+        match self.value_to_string_once(exception, "exception_to_string") {
+            Ok(message) => JscError::exception(operation, source_url, message),
+            Err(ValueToStringError::Conversion(error)) if error.termination_reason().is_some() => {
+                match source_url {
+                    Some(url) => error.with_source_url(url),
+                    None => error,
+                }
+            }
+            Err(ValueToStringError::Exception(_) | ValueToStringError::Conversion(_)) => {
+                JscError::exception(operation, source_url, EXCEPTION_STRINGIFICATION_FALLBACK)
+            }
+        }
     }
 }
 
@@ -203,7 +216,10 @@ impl ContextGroup {
                 )
             })?;
         Ok(Self {
-            inner: Rc::new(ContextGroupInner { handle }),
+            inner: Rc::new(ContextGroupInner {
+                handle,
+                resources: std::sync::Arc::new(resources::ResourceState::new()),
+            }),
         })
     }
 
@@ -268,6 +284,8 @@ impl JscVm {
             supports_deferred_promises: true,
             supports_native_modules: cfg!(feature = "bundled-jsc"),
             supports_explicit_microtask_checkpoint: cfg!(feature = "bundled-jsc"),
+            supports_execution_watchdog: true,
+            supports_heap_telemetry: cfg!(feature = "bundled-jsc"),
         }
     }
 
@@ -281,7 +299,7 @@ impl JscVm {
         // call; JSC copies the context name.
         let status =
             unsafe { sys::kunlun_jsc_context_set_name(self.context.as_context(), name.as_ptr()) };
-        expect_status("context_set_name", status)
+        self.context.expect_status("context_set_name", status)
     }
 
     pub fn set_inspectable(&self, inspectable: bool) -> Result<(), JscError> {
@@ -292,7 +310,8 @@ impl JscVm {
                 u8::from(inspectable),
             )
         };
-        expect_status("context_set_inspectable", status)
+        self.context
+            .expect_status("context_set_inspectable", status)
     }
 
     pub fn is_inspectable(&self) -> Result<bool, JscError> {
@@ -301,7 +320,8 @@ impl JscVm {
         let status = unsafe {
             sys::kunlun_jsc_context_is_inspectable(self.context.as_context(), &mut inspectable)
         };
-        expect_status("context_is_inspectable", status)?;
+        self.context
+            .expect_status("context_is_inspectable", status)?;
         Ok(inspectable != 0)
     }
 
@@ -328,7 +348,8 @@ impl JscVm {
         // the global object retains the created function.
         let mut global = ptr::null_mut();
         let status = unsafe { sys::kunlun_jsc_context_get_global_object(context, &mut global) };
-        expect_status("context_get_global_object", status)?;
+        self.context
+            .expect_status("context_get_global_object", status)?;
         // SAFETY: `name` and `context` are live. The callback has the exact C
         // ABI expected by JavaScriptCore.
         let mut function = ptr::null_mut();
@@ -349,7 +370,7 @@ impl JscVm {
                 function_exception,
             ));
         }
-        expect_status("object_make_function", status)?;
+        self.context.expect_status("object_make_function", status)?;
         if global.is_null() || function.is_null() {
             return Err(JscError::host_function(
                 "install_sleep_scheduler",
@@ -375,7 +396,7 @@ impl JscVm {
                 .context
                 .exception_error("install_sleep_scheduler", None, exception));
         }
-        expect_status("object_set_property", status)?;
+        self.context.expect_status("object_set_property", status)?;
 
         let hook = SleepHook {
             context: Rc::clone(&self.context),
@@ -399,7 +420,8 @@ impl JscVm {
         // SAFETY: the global object belongs to this live context.
         let mut global = ptr::null_mut();
         let status = unsafe { sys::kunlun_jsc_context_get_global_object(context, &mut global) };
-        expect_status("context_get_global_object", status)?;
+        self.context
+            .expect_status("context_get_global_object", status)?;
         // SAFETY: the callback has JSC's exact C ABI and dispatches only
         // through the context-local registry.
         let mut function = ptr::null_mut();
@@ -420,7 +442,7 @@ impl JscVm {
                 function_exception,
             ));
         }
-        expect_status("object_make_function", status)?;
+        self.context.expect_status("object_make_function", status)?;
         if global.is_null() || function.is_null() {
             return Err(JscError::host_function(
                 "install_host_call_scheduler",
@@ -447,7 +469,7 @@ impl JscVm {
                 exception,
             ));
         }
-        expect_status("object_set_property", status)?;
+        self.context.expect_status("object_set_property", status)?;
 
         let hook = HostHook {
             context: Rc::clone(&self.context),
@@ -459,8 +481,22 @@ impl JscVm {
         Ok(())
     }
 
+    fn map_evaluate_string_error(&self, error: JscError, source_url: &str) -> JscError {
+        let error = if error.status() == Some(crate::JscStatus::OutOfMemory) {
+            self.context
+                .status_error("evaluate", sys::KUNLUN_JSC_STATUS_OUT_OF_MEMORY)
+        } else {
+            error
+        };
+        error.with_source_url(source_url)
+    }
+
     pub fn evaluate(&self, source: &str, source_url: &str) -> Result<String, JscError> {
-        self.evaluate_rooted(source, source_url)?.to_string()
+        let _scope = self.context.execution_scope("evaluate")?;
+        let result = self.evaluate_rooted(source, source_url)?.to_string();
+        self.enforce_resource_policy()
+            .map_err(|error| error.with_source_url(source_url))?;
+        result
     }
 
     /// Evaluates a script and returns an owned, GC-rooted result tied to this
@@ -470,10 +506,11 @@ impl JscVm {
         source: &str,
         source_url: &str,
     ) -> Result<RootedValue<'context>, JscError> {
+        let _scope = self.context.execution_scope("evaluate")?;
         let source = OwnedJsString::new(source, "evaluate")
-            .map_err(|error| error.with_source_url(source_url))?;
+            .map_err(|error| self.map_evaluate_string_error(error, source_url))?;
         let source_url_handle = OwnedJsString::new(source_url, "evaluate")
-            .map_err(|error| error.with_source_url(source_url))?;
+            .map_err(|error| self.map_evaluate_string_error(error, source_url))?;
         let mut exception = ptr::null();
         let mut value = ptr::null();
         // SAFETY: all handles belong to this live context; null `thisObject`
@@ -490,13 +527,23 @@ impl JscVm {
             )
         };
 
+        if let Some(error) = self.context.resource_error("evaluate") {
+            return Err(error.with_source_url(source_url));
+        }
         if status == sys::KUNLUN_JSC_STATUS_JS_EXCEPTION && !exception.is_null() {
             return Err(self
                 .context
                 .exception_error("evaluate", Some(source_url), exception));
         }
-        expect_status("evaluate", status).map_err(|error| error.with_source_url(source_url))?;
+        if status != sys::KUNLUN_JSC_STATUS_OK {
+            return Err(self
+                .context
+                .status_error("evaluate", status)
+                .with_source_url(source_url));
+        }
         let protected = ProtectedValue::new(Rc::clone(&self.context), value, "evaluate")
+            .map_err(|error| error.with_source_url(source_url))?;
+        self.enforce_resource_policy()
             .map_err(|error| error.with_source_url(source_url))?;
         Ok(RootedValue {
             protected,
@@ -529,7 +576,7 @@ unsafe fn protect_value(
 ) -> Result<(), JscError> {
     // SAFETY: the caller proves `raw` belongs to this live context.
     let status = unsafe { sys::kunlun_jsc_value_protect(context.as_context(), raw.as_ptr()) };
-    expect_status("value_protect", status)
+    context.expect_status("value_protect", status)
 }
 
 unsafe fn unprotect_value(context: &ContextInner, raw: NonNull<sys::kunlun_jsc_value>) {
@@ -610,7 +657,7 @@ impl RootedValue<'_> {
         let context = self.protected.context();
         let mut global = ptr::null_mut();
         // SAFETY: the retained context owns both the global and the value.
-        expect_status("get_global", unsafe {
+        context.expect_status("get_global", unsafe {
             sys::kunlun_jsc_context_get_global_object(context.as_context(), &mut global)
         })?;
         let mut exception = ptr::null();
@@ -628,7 +675,7 @@ impl RootedValue<'_> {
         if !exception.is_null() {
             return Err(context.exception_error("set_global", None, exception));
         }
-        expect_status("set_global", status)
+        context.expect_status("set_global", status)
     }
 
     pub fn try_clone(&self) -> Result<Self, JscError> {
@@ -696,7 +743,7 @@ impl DeferredPromise {
         if status == sys::KUNLUN_JSC_STATUS_JS_EXCEPTION && !exception.is_null() {
             return Err(context.exception_error("deferred_promise_create", None, exception));
         }
-        expect_status("deferred_promise_create", status)?;
+        context.expect_status("deferred_promise_create", status)?;
         if promise.is_null() || resolve.is_null() || reject.is_null() {
             return Err(JscError::missing_value(
                 "deferred_promise_create",
@@ -719,18 +766,29 @@ impl DeferredPromise {
         self.resolve.context()
     }
 
+    fn map_string_error(&self, error: JscError, operation: &'static str) -> JscError {
+        if error.status() == Some(crate::JscStatus::OutOfMemory) {
+            self.context()
+                .status_error(operation, sys::KUNLUN_JSC_STATUS_OUT_OF_MEMORY)
+        } else {
+            error
+        }
+    }
+
     pub fn resolve_undefined(self) -> Result<(), JscError> {
         let mut value = ptr::null();
         // SAFETY: undefined is created in the same live context.
         let status = unsafe {
             sys::kunlun_jsc_value_make_undefined(self.context().as_context(), &mut value)
         };
-        expect_status("value_make_undefined", status)?;
+        self.context()
+            .expect_status("value_make_undefined", status)?;
         self.settle(&self.resolve, value, "promise_resolve")
     }
 
     pub fn resolve_string(self, value: &str) -> Result<(), JscError> {
-        let value = OwnedJsString::new(value, "promise_resolve")?;
+        let value = OwnedJsString::new(value, "promise_resolve")
+            .map_err(|error| self.map_string_error(error, "promise_resolve"))?;
         let mut raw_value = ptr::null();
         // SAFETY: the JS string and resulting value belong to the same context.
         let status = unsafe {
@@ -740,12 +798,13 @@ impl DeferredPromise {
                 &mut raw_value,
             )
         };
-        expect_status("value_make_string", status)?;
+        self.context().expect_status("value_make_string", status)?;
         self.settle(&self.resolve, raw_value, "promise_resolve")
     }
 
     pub fn reject_message(self, message: &str) -> Result<(), JscError> {
-        let message = OwnedJsString::new(message, "promise_reject")?;
+        let message = OwnedJsString::new(message, "promise_reject")
+            .map_err(|error| self.map_string_error(error, "promise_reject"))?;
         let mut value = ptr::null();
         // SAFETY: the JS string and resulting value belong to the same context.
         let status = unsafe {
@@ -755,7 +814,7 @@ impl DeferredPromise {
                 &mut value,
             )
         };
-        expect_status("value_make_string", status)?;
+        self.context().expect_status("value_make_string", status)?;
         self.settle(&self.reject, value, "promise_reject")
     }
 
@@ -765,6 +824,10 @@ impl DeferredPromise {
         value: ValueRef,
         operation: &'static str,
     ) -> Result<(), JscError> {
+        let _scope = self.context().execution_scope(operation)?;
+        if let Some(error) = self.context().resource_error(operation) {
+            return Err(error);
+        }
         let arguments = [value];
         let mut result = ptr::null();
         let mut exception = ptr::null();
@@ -781,10 +844,16 @@ impl DeferredPromise {
                 &mut exception,
             )
         };
+        if let Some(error) = self.context().resource_error(operation) {
+            return Err(error);
+        }
         if status == sys::KUNLUN_JSC_STATUS_JS_EXCEPTION && !exception.is_null() {
             return Err(self.context().exception_error(operation, None, exception));
         }
-        expect_status(operation, status)
+        if status != sys::KUNLUN_JSC_STATUS_OK {
+            return Err(self.context().status_error(operation, status));
+        }
+        Ok(())
     }
 }
 
@@ -1154,6 +1223,54 @@ mod tests {
         assert_eq!(error.source_url(), Some("test:///invalid-source.js"));
         assert_eq!(error.status(), None);
         assert!(error.detail().unwrap().contains("interior NUL"));
+    }
+
+    #[test]
+    fn evaluate_string_out_of_memory_marks_the_context_terminal() {
+        let vm = JscVm::new("kunlun-string-oom-test").expect("create VM");
+        let error = vm.map_evaluate_string_error(
+            JscError::native("evaluate", sys::KUNLUN_JSC_STATUS_OUT_OF_MEMORY),
+            "test:///string-oom.js",
+        );
+
+        assert_eq!(error.operation(), "evaluate");
+        assert_eq!(
+            error.termination_reason(),
+            Some(crate::TerminationReason::OutOfMemory)
+        );
+        assert_eq!(error.source_url(), Some("test:///string-oom.js"));
+        assert_eq!(
+            vm.execution_scope().err().unwrap().termination_reason(),
+            Some(crate::TerminationReason::OutOfMemory)
+        );
+    }
+
+    #[test]
+    fn deferred_string_out_of_memory_marks_the_context_terminal() {
+        let vm = JscVm::new("kunlun-deferred-string-oom-test").expect("create VM");
+        let (_, deferred) =
+            DeferredPromise::new(Rc::clone(&vm.context)).expect("create deferred Promise");
+        let invalid = JscError::invalid_input("promise_resolve", "invalid string");
+
+        assert_eq!(
+            deferred.map_string_error(invalid.clone(), "promise_resolve"),
+            invalid
+        );
+
+        let error = deferred.map_string_error(
+            JscError::native("promise_resolve", sys::KUNLUN_JSC_STATUS_OUT_OF_MEMORY),
+            "promise_resolve",
+        );
+
+        assert_eq!(error.operation(), "promise_resolve");
+        assert_eq!(
+            error.termination_reason(),
+            Some(crate::TerminationReason::OutOfMemory)
+        );
+        assert_eq!(
+            vm.execution_scope().err().unwrap().termination_reason(),
+            Some(crate::TerminationReason::OutOfMemory)
+        );
     }
 
     #[test]

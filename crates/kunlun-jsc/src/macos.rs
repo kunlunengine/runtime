@@ -238,6 +238,7 @@ impl ContextGroup {
             )
         })?;
         let vm = JscVm {
+            callbacks: RefCell::new(Vec::new()),
             rejections: RefCell::new(Vec::new()),
             reported_rejections: RefCell::new(HashMap::new()),
             context: Rc::new(ContextInner {
@@ -265,6 +266,7 @@ impl ContextGroup {
 /// assert_sync::<JscVm>();
 /// ```
 pub struct JscVm {
+    callbacks: RefCell<Vec<callbacks::OwnedHostFunction>>,
     rejections: RefCell<Vec<crate::PromiseRejection>>,
     reported_rejections: RefCell<HashMap<u64, JscError>>,
     context: Rc<ContextInner>,

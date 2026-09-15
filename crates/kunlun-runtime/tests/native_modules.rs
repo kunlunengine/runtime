@@ -533,3 +533,13 @@ mod native {
         }
     }
 }
+
+#[cfg(feature = "bundled-jsc")]
+#[tokio::test(flavor = "current_thread")]
+async fn native_web_module_exports_are_identical_to_globals() {
+    let fixture = Fixture::new();
+    fixture.write("web.mjs", "import * as web from 'kunlun:web'; for (const name of Object.keys(web)) { if (web[name] !== globalThis[name]) throw new Error(name); } export const hash = await web.crypto.subtle.digest('SHA-256', new web.TextEncoder().encode('abc')); ");
+    let mut isolate = kunlun_runtime::TokioIsolate::new("web-esm").unwrap();
+    isolate.install_module_sources(fixture.sources()).unwrap();
+    isolate.evaluate_module("web.mjs").await.unwrap();
+}

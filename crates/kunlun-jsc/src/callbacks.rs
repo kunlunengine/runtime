@@ -98,24 +98,34 @@ struct CallbackState {
 /// function.set_global("f").unwrap();
 /// ```
 pub struct HostFunction<'context> {
-    value: RootedValue<'context>,
+    owned: OwnedHostFunction,
+    _owner: PhantomData<&'context JscVm>,
+}
+
+pub(super) struct OwnedHostFunction {
+    protected: ProtectedValue,
     _state: Rc<CallbackState>,
 }
 
 impl HostFunction<'_> {
     pub fn set_global(&self, name: &str) -> Result<(), JscError> {
-        self.value.set_global(name)
+        RootedValue {
+            protected: self.owned.protected.try_clone()?,
+            source_url: None,
+            _owner: PhantomData,
+        }
+        .set_global(name)
     }
 }
 
-impl Drop for HostFunction<'_> {
+impl Drop for OwnedHostFunction {
     fn drop(&mut self) {
         // SAFETY: the root keeps the function/context live, and this !Send
         // handle can only be dropped on the creating isolate thread.
         let status = unsafe {
             sys::kunlun_jsc_object_revoke_function(
-                self.value.protected.context().as_context(),
-                self.value.protected.as_object(),
+                self.protected.context().as_context(),
+                self.protected.as_object(),
             )
         };
         // A failed revocation must never leave a dangling user_data pointer.
@@ -126,6 +136,17 @@ impl Drop for HostFunction<'_> {
 }
 
 impl JscVm {
+    /// Installs a synchronous callback retained and revoked by this VM.
+    pub fn install_global_callback<F>(&self, name: &str, callback: F) -> Result<(), JscError>
+    where
+        F: for<'call> Fn(&[CallbackValue<'call>]) -> Result<CallbackReturn, String> + 'static,
+    {
+        let function = self.host_function(name, callback)?;
+        function.set_global(name)?;
+        self.callbacks.borrow_mut().push(function.owned);
+        Ok(())
+    }
+
     pub fn host_function<F>(&self, name: &str, callback: F) -> Result<HostFunction<'_>, JscError>
     where
         F: for<'call> Fn(&[CallbackValue<'call>]) -> Result<CallbackReturn, String> + 'static,
@@ -171,12 +192,11 @@ impl JscVm {
                 }
             };
         Ok(HostFunction {
-            value: RootedValue {
+            owned: OwnedHostFunction {
                 protected,
-                source_url: None,
-                _owner: PhantomData,
+                _state: state,
             },
-            _state: state,
+            _owner: PhantomData,
         })
     }
 }

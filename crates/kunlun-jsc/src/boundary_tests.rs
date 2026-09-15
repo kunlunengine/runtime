@@ -374,3 +374,21 @@ fn gc_stress_retains_js_buffers_after_all_rust_roots_drop() {
         }
     }
 }
+
+#[test]
+fn vm_owned_callback_retains_then_releases_isolate_local_state() {
+    let retained = Rc::new(Cell::new(0));
+    {
+        let vm = JscVm::new("owned-callback").unwrap();
+        let captured = Rc::clone(&retained);
+        vm.install_global_callback("owned", move |_| {
+            captured.set(captured.get() + 1);
+            Ok(CallbackReturn::Number(f64::from(captured.get())))
+        })
+        .unwrap();
+        assert_eq!(vm.evaluate("owned()", "test:///owned.js").unwrap(), "1");
+        assert_eq!(Rc::strong_count(&retained), 2);
+    }
+    assert_eq!(retained.get(), 1);
+    assert_eq!(Rc::strong_count(&retained), 1);
+}

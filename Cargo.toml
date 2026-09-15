@@ -13,7 +13,7 @@ repository = "https://github.com/kunlunengine/runtime"
 [workspace.dependencies]
 cap-std = "4.0.3"
 base64 = "0.23.1"
-sourcemap = "9.2.2"
+sourcemap = "9.3.2"
 libc = "0.2.189"
 kunlun-jsc = { path = "crates/kunlun-jsc", version = "0.1.0", default-features = false }
 kunlun-jsc-sys = { path = "crates/kunlun-jsc-sys", version = "0.1.0", default-features = false }

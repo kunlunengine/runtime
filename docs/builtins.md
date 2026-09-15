@@ -83,3 +83,13 @@ the exact shipped declarations with `kunlun-runtime types`.
 
 New built-ins require a module descriptor, Rust operation implementation, capability rule, TypeScript
 declaration, denial test, and completion-path test.
+
+## Foundational Web APIs
+
+`kunlun:web` exports only the following Web APIs from [runtime profile v1](./runtime-profile-v1.md):
+`console`, `TextEncoder`, `TextDecoder`, `URL`, `URLSearchParams`, `ReadableStream`,
+`WritableStream`, `TransformStream`, `ByteLengthQueuingStrategy`, `CountQueuingStrategy`,
+`crypto`, `AbortController`, and `AbortSignal`. The profile's reader/controller classes are
+available as globals only, not as module exports.
+Host `ByteStream.toReadableStream()` integrates with standard piping and backpressure.
+These primitives require no additional capabilities; I/O still uses the existing grants.

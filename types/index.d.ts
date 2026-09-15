@@ -1,3 +1,6 @@
+/// <reference path="./streams.d.ts" />
+/// <reference path="./web.d.ts" />
+
 interface KunlunAbortEvent {
   readonly type: "abort"
   readonly target: AbortSignal
@@ -53,6 +56,7 @@ declare module "kunlun:fs" {
   }
 
   export interface ByteStream extends AsyncIterable<Uint8Array> {
+    toReadableStream(): ReadableStream<Uint8Array>
     read(): Promise<IteratorResult<Uint8Array, undefined>>
     cancel(reason?: unknown): Promise<void>
   }
@@ -95,6 +99,7 @@ declare module "kunlun:http" {
 }
 
 interface KunlunBuiltinModules {
+  "kunlun:web": typeof import("kunlun:web")
   "kunlun:fs": typeof import("kunlun:fs")
   "kunlun:http": typeof import("kunlun:http")
 }

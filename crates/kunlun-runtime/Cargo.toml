@@ -17,6 +17,8 @@ name = "kunlun-runtime"
 path = "src/main.rs"
 
 [dependencies]
+getrandom = "0.4.3"
+sha2.workspace = true
 cap-std.workspace = true
 base64.workspace = true
 sourcemap.workspace = true

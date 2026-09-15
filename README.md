@@ -53,6 +53,9 @@ The pinned engine exposes native Temporal by default. Cargo also sets `JSC_useTe
 starting development commands, preserving explicit environment overrides. `doctor` reports actual
 availability and checks leap-day arithmetic. See [Temporal](./docs/module-loading.md#temporal).
 
+The M2 [Web runtime profile v1](./docs/runtime-profile-v1.md) provides console, UTF-8 encoding,
+URL, Web Streams and crypto primitives, available globally and from `kunlun:web`.
+
 ## Design documents
 
 - [ROADMAP.md](./ROADMAP.md) — ordered milestones, gates, and cross-repository work.

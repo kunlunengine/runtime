@@ -8,6 +8,24 @@ pub struct BuiltinModuleDescriptor {
 
 pub const BUILTIN_MODULES: &[BuiltinModuleDescriptor] = &[
     BuiltinModuleDescriptor {
+        specifier: "kunlun:web",
+        exports: &[
+            "console",
+            "TextEncoder",
+            "TextDecoder",
+            "URL",
+            "URLSearchParams",
+            "ReadableStream",
+            "WritableStream",
+            "TransformStream",
+            "ByteLengthQueuingStrategy",
+            "CountQueuingStrategy",
+            "crypto",
+            "AbortController",
+            "AbortSignal",
+        ],
+    },
+    BuiltinModuleDescriptor {
         specifier: "kunlun:fs",
         exports: &["readTextFile", "openReadStream"],
     },
@@ -17,7 +35,11 @@ pub const BUILTIN_MODULES: &[BuiltinModuleDescriptor] = &[
     },
 ];
 
-pub const TYPESCRIPT_DECLARATIONS: &str = include_str!("../../../types/index.d.ts");
+pub const TYPESCRIPT_DECLARATIONS: &str = concat!(
+    include_str!("../../../types/streams.d.ts"),
+    include_str!("../../../types/web.d.ts"),
+    include_str!("../../../types/index.d.ts"),
+);
 
 const BOOTSTRAP_SOURCE: &str = r#"
 (() => {
@@ -228,6 +250,33 @@ const BOOTSTRAP_SOURCE: &str = r#"
       await hostCall('stream.cancel', JSON.stringify({ streamId: this.__streamId }));
     }
 
+    toReadableStream() {
+      if (this.__adapted) throw new TypeError('Host stream already adapted');
+      this.__adapted = true;
+      const source = this;
+      const read = this.read.bind(this);
+      this.read = () => Promise.reject(new TypeError('Host stream owned by ReadableStream'));
+      let cleanup = () => {};
+      return new ReadableStream({
+        start(controller) {
+          if (source.__signal !== undefined) {
+            const abort = () => { controller.error(source.__signal.reason); cleanup(); };
+            cleanup = () => source.__signal.removeEventListener('abort', abort);
+            source.__signal.addEventListener('abort', abort, { once: true });
+            if (source.__signal.aborted) abort();
+          }
+        },
+        async pull(controller) {
+          try {
+            const result = await read();
+            if (result.done) { cleanup(); controller.close(); }
+            else controller.enqueue(result.value);
+          } catch (error) { cleanup(); controller.error(error); }
+        },
+        async cancel(reason) { cleanup(); await source.cancel(reason); },
+      }, { highWaterMark: 0 });
+    }
+
     [Symbol.asyncIterator]() {
       return {
         next: () => this.read(),
@@ -286,6 +335,7 @@ const BOOTSTRAP_SOURCE: &str = r#"
   });
 
   const modules = Object.freeze({
+    'kunlun:web': asModule(Object.fromEntries(['console', 'TextEncoder', 'TextDecoder', 'URL', 'URLSearchParams', 'ReadableStream', 'WritableStream', 'TransformStream', 'ByteLengthQueuingStrategy', 'CountQueuingStrategy', 'crypto', 'AbortController', 'AbortSignal'].map(name => [name, globalThis[name]]))),
     'kunlun:fs': fs,
     'kunlun:http': http,
   });

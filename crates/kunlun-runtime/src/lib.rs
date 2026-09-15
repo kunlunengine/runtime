@@ -5,7 +5,9 @@ mod host;
 mod module_sources;
 mod modules;
 mod source_maps;
+mod web;
 pub use module_sources::ModuleSources;
+pub use web::ConsoleRecord;
 
 pub use builtins::{
     BUILTIN_MODULES, BuiltinModuleDescriptor, TYPESCRIPT_DECLARATIONS, is_builtin_specifier,
@@ -24,6 +26,7 @@ use kunlun_jsc::{DeferredPromise, JscError, JscVm, ModuleState, ResourcePolicy};
 use std::cell::{Cell, RefCell};
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
+use std::io::Write;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -121,6 +124,7 @@ impl From<JscError> for RuntimeError {
 /// Promise handles are kept in dispatcher fields declared before the VM so
 /// they are dropped before the JSC context.
 pub struct TokioIsolate {
+    console_sink: web::ConsoleSink,
     timers: TimerDispatcher,
     host: host::HostDispatcher,
     vm: JscVm,
@@ -166,15 +170,30 @@ impl TokioIsolate {
             });
         })?;
         host.install(&vm)?;
+        let console_sink: web::ConsoleSink = Rc::new(RefCell::new(Box::new(|record| {
+            // Console output is best-effort; stderr failures must not panic.
+            let _ = writeln!(
+                std::io::stderr().lock(),
+                "{}",
+                serde_json::to_string(record).expect("console record serializes")
+            );
+        })));
+        web::install(&mut vm, Rc::clone(&console_sink))?;
         builtins::install_builtin_modules(&mut vm)?;
 
         Ok(Self {
+            console_sink,
             timers,
             host,
             vm,
             module_cancelled: Cell::new(false),
             shutting_down: Rc::new(Cell::new(false)),
         })
+    }
+
+    /// Replaces the synchronous, isolate-thread console sink. Records are bounded.
+    pub fn set_console_sink(&mut self, sink: impl Fn(&ConsoleRecord) + 'static) {
+        *self.console_sink.borrow_mut() = Box::new(sink);
     }
 
     fn ensure_usable(&self) -> Result<(), RuntimeError> {

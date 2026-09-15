@@ -26,6 +26,7 @@ use kunlun_jsc::{DeferredPromise, JscError, JscVm, ModuleState, ResourcePolicy};
 use std::cell::{Cell, RefCell};
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
+use std::io::Write;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -170,7 +171,9 @@ impl TokioIsolate {
         })?;
         host.install(&vm)?;
         let console_sink: web::ConsoleSink = Rc::new(RefCell::new(Box::new(|record| {
-            eprintln!(
+            // Console output is best-effort; stderr failures must not panic.
+            let _ = writeln!(
+                std::io::stderr().lock(),
                 "{}",
                 serde_json::to_string(record).expect("console record serializes")
             );

@@ -86,6 +86,10 @@ declaration, denial test, and completion-path test.
 
 ## Foundational Web APIs
 
-`kunlun:web` exports the global Web APIs listed in [runtime profile v1](./runtime-profile-v1.md).
+`kunlun:web` exports only the following Web APIs from [runtime profile v1](./runtime-profile-v1.md):
+`console`, `TextEncoder`, `TextDecoder`, `URL`, `URLSearchParams`, `ReadableStream`,
+`WritableStream`, `TransformStream`, `ByteLengthQueuingStrategy`, `CountQueuingStrategy`,
+`crypto`, `AbortController`, and `AbortSignal`. The profile's reader/controller classes are
+available as globals only, not as module exports.
 Host `ByteStream.toReadableStream()` integrates with standard piping and backpressure.
 These primitives require no additional capabilities; I/O still uses the existing grants.

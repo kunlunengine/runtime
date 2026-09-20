@@ -40,6 +40,12 @@ impl JscVm {
         std::mem::take(&mut *self.rejections.borrow_mut())
     }
 
+    /// Number of copied diagnostics retained until a handled transition or VM
+    /// destruction. This does not include drained delivery buffers or JS roots.
+    pub fn reported_rejection_count(&self) -> usize {
+        self.reported_rejections.borrow().len()
+    }
+
     /// Stable identity for diagnostics, independent of pointer reuse or names.
     pub fn isolate_id(&self) -> u64 {
         self.context.isolate_id
@@ -81,11 +87,11 @@ unsafe extern "C" fn collect_rejection(
                 sink.vm
                     .reported_rejections
                     .borrow_mut()
-                    .insert(id, exception.clone());
+                    .unhandled(id, exception.clone());
                 exception
             }
             PromiseRejectionTransition::Handled => {
-                let Some(exception) = sink.vm.reported_rejections.borrow_mut().remove(&id) else {
+                let Some(exception) = sink.vm.reported_rejections.borrow_mut().handled(id) else {
                     return sys::KUNLUN_JSC_STATUS_INVALID_STATE;
                 };
                 exception

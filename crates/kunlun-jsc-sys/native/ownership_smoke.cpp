@@ -2,6 +2,7 @@
 #include "external_bytes.hpp"
 
 #include <cassert>
+#include <cstdio>
 #include <cstring>
 #include <limits>
 #include <stdexcept>
@@ -9,6 +10,12 @@
 #include <vector>
 
 using kunlun::jsc::detail::ExternalBytes;
+
+extern "C" uint64_t kunlun_jsc_test_live_value_roots();
+extern "C" uint64_t kunlun_jsc_test_live_module_handles();
+#if defined(KUNLUN_JSC_BUNDLED)
+extern "C" uint64_t kunlun_jsc_test_module_registrations();
+#endif
 
 struct Context {
     kunlun_jsc_context_group *group = nullptr;
@@ -22,6 +29,14 @@ struct Context {
     {
         assert(kunlun_jsc_context_release(raw) == 0);
         assert(kunlun_jsc_context_group_release(group) == 0);
+        // Each test owns one isolate at a time. Check every shutdown, not
+        // merely the process exit, so later cycles cannot hide leaked state.
+        assert(kunlun_jsc_test_live_value_roots() == 0);
+        assert(kunlun_jsc_test_live_module_handles() == 0);
+        assert(ExternalBytes::live_allocations == 0);
+#if defined(KUNLUN_JSC_BUNDLED)
+        assert(kunlun_jsc_test_module_registrations() == 0);
+#endif
     }
 };
 
@@ -123,6 +138,26 @@ static void test_watchdog()
     assert(kunlun_jsc_context_group_clear_watchdog(ctx.group) == 0);
 }
 
+static void test_rooted_values()
+{
+    for (unsigned round = 0; round < 32; ++round) {
+        Context ctx;
+        uint8_t input = 42, output = 0;
+        kunlun_jsc_object *buffer = nullptr;
+        const kunlun_jsc_value *exception = nullptr;
+        assert(kunlun_jsc_array_buffer_create_copy(ctx.raw, &input, 1, &buffer, &exception) == 0);
+        assert(kunlun_jsc_value_protect(ctx.raw, buffer) == 0);
+        assert(kunlun_jsc_value_protect(ctx.raw, buffer) == 0);
+        assert(kunlun_jsc_test_live_value_roots() == 2);
+        assert(kunlun_jsc_value_unprotect(ctx.raw, buffer) == 0);
+        assert(kunlun_jsc_context_collect_garbage(ctx.raw) == 0);
+        assert(kunlun_jsc_array_buffer_read(ctx.raw, buffer, 0, &output, 1, &exception) == 0);
+        assert(output == input && ExternalBytes::live_allocations == 1);
+        assert(kunlun_jsc_test_live_value_roots() == 1);
+        assert(kunlun_jsc_value_unprotect(ctx.raw, buffer) == 0);
+    }
+}
+
 static void test_watchdog_rejects_reentrant_configuration()
 {
     Context ctx;
@@ -206,6 +241,14 @@ static kunlun_jsc_status rejection_callback(void *data, uint64_t id, uint32_t tr
 {
     auto &state = *static_cast<Rejections *>(data);
     assert(reason && source);
+    // Engine-owned rejection records must root borrowed reasons throughout
+    // notification, including collections initiated by host conversion code.
+    assert(kunlun_jsc_context_collect_garbage(state.context->raw) == 0);
+    kunlun_jsc_string *description = nullptr;
+    const kunlun_jsc_value *exception = nullptr;
+    assert(kunlun_jsc_value_to_string(state.context->raw, reason, &description, &exception) == 0);
+    assert(description && !exception);
+    assert(kunlun_jsc_string_release(description) == 0);
     uint8_t pending = 9;
     assert(kunlun_jsc_microtask_checkpoint(state.context->raw, ignore_rejection, nullptr, &pending) == KUNLUN_JSC_STATUS_INVALID_STATE);
     assert(pending == 0);
@@ -283,7 +326,6 @@ static void test_microtasks()
     }
 }
 
-extern "C" uint64_t kunlun_jsc_test_live_module_handles();
 static unsigned module_mode = 0;
 static unsigned module_fetches = 0;
 static kunlun_jsc_status module_callback(kunlun_jsc_context *context, uint32_t operation,
@@ -316,6 +358,7 @@ static void test_native_modules()
             assert(kunlun_jsc_module_load(ctx.raw, url.raw, &module, &exception) == 0);
             assert(module && !exception);
             assert(kunlun_jsc_test_live_module_handles() == 1);
+            assert(kunlun_jsc_test_live_value_roots() == 1);
             checkpoint(ctx);
             assert(kunlun_jsc_context_collect_garbage(ctx.raw) == 0);
             uint32_t state = 0;
@@ -345,6 +388,18 @@ static void test_native_modules()
             assert(kunlun_jsc_module_release(module) == 0);
             assert(kunlun_jsc_test_live_module_handles() == 0);
         }
+        // Abandon a graph before its first checkpoint. Its shim handle is
+        // released while engine jobs still own graph/rejection state.
+        Context ctx;
+        module_mode = 0;
+        assert(kunlun_jsc_modules_install(ctx.raw, module_callback) == 0);
+        String url("test:///abandoned.mjs");
+        kunlun_jsc_module *module = nullptr;
+        const kunlun_jsc_value *exception = nullptr;
+        assert(kunlun_jsc_module_load(ctx.raw, url.raw, &module, &exception) == 0);
+        assert(kunlun_jsc_module_release(module) == 0);
+        assert(kunlun_jsc_microtasks_stop(ctx.raw) == 0);
+        assert(kunlun_jsc_microtasks_stop(ctx.raw) == 0);
     }
 }
 #endif
@@ -353,6 +408,7 @@ int main()
 {
     test_watchdog();
     test_watchdog_rejects_reentrant_configuration();
+    test_rooted_values();
 #if defined(KUNLUN_JSC_BUNDLED) && defined(KUNLUN_JSC_TESTING)
     test_allocation_pressure_watchdog();
     test_native_modules();
@@ -442,4 +498,9 @@ int main()
         assert(kunlun_jsc_object_make_function_with_data(ctx.raw, name.raw, nullptr, &calls, &unused, &exception) == KUNLUN_JSC_STATUS_INVALID_ARGUMENT);
     }
     assert(ExternalBytes::live_allocations == 0);
+#if defined(KUNLUN_JSC_BUNDLED)
+    std::puts("PASS pinned M2 ASan/UBSan: modules, roots, loader callbacks, rejection records, explicit microtasks, resource limits, repeated teardown");
+#else
+    std::puts("PASS system baseline ASan/UBSan: roots, buffers, host callbacks, watchdog, teardown; M2 NOT RUN");
+#endif
 }

@@ -144,33 +144,22 @@ unrelated tools.
 ## When to run the artifact workflows
 
 `Build pinned JSC for macOS` (`jsc-macos.yml`) and `Build pinned JSC for Linux`
-(`jsc-linux.yml`) are path-filtered artifact gates, not required checks for every pull request. A
-pull request that changes the JSC crates, runtime corpus, distribution inputs/tooling, workspace
-lockfiles, or the platform workflow runs one cached build for both architectures on that platform.
-The workflows also run weekly on separate days and can be dispatched manually. Weekly and default
-manual runs require an independent cold rebuild; pull-request runs do not generate signed release
-evidence because untrusted pull-request jobs have read-only credentials.
+(`jsc-linux.yml`) are reusable platform builders called by **M2 exit gate** (`m2.yml`).
+The combined workflow runs on every PR, main push, and merge-queue commit, without path filters.
+It requires both architectures on both platforms plus Miri, and rejects missing platform evidence.
+This intentionally replaces the M1 path-filtered policy: system-framework-only checks cannot prove
+M2 module/event-loop compatibility. See the [M2 exit-gate procedure](./m2-exit-gate.md) for required
+check configuration, exact evidence identities, leak coverage, and immutable-commit reproduction.
 
-The normal `Check Rust` workflow remains the bounded merge-queue gate. It validates the manifest,
-artifact tooling, fail-closed offline Cargo behavior, Rust code, macOS system-framework corpus,
-ASan/UBSan ownership harness, and Miri ownership invariants automatically. The expensive artifact
-workflows are intentionally not required for unrelated paths; GitHub path-filtered workflows must
-not be configured as a repository-wide required check because a skipped workflow would remain
-pending.
+`Check Rust` remains the fast baseline for manifest/tooling validation, offline Cargo behavior,
+Rust linting, macOS system-framework tests, and the explicit system ASan/UBSan harness.
+The combined gate runs weekly and can be dispatched manually; weekly and default manual runs
+require independent cold rebuilds and signed evidence. PR/push/merge-queue runs build once and
+do not attest release artifacts. Individual builders remain manually dispatchable for diagnosis,
+but an individual platform run is not a complete M2 exit gate.
 
-| Change or purpose | macOS builder | Linux builder | When / mode |
-| --- | --- | --- | --- |
-| Host/CLI code or documentation unrelated to the JSC boundary | No | No | Normal PR checks are sufficient. |
-| Rust JSC bindings, pinned-backend selection, or the shared binding corpus | Yes | Yes | Path-filtered PR runs build once; use release validation on the final candidate. |
-| WebKit revision, patches, shared engine flags, C ABI/shim, licenses, or shared packaging logic | Yes | Yes | Path-filtered PR runs build once; release validation is mandatory before accepting new artifacts. |
-| macOS build/cache workflow, Xcode/SDK, or macOS deployment settings only | Yes | No | Validate the affected platform; use release mode for final artifact/build-input changes. |
-| Linux build/cache workflow, OCI/APT toolchain, ELF policy, or glibc baseline only | No | Yes | Validate the affected platform; use release mode for final artifact/build-input changes. |
-| Publish a four-target release or refresh release evidence | Yes | Yes | Maintainer runs release validation from the same reviewed ref/commit for both workflows. |
-
-The relevant platform means **both architectures**: macOS builds arm64 and Intel on the pinned
-Apple Silicon Xcode image; Linux builds arm64 and x64 on matching native runners. If a shared
-manifest edit changes only one platform's toolchain, run that platform; a shared JSC flag/revision
-change affects both. A documentation-only workflow/runbook edit does not require an engine rebuild.
+macOS builds arm64 and Intel on the pinned Apple Silicon Xcode image and executes Intel binaries
+under Rosetta; Linux builds and tests arm64 and x64 on matching native runners.
 
 Both workflows offer the same manual input and apply equivalent modes to automatic events:
 
@@ -189,7 +178,7 @@ In GitHub, open **Actions → Build pinned JSC for macOS / Linux → Run workflo
 candidate branch/tag, and uncheck `compare_rebuild` for fast validation. The CLI equivalent is:
 
 ```bash
-# Candidate branch: run only the platform(s) selected by the table above.
+# Candidate branch: diagnose an individual platform if needed.
 gh workflow run jsc-macos.yml --ref YOUR_BRANCH -f compare_rebuild=false
 gh workflow run jsc-linux.yml --ref YOUR_BRANCH -f compare_rebuild=false
 
@@ -198,6 +187,9 @@ reviewed_tag=YOUR_IMMUTABLE_REVIEWED_TAG
 gh workflow run jsc-macos.yml --ref "$reviewed_tag" -f compare_rebuild=true
 gh workflow run jsc-linux.yml --ref "$reviewed_tag" -f compare_rebuild=true
 ```
+
+For M2, dispatch `gh workflow run m2.yml --ref "$reviewed_tag" -f compare_rebuild=true`
+instead: it calls both builders at the same commit and aggregates all evidence.
 
 Both build scripts run the [shim ownership ASan/UBSan corpus](./jsc-binding.md#ownership-verification)
 against the freshly built engine before packaging, without instrumenting release libraries. Changes
@@ -227,7 +219,7 @@ python3 distribution/jsc/scripts/test_cargo_backends.py
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --no-default-features --features system-jsc -- -D warnings
 cargo test --workspace --no-default-features --features system-jsc
-distribution/jsc/scripts/test-native-ownership.sh
+distribution/jsc/scripts/test-native-ownership.sh --system
 cargo run -p kunlun-runtime --no-default-features --features system-jsc -- doctor
 cargo +nightly miri test -p xtask jsc_ownership
 ```

@@ -4,6 +4,9 @@ mod jsc_backend;
 #[cfg(test)]
 #[path = "../../crates/kunlun-jsc/src/ownership.rs"]
 mod jsc_ownership;
+#[cfg(test)]
+#[path = "../../crates/kunlun-jsc/src/rejection_ledger.rs"]
+mod jsc_rejection_ledger;
 
 mod jsc_manifest;
 

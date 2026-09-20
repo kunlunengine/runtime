@@ -255,6 +255,42 @@ mod tests {
     }
 
     #[test]
+    fn failed_clone_keeps_the_original_root_and_context_alive() {
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let owner = owner(Rc::clone(&log));
+        let raw = NonNull::<u8>::dangling().as_ptr();
+        let first =
+            ProtectedHandle::try_new(Rc::clone(&owner), raw, protect, unprotect, "null").unwrap();
+        owner.reject_next_protect.set(true);
+        assert_eq!(first.try_clone(protect).err(), Some("protect failed"));
+        assert_eq!(owner.protect_attempts.get(), 2);
+        assert_eq!(owner.unprotects.get(), 0);
+        assert_eq!(Rc::strong_count(&owner), 2);
+        drop(owner);
+        drop(first);
+        assert_eq!(&*log.borrow(), &["unprotect", "owner"]);
+    }
+
+    #[test]
+    fn null_handles_never_acquire_release_obligations() {
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let owner = owner(Rc::clone(&log));
+        // SAFETY: a null handle creates no owner and never calls the releaser.
+        assert!(unsafe { OwnedHandle::from_raw(std::ptr::null_mut(), release_resource) }.is_none());
+        let result = ProtectedHandle::try_new(
+            Rc::clone(&owner),
+            std::ptr::null(),
+            protect,
+            unprotect,
+            "null",
+        );
+        assert_eq!(result.err(), Some("null"));
+        assert_eq!(owner.protect_attempts.get(), 0);
+        assert_eq!(owner.unprotects.get(), 0);
+        assert_eq!(Rc::strong_count(&owner), 1);
+    }
+
+    #[test]
     fn unprotect_runs_before_the_retained_owner_is_released() {
         let log = Rc::new(RefCell::new(Vec::new()));
         let owner = owner(Rc::clone(&log));

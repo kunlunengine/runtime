@@ -151,14 +151,37 @@ JSClassRef callback_class()
     return klass;
 }
 
+#if defined(KUNLUN_JSC_TESTING)
+static std::atomic<uint64_t> live_value_roots { 0 };
+extern "C" uint64_t kunlun_jsc_test_live_value_roots() { return live_value_roots.load(); }
+#endif
+
+// Count protection obligations, not distinct values: independent owners may
+// protect the same value. Test-only observability adds no distributed ABI.
+void protect_value(JSContextRef context, JSValueRef value)
+{
+    JSValueProtect(context, value);
+#if defined(KUNLUN_JSC_TESTING)
+    ++live_value_roots;
+#endif
+}
+
+void unprotect_value(JSContextRef context, JSValueRef value)
+{
+    JSValueUnprotect(context, value);
+#if defined(KUNLUN_JSC_TESTING)
+    --live_value_roots;
+#endif
+}
+
 struct ScopedRoot {
     JSContextRef context;
     JSValueRef value;
     ScopedRoot(JSContextRef context, JSValueRef value) : context(context), value(value)
     {
-        JSValueProtect(context, value);
+        protect_value(context, value);
     }
-    ~ScopedRoot() { JSValueUnprotect(context, value); }
+    ~ScopedRoot() { unprotect_value(context, value); }
 };
 
 JSValueRef callback_bridge(
@@ -796,7 +819,7 @@ kunlun_jsc_status kunlun_jsc_value_protect(
     return guard([&] {
         if (!context || !value)
             return KUNLUN_JSC_STATUS_INVALID_ARGUMENT;
-        JSValueProtect(opaque_cast<JSContextRef>(context), opaque_cast<JSValueRef>(value));
+        protect_value(opaque_cast<JSContextRef>(context), opaque_cast<JSValueRef>(value));
         return KUNLUN_JSC_STATUS_OK;
     });
 }
@@ -808,7 +831,7 @@ kunlun_jsc_status kunlun_jsc_value_unprotect(
     return guard([&] {
         if (!context || !value)
             return KUNLUN_JSC_STATUS_INVALID_ARGUMENT;
-        JSValueUnprotect(opaque_cast<JSContextRef>(context), opaque_cast<JSValueRef>(value));
+        unprotect_value(opaque_cast<JSContextRef>(context), opaque_cast<JSValueRef>(value));
         return KUNLUN_JSC_STATUS_OK;
     });
 }

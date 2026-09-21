@@ -5,6 +5,8 @@
 mod native;
 #[cfg(any(kunlun_jsc_native, test))]
 mod ownership;
+#[cfg(any(kunlun_jsc_native, test))]
+mod rejection_ledger;
 
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};

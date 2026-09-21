@@ -16,6 +16,10 @@ path = "src/lib.rs"
 name = "kunlun-runtime"
 path = "src/main.rs"
 
+[[test]]
+name = "m2_conformance"
+required-features = ["bundled-jsc"]
+
 [dependencies]
 getrandom = "0.4.3"
 sha2.workspace = true

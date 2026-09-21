@@ -51,11 +51,11 @@
       "tools": [
         {
           "name": "xcode",
-          "version": "27.0 (27A5252f)"
+          "version": "27.0 (27A266a)"
         },
         {
           "name": "apple-clang",
-          "version": "21.0.0 (clang-2100.3.33.1)"
+          "version": "21.0.0 (clang-2100.3.34.2)"
         },
         {
           "name": "macos-sdk",

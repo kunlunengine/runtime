@@ -381,6 +381,16 @@ impl HostDispatcher {
         Rc::clone(&self.accepting)
     }
 
+    pub(crate) fn resource_counts(&self) -> crate::RuntimeResourceCounts {
+        crate::RuntimeResourceCounts {
+            pending_host_calls: self.pending.borrow().len(),
+            request_ids: self.request_ids.borrow().len(),
+            streams: self.streams.borrow().len(),
+            active_tasks: self.tasks.active.load(Ordering::Acquire),
+            ..crate::RuntimeResourceCounts::default()
+        }
+    }
+
     pub(crate) fn finish_evaluation(&self, evaluation_id: u64) {
         if self.active_evaluation.get() == Some(evaluation_id) {
             self.active_evaluation.set(None);
@@ -1203,8 +1213,10 @@ mod checkpoint_tests {
             .unwrap();
         runtime.block_on(async {
             let tracker = TaskTracker::default();
-            tracker.spawn_blocking(|| std::thread::sleep(Duration::from_millis(50)));
+            let (release_tx, release_rx) = std::sync::mpsc::channel();
+            tracker.spawn_blocking(move || release_rx.recv().unwrap());
             assert!(!tracker.wait_empty(Duration::from_millis(1)).await);
+            release_tx.send(()).unwrap();
             assert!(tracker.wait_empty(Duration::from_secs(1)).await);
         });
     }

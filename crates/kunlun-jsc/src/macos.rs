@@ -240,7 +240,7 @@ impl ContextGroup {
         let vm = JscVm {
             callbacks: RefCell::new(Vec::new()),
             rejections: RefCell::new(Vec::new()),
-            reported_rejections: RefCell::new(HashMap::new()),
+            reported_rejections: RefCell::new(crate::rejection_ledger::RejectionLedger::new()),
             context: Rc::new(ContextInner {
                 handle,
                 _group: Rc::clone(&self.inner),
@@ -268,7 +268,7 @@ impl ContextGroup {
 pub struct JscVm {
     callbacks: RefCell<Vec<callbacks::OwnedHostFunction>>,
     rejections: RefCell<Vec<crate::PromiseRejection>>,
-    reported_rejections: RefCell<HashMap<u64, JscError>>,
+    reported_rejections: RefCell<crate::rejection_ledger::RejectionLedger<JscError>>,
     context: Rc<ContextInner>,
 }
 

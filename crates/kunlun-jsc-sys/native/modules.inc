@@ -25,7 +25,7 @@ struct kunlun_jsc_module {
     ~kunlun_jsc_module()
     {
         if (promise) {
-            JSValueUnprotect(context, promise);
+            unprotect_value(context, promise);
 #if defined(KUNLUN_JSC_TESTING)
             --live_module_handles;
 #endif
@@ -45,6 +45,10 @@ namespace {
 // Function pointers have static code lifetime. No caller-owned user_data is
 // stored here. The Rust trampoline retains its own isolate-local state.
 thread_local std::unordered_map<JSGlobalContextRef, kunlun_jsc_module_callback> module_callbacks;
+
+#if defined(KUNLUN_JSC_TESTING)
+extern "C" uint64_t kunlun_jsc_test_module_registrations() { return module_callbacks.size(); }
+#endif
 
 JSValueRef module_bridge(void *, JSContextRef context, uint32_t operation,
     JSValueRef key, JSValueRef referrer, JSValueRef *exception) noexcept
@@ -131,7 +135,7 @@ kunlun_jsc_status kunlun_jsc_module_load(kunlun_jsc_context *context, const kunl
         *out_exception = opaque_cast<const kunlun_jsc_value *>(exception);
         if (!promise || exception)
             return exception ? KUNLUN_JSC_STATUS_JS_EXCEPTION : KUNLUN_JSC_STATUS_OUT_OF_MEMORY;
-        JSValueProtect(native, promise);
+        protect_value(native, promise);
         module->promise = promise;
 #if defined(KUNLUN_JSC_TESTING)
         ++live_module_handles;
@@ -164,8 +168,8 @@ kunlun_jsc_status kunlun_jsc_module_evaluate(kunlun_jsc_module *module, const ku
         *out_exception = opaque_cast<const kunlun_jsc_value *>(exception);
         if (!promise || exception)
             return exception ? KUNLUN_JSC_STATUS_JS_EXCEPTION : KUNLUN_JSC_STATUS_OUT_OF_MEMORY;
-        JSValueProtect(module->context, promise);
-        JSValueUnprotect(module->context, module->promise);
+        protect_value(module->context, promise);
+        unprotect_value(module->context, module->promise);
         module->promise = promise;
         module->evaluating = true;
         return KUNLUN_JSC_STATUS_OK;

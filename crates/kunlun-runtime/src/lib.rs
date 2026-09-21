@@ -66,6 +66,18 @@ pub enum ShutdownOutcome {
     Forced,
 }
 
+/// Copied counts of host-owned resources, independent of engine heap telemetry.
+/// Worker counts may change concurrently; after graceful shutdown all counts
+/// must be zero. These are not process-wide allocator or JavaScript GC counts.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct RuntimeResourceCounts {
+    pub pending_timers: usize,
+    pub pending_host_calls: usize,
+    pub request_ids: usize,
+    pub streams: usize,
+    pub active_tasks: usize,
+}
+
 /// A thread-affine, cloneable stop-admission handle. Signal handlers should
 /// request shutdown before dropping an active evaluation future.
 #[derive(Clone)]
@@ -293,6 +305,13 @@ impl TokioIsolate {
 
     pub fn heap_statistics(&self) -> Result<HeapStatistics, RuntimeError> {
         self.vm.heap_statistics().map_err(Into::into)
+    }
+
+    pub fn resource_counts(&self) -> RuntimeResourceCounts {
+        RuntimeResourceCounts {
+            pending_timers: self.timers.pending.borrow().len(),
+            ..self.host.resource_counts()
+        }
     }
 
     pub fn shutdown_handle(&self) -> ShutdownHandle {
@@ -891,17 +910,29 @@ mod tests {
         let runtime = test_runtime();
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
+        let received = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let server_received = std::sync::Arc::clone(&received);
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
         let server = thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
             let mut request = [0_u8; 1024];
             let _ = stream.read(&mut request);
-            thread::sleep(Duration::from_millis(100));
+            server_received.store(true, std::sync::atomic::Ordering::Release);
+            release_rx.recv().unwrap();
             let _ = stream
                 .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok");
         });
         let permissions = HostPermissions::none().allow_net_host("127.0.0.1");
         let mut isolate =
             TokioIsolate::new_with_permissions("abort-host-call-test", permissions).unwrap();
+        isolate
+            .vm
+            .install_global_callback("requestArrived", move |_| {
+                Ok(kunlun_jsc::CallbackReturn::Boolean(
+                    received.load(std::sync::atomic::Ordering::Acquire),
+                ))
+            })
+            .unwrap();
         let url = serde_json::to_string(&format!("http://{address}/slow")).unwrap();
         let value = runtime
             .block_on(isolate.evaluate_async_body(
@@ -912,7 +943,7 @@ mod tests {
                      let events = 0;\n\
                      controller.signal.addEventListener('abort', () => events++);\n\
                      const request = http.request({url}, {{ signal: controller.signal }});\n\
-                     await sleep(5);\n\
+                     while (!requestArrived()) await sleep(0);\n\
                      controller.abort(reason);\n\
                      controller.abort(new Error('ignored'));\n\
                      try {{ await request; }} catch (error) {{\n\
@@ -922,6 +953,7 @@ mod tests {
                 "test:///abort-host-call.js",
             ))
             .unwrap();
+        release_tx.send(()).unwrap();
         assert_eq!(value, "true:true:1");
         assert_eq!(isolate.host.pending_count(), 0);
         let shutdown = runtime
@@ -1138,6 +1170,7 @@ mod tests {
         let runtime = test_runtime();
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
+        let (consumed_tx, consumed_rx) = std::sync::mpsc::channel();
         let server = thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
             let mut request = [0_u8; 1024];
@@ -1147,12 +1180,22 @@ mod tests {
                     b"HTTP/1.1 206 Partial Content\r\nContent-Length: 11\r\nConnection: close\r\n\r\nhello ",
                 )
                 .unwrap();
-            thread::sleep(Duration::from_millis(5));
+            consumed_rx.recv().unwrap();
             stream.write_all(b"world").unwrap();
         });
         let permissions = HostPermissions::none().allow_net_host("127.0.0.1");
         let mut isolate =
             TokioIsolate::new_with_permissions("http-stream-test", permissions).unwrap();
+        let consumed_tx = RefCell::new(Some(consumed_tx));
+        isolate
+            .vm
+            .install_global_callback("notifyConsumed", move |_| {
+                if let Some(sender) = consumed_tx.borrow_mut().take() {
+                    sender.send(()).unwrap();
+                }
+                Ok(kunlun_jsc::CallbackReturn::Undefined)
+            })
+            .unwrap();
         let url = serde_json::to_string(&format!("http://{address}/stream")).unwrap();
         let value = runtime
             .block_on(isolate.evaluate_async_body(
@@ -1162,7 +1205,8 @@ mod tests {
                      let body = '';\n\
                      for await (const chunk of response.body) {{\n\
                        for (const byte of chunk) body += String.fromCharCode(byte);\n\
-                       await sleep(1);\n\
+                       notifyConsumed();\n\
+                       await sleep(0);\n\
                      }}\n\
                      return response.status + ':' + body;"
                 ),
@@ -1179,6 +1223,7 @@ mod tests {
         let runtime = test_runtime();
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
         let server = thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
             let mut request = [0_u8; 1024];
@@ -1186,7 +1231,8 @@ mod tests {
             stream
                 .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\n")
                 .unwrap();
-            thread::sleep(Duration::from_millis(100));
+            // No body can arrive until the client has observed cancellation.
+            release_rx.recv().unwrap();
             let _ = stream.write_all(b"late");
         });
         let permissions = HostPermissions::none().allow_net_host("127.0.0.1");
@@ -1202,13 +1248,13 @@ mod tests {
                      const response = await http.requestStream(\
                        {url}, {{ signal: controller.signal }});\n\
                      const reading = response.body.read();\n\
-                     await sleep(5);\n\
                      controller.abort(reason);\n\
                      try {{ await reading; }} catch (error) {{ return error === reason; }}"
                 ),
                 "test:///http-stream-abort.js",
             ))
             .unwrap();
+        release_tx.send(()).unwrap();
         server.join().unwrap();
         assert_eq!(value, "true");
         assert_eq!(isolate.host.pending_count(), 0);

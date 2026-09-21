@@ -1,19 +1,11 @@
 name: Build pinned JSC for macOS
 
 on:
-  pull_request:
-    branches: [main]
-    paths:
-      - '.github/workflows/jsc-macos.yml'
-      - 'Cargo.lock'
-      - 'Cargo.toml'
-      - 'crates/kunlun-jsc-sys/**'
-      - 'crates/kunlun-jsc/**'
-      - 'crates/kunlun-runtime/**'
-      - 'distribution/jsc/**'
-      - 'xtask/**'
-  schedule:
-    - cron: '17 3 * * 0'
+  workflow_call:
+    inputs:
+      compare_rebuild:
+        type: boolean
+        default: false
   workflow_dispatch:
     inputs:
       compare_rebuild:
@@ -113,9 +105,10 @@ jobs:
             --target "$TARGET" \
             --webkit-root "${{ steps.source.outputs.source_root }}" \
             --output "$output_root" \
-            --compilation-cache-dir "$RUNNER_TEMP/kunlun-jsc-xcode-cache-${TARGET}"
+            --compilation-cache-dir "$RUNNER_TEMP/kunlun-jsc-xcode-cache-${TARGET}" \
+            2>&1 | tee "$RUNNER_TEMP/m2-native-${TARGET}.txt"
 
-      - name: Run binding corpus against pinned artifact
+      - name: Run shared M2 exit corpus against pinned artifact
         shell: bash
         env:
           KUNLUN_JSC_DIST_DIR: ${{ steps.build.outputs.staging }}
@@ -123,16 +116,26 @@ jobs:
           DYLD_LIBRARY_PATH: ${{ steps.build.outputs.staging }}/lib
           MACOSX_DEPLOYMENT_TARGET: ${{ steps.build.outputs.deployment_target }}
         run: |
-          cargo test --workspace --features bundled-jsc --target "$TARGET"
-          cargo run -p kunlun-runtime --features bundled-jsc --target "$TARGET" -- doctor \
-            | tee "$RUNNER_TEMP/doctor-${TARGET}.txt"
-          grep -Fqx 'distribution: pinned Kunlun JSC artifact' "$RUNNER_TEMP/doctor-${TARGET}.txt"
-          grep -Fqx 'hermetic: true' "$RUNNER_TEMP/doctor-${TARGET}.txt"
-          grep -Fqx 'backend: bundled-jsc' "$RUNNER_TEMP/doctor-${TARGET}.txt"
-          grep -Fqx 'distribution mode: source-build' "$RUNNER_TEMP/doctor-${TARGET}.txt"
-          grep -Fqx "target: $TARGET" "$RUNNER_TEMP/doctor-${TARGET}.txt"
-          revision=$(jq -er '.source.revision' distribution/jsc/manifest.json)
-          grep -Fqx "engine revision: $revision" "$RUNNER_TEMP/doctor-${TARGET}.txt"
+          /usr/bin/python3 distribution/jsc/scripts/m2_gate.py run \
+            --target "$TARGET" --output "$RUNNER_TEMP/m2-${TARGET}" \
+            --native-log "$RUNNER_TEMP/m2-native-${TARGET}.txt"
+
+      - name: Preserve native boundary log
+        if: ${{ always() }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/m2-${TARGET}"
+          if [[ -f "$RUNNER_TEMP/m2-native-${TARGET}.txt" ]]; then
+            cp "$RUNNER_TEMP/m2-native-${TARGET}.txt" "$RUNNER_TEMP/m2-${TARGET}/native.txt"
+          fi
+
+      - name: Upload M2 platform evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: m2-${{ matrix.target }}
+          path: ${{ runner.temp }}/m2-${{ matrix.target }}/
+          if-no-files-found: error
+          retention-days: 30
 
       - name: Reclaim first-build intermediates
         if: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.compare_rebuild) }}
@@ -209,7 +212,7 @@ jobs:
   release-evidence:
     name: Attest ${{ matrix.target }}
     needs: build
-    if: ${{ github.event_name != 'pull_request' }}
+    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
     strategy:
       fail-fast: false
       matrix:

@@ -612,11 +612,13 @@ mod tests {
         let reentrant_owner = std::rc::Rc::clone(&owner);
         let reenter = vm
             .host_function("reenter", move |_| {
-                std::thread::sleep(Duration::from_millis(30));
                 let owner = reentrant_owner
                     .borrow()
                     .upgrade()
                     .ok_or_else(|| "callback owner was dropped".to_owned())?;
+                // Advance the outer deadline deterministically. Reentry must
+                // not replace it with a fresh timeout.
+                owner.context._group.resources.lock().deadline = Some(Instant::now());
                 let error = owner
                     .evaluate("for (;;) {}", "test:///nested-deadline.js")
                     .unwrap_err();

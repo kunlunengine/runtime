@@ -1,9 +1,26 @@
 # Execution and memory policy
 
-## One monotonic execution scope
+## Trusted bootstrap and application execution
 
-Every `TokioIsolate` evaluation opens one execution scope. Its deadline is calculated once from
-`std::time::Instant` and is never extended by nested calls. The same absolute deadline therefore
+After creating the JSC VM, `TokioIsolate` initializes runtime-owned host, Web/Streams, and built-in
+modules under one **30-second bootstrap scope**. Nested bootstrap evaluations share that deadline;
+it is not restarted for each built-in. The caller's heap limits remain active; bootstrap uses the
+smaller of the caller's watchdog interval and the default 10 ms interval, so a long application
+poll interval cannot postpone bootstrap interruption. Initialization checks the policy again before
+leaving the scope, and any terminal failure aborts construction. This bounds trusted initialization
+without charging it to a short application budget. Like application deadlines, interruption is
+observed at watchdog/checkpoint boundaries, not a hard real-time guarantee. It is not a preemptive
+timeout for VM creation or arbitrary blocking native code.
+
+Only after bootstrap succeeds does the constructor install the caller's application policy.
+The exact caller watchdog interval is restored along with the application deadline.
+`RuntimeLimits.execution_timeout` (and CLI `--execution-timeout-ms`) applies to application
+evaluations, not trusted bootstrap. No application code runs under the bootstrap budget. There is
+no public startup-timeout option in this profile, and bootstrap does not disable watchdog or heap
+enforcement. Invalid application limits still fail construction.
+
+Every `TokioIsolate` application evaluation opens one execution scope. Its deadline is calculated
+once from `std::time::Instant` and is never extended by nested calls. The same absolute deadline therefore
 covers classic evaluation, native module load/link/evaluate, top-level await, explicit microtask
 drains, JavaScript entered from host callbacks, and time spent waiting for a timer or host I/O.
 
@@ -70,5 +87,17 @@ Tests cover an infinite synchronous loop terminated at a monotonic deadline, can
 from another native thread after JavaScript has entered, first-terminal-reason races, async deadline
 cleanup with no later Promise settlement, invalid policy ordering, copied heap fields, hard-limit
 termination, C/C++ ABI layout and symbol linkage, and sanitizer execution of the watchdog boundary.
+Constructor regressions use a one-nanosecond application budget to reject accidental bootstrap
+accounting without a startup-speed assertion, then verify application deadline termination and
+non-reusability. Policy tests verify the bootstrap watchdog cap and restoration of the caller's
+interval. Pinned tests verify that a small heap budget either aborts initialization or rejects a
+retained application allocation; they do not assume a platform-specific baseline heap size.
+The native module deadline fixture observes entry through a Rust-owned console marker before
+accepting termination, so bootstrap or loader failure cannot masquerade as interrupted module code.
+Its one-second application budget leaves setup headroom; the separate constructor regression,
+not a narrow scheduling window, proves bootstrap separation. The helper's ten-second Tokio timeout
+only bounds asynchronous stalls: it cannot interrupt a synchronous JSC loop that never yields.
+The [M2 corpus runner](./m2-exit-gate.md) also uses an independent process-group watchdog to bound
+a native test if engine interruption itself fails.
 Pinned macOS and Linux artifact workflows rebuild WebKit with the reviewed telemetry extension and
 run the same Rust and native corpus on all four supported targets.

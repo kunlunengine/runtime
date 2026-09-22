@@ -37,6 +37,22 @@ Unavailable runners, Rosetta, toolchains, or capabilities block the gate rather 
 the matrix. `doctor` must report native ESM, explicit microtasks, deferred Promises, watchdog,
 heap telemetry, host streams/abort, Temporal, the correct backend/target/revision, and hermetic mode.
 
+## M2 closeout status
+
+The original M2 implementation issues are closed, but
+[#27](https://github.com/kunlunengine/runtime/issues/27) remains open pending exit review.
+The [post-merge run at `c277c6995d3518eb13af55843918df8caf62dcf9`](https://github.com/kunlunengine/runtime/actions/runs/35565536861)
+failed in the macOS x64 module-deadline fixture during trusted Streams bootstrap, despite the
+premerge run passing. [#46](https://github.com/kunlunengine/runtime/issues/46) tracks the bounded
+bootstrap/application scope correction and regression evidence.
+
+For closeout, retain the original four-target matrix and native/Miri checks. Record repeated
+targeted constructor/module/async deadline tests, a successful combined gate at the reviewed
+candidate, and the post-merge main run. Do not close the tracker on a local reproduction, a
+premerge pass alone, or repeated reruns of the old failure without an explained correction.
+Ordinary CI evidence and independent-rebuild/signed release validation remain distinct.
+M3 planning in [#47](https://github.com/kunlunengine/runtime/issues/47) is not M2 exit evidence.
+
 ## Corpus and leak coverage
 
 `crates/kunlun-runtime/tests/m2_conformance.rs` and `tests/fixtures/m2/` are the common corpus.

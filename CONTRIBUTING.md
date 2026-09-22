@@ -17,7 +17,10 @@ vulnerabilities according to the [security policy](./SECURITY.md), not in a publ
 4. Keep pull requests focused. A small change with explicit tests and reviewable invariants is
    preferred to a broad rewrite.
 
-Milestone 1 is the current focus. Good starting points are issues labeled `m1` and `help wanted`.
+M1 is complete. The current focus is [M2 closeout (#46)](https://github.com/kunlunengine/runtime/issues/46)
+and the evidence-backed handoff from [M2 (#27)](https://github.com/kunlunengine/runtime/issues/27)
+to [M3 planning (#47)](https://github.com/kunlunengine/runtime/issues/47). Follow the trackers'
+dependency order rather than treating merged feature issues as proof of a completed exit gate.
 
 ## Development Setup
 
@@ -46,18 +49,20 @@ On a supported macOS host, also run:
 
 ```bash
 cargo run -p kunlun-runtime --no-default-features --features system-jsc -- doctor
-distribution/jsc/scripts/test-native-ownership.sh
+distribution/jsc/scripts/test-native-ownership.sh --system
 ```
 
 If a platform-specific or sanitizer check cannot run locally, say so in the pull request and link
 the corresponding CI result.
 
-The pinned macOS/Linux JSC artifact workflows are manual, not required on every PR. Run the
-affected platform(s) when changing JSC bindings, native build inputs, or packaging; use
-`compare_rebuild=false` while iterating and the default `true` for release-candidate evidence.
-See [when to run the artifact workflows](./docs/jsc-distribution.md#when-to-run-the-artifact-workflows)
-for the change-to-platform matrix, cache behavior, and dispatch commands. Link the candidate SHA,
-mode, and relevant run results in the PR.
+The combined **M2 exit gate** runs the pinned macOS/Linux builders on every PR, main push, and
+merge-queue commit, including documentation-only changes. All four target reports, native checks,
+and Miri are required; a system-framework pass is developer feedback, not M2 exit evidence.
+Individual platform workflows remain manually dispatchable for diagnosis. Use
+`compare_rebuild=false` while iterating and the default `true` for release-candidate evidence;
+neither mode authorizes publication by itself. See the [exit-gate procedure](./docs/m2-exit-gate.md)
+and [artifact workflow policy](./docs/jsc-distribution.md#when-to-run-the-artifact-workflows).
+Link the candidate SHA, mode, and relevant run results in the PR.
 
 ## Engineering Expectations
 

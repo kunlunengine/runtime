@@ -1,6 +1,6 @@
 # Kunlun Runtime Roadmap
 
-Status date: 2026-09-05
+Status date: 2026-09-21
 
 This roadmap starts from the actual repository state, not from the aspirations in the core README.
 Before this revision the repository contained only a `Hello, world!` binary and no runtime
@@ -52,7 +52,7 @@ Exit gate: `cargo test --workspace`, `kunlun-runtime doctor`, synchronous/asynch
 paths, and a Tokio-to-JSC Promise resolution test pass on supported macOS builders. No ESM, Fetch,
 or runtime-compatibility claim is allowed at this milestone.
 
-### M1 — Reproducible JSC distribution and safe binding (current)
+### M1 — Reproducible JSC distribution and safe binding (complete)
 
 Goal: make the engine version controlled by Kunlun rather than by the host OS.
 
@@ -73,6 +73,8 @@ downloads an unaudited native archive implicitly.
 
 Goal: run real bundled server entrypoints rather than classic scripts.
 
+Status: implementation landed; exit verification pending (#27, #46).
+
 - [x] Engine-independent URL resolver for file, `kunlun:`, and generated modules (#28), with
   contextual errors, canonical cache keys, and Unicode/escaping/cycle/policy contract tests.
 - [x] Wire JSC static/dynamic module requests and source fetching through that resolver (#29).
@@ -84,14 +86,27 @@ Goal: run real bundled server entrypoints rather than classic scripts.
 - [x] Extend the host loop from timers to plain-data filesystem/HTTP completion messages.
 - [x] Add signals, cancellation/AbortSignal, bounded response/file streaming, and graceful shutdown.
 - [x] Execution deadlines, cooperative cancellation, heap telemetry, and out-of-memory policy (#32).
-- Console, text encoding, URL, streams, and crypto primitives required by the runtime profile.
+- [x] Console, text encoding, URL, streams, and crypto primitives in the documented runtime profile (#33).
 
 Exit gate: ESM/TLA/dynamic-import/Promise tests are deterministic, leak checks are clean, and a
 cancelled request cannot keep an isolate alive indefinitely.
 
+All original implementation items (#28–#34) have landed. The [M2 tracker](https://github.com/kunlunengine/runtime/issues/27)
+remains open: the post-merge gate at `c277c6995d3518eb13af55843918df8caf62dcf9` failed on macOS x64
+because trusted Streams bootstrap inherited a short application deadline.
+[The closeout follow-up](https://github.com/kunlunengine/runtime/issues/46) separates those bounded
+scopes and tracks revalidation. A premerge pass does not replace a green main baseline or the
+reviewed evidence required by [the M2 exit procedure](./docs/m2-exit-gate.md).
+
 ### M3 — Kunlun application runtime compatibility
 
 Goal: execute an artifact produced by `@kunlun-js/core` and a `BuildEngine`.
+
+Planning is tracked in [#47](https://github.com/kunlunengine/runtime/issues/47), with implementation
+slices #48–#53 and [Wuling SSR/docs qualification](https://github.com/kunlunengine/runtime/issues/42)
+as the first real consumer. Contract review can proceed during M2 closeout; broad implementation
+and qualification follow the restored M2 baseline. [Desktop/mobile work](https://github.com/kunlunengine/runtime/issues/43)
+is a separate, non-blocking workstream, not an additional server-runtime prerequisite.
 
 - Define `kunlun.runtime-manifest/v1` with engine ABI, entry URL, assets, capability declarations,
   source maps, compatibility flags, and integrity hashes.

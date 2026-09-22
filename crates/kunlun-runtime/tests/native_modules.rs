@@ -186,6 +186,7 @@ mod native {
         HostPermissions, RuntimeError, RuntimeLimits, TerminationReason, TokioIsolate,
     };
     use std::future::{Future, poll_fn};
+    use std::rc::Rc;
     use std::task::Poll;
     use std::time::Duration;
     use tokio::runtime::{Builder, Runtime};
@@ -306,9 +307,15 @@ mod native {
     #[test]
     fn deadline_interrupts_javascript_running_during_module_evaluation() {
         let f = Fixture::new();
-        f.write("entry.mjs", "for (;;) {} export const unreachable = true;");
+        f.write(
+            "entry.mjs",
+            "console.log('module-entered'); for (;;) {} export const unreachable = true;",
+        );
         let limits = RuntimeLimits {
-            execution_timeout: Duration::from_millis(25),
+            // Bootstrap separation has its own one-nanosecond regression.
+            // Leave setup headroom here so this test observes a running module,
+            // not an incidental timeout while scheduling/loading its entry.
+            execution_timeout: Duration::from_secs(1),
             watchdog_interval: Duration::from_millis(2),
             ..RuntimeLimits::default()
         };
@@ -319,11 +326,27 @@ mod native {
         )
         .unwrap();
         isolate.install_module_sources(f.sources()).unwrap();
+        // Observe entry through plain Rust state: the terminal VM cannot safely
+        // be re-entered to inspect a JS marker after the watchdog interrupts it.
+        let entered = Rc::new(std::cell::Cell::new(false));
+        let observed = Rc::clone(&entered);
+        isolate.set_console_sink(move |record| {
+            if record.message == "module-entered" {
+                observed.set(true);
+            }
+        });
 
         let error = run(&runtime(), &mut isolate, "entry.mjs").unwrap_err();
+        assert!(entered.get(), "deadline expired before entering the module");
         assert!(matches!(
             error,
             RuntimeError::Jsc(ref error)
+                if error.termination_reason() == Some(TerminationReason::DeadlineExceeded)
+        ));
+        assert_eq!(isolate.resource_counts(), Default::default());
+        assert!(matches!(
+            isolate.evaluate("'not-run'", "test:///after-module-deadline.js"),
+            Err(RuntimeError::Jsc(ref error))
                 if error.termination_reason() == Some(TerminationReason::DeadlineExceeded)
         ));
     }

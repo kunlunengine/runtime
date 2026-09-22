@@ -34,6 +34,9 @@ use tokio::time::Instant;
 
 static NEXT_EVALUATION_ID: AtomicU64 = AtomicU64::new(1);
 
+// Runtime-owned initialization is bounded independently of application work.
+const BOOTSTRAP_EXECUTION_TIMEOUT: Duration = Duration::from_secs(30);
+
 pub const EVENT_LOOP_BACKEND: &str = "caller-provided Tokio runtime";
 pub const DEFAULT_SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
 pub const DEFAULT_EXECUTION_TIMEOUT: Duration = Duration::from_secs(30);
@@ -43,6 +46,7 @@ pub const DEFAULT_HARD_HEAP_LIMIT: u64 = 256 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RuntimeLimits {
+    /// Per-application-evaluation budget; trusted bootstrap has its own bounded scope.
     pub execution_timeout: Duration,
     pub watchdog_interval: Duration,
     pub soft_heap_limit: u64,
@@ -57,6 +61,16 @@ impl Default for RuntimeLimits {
             soft_heap_limit: DEFAULT_SOFT_HEAP_LIMIT,
             hard_heap_limit: DEFAULT_HARD_HEAP_LIMIT,
         }
+    }
+}
+
+fn bootstrap_policy(application: ResourcePolicy) -> ResourcePolicy {
+    ResourcePolicy {
+        execution_timeout: Some(BOOTSTRAP_EXECUTION_TIMEOUT),
+        // A caller's long application polling interval must not postpone the
+        // bootstrap watchdog past its own deadline.
+        watchdog_interval: application.watchdog_interval.min(DEFAULT_WATCHDOG_INTERVAL),
+        ..application
     }
 }
 
@@ -163,12 +177,16 @@ impl TokioIsolate {
     ) -> Result<Self, RuntimeError> {
         let timers = TimerDispatcher::new();
         let mut vm = JscVm::new(name)?;
-        vm.set_resource_policy(ResourcePolicy {
+        let application_policy = ResourcePolicy {
             execution_timeout: Some(limits.execution_timeout),
             watchdog_interval: limits.watchdog_interval,
             soft_heap_limit: Some(limits.soft_heap_limit),
             hard_heap_limit: Some(limits.hard_heap_limit),
-        })?;
+        };
+        vm.set_resource_policy(bootstrap_policy(application_policy))?;
+        // All nested bootstrap evaluations share one deadline, retaining caller
+        // heap limits and an active watchdog. Never disable enforcement here.
+        let bootstrap = vm.execution_scope()?;
         let host = host::HostDispatcher::new(permissions)
             .map_err(|error| RuntimeError::HostInitialization(error.to_string()))?;
         let pending_timers = Rc::clone(&timers.pending);
@@ -192,6 +210,14 @@ impl TokioIsolate {
         })));
         web::install(&mut vm, Rc::clone(&console_sink))?;
         builtins::install_builtin_modules(&mut vm)?;
+        vm.enforce_resource_policy()?;
+        drop(bootstrap);
+        // Replacement is only legal when idle, and preserves terminal failures.
+        // Each later evaluation starts the caller's unmodified application budget.
+        vm.set_resource_policy(application_policy)?;
+        // Clock-range validation lives at scope entry. Exercise it without
+        // entering JS, then leave idle so the first evaluation gets a fresh deadline.
+        drop(vm.execution_scope()?);
 
         Ok(Self {
             console_sink,
@@ -659,6 +685,120 @@ mod tests {
             .unwrap();
         assert_eq!(first, "first");
         assert_eq!(second, "second");
+    }
+
+    #[test]
+    fn bootstrap_does_not_use_the_application_deadline() {
+        let mut isolate = TokioIsolate::new_with_permissions_and_limits(
+            "bootstrap-deadline-test",
+            HostPermissions::none(),
+            RuntimeLimits {
+                // Deliberately too short for bootstrap on any supported engine.
+                // No assertion depends on how quickly initialization completes.
+                execution_timeout: Duration::from_nanos(1),
+                ..RuntimeLimits::default()
+            },
+        )
+        .expect("trusted bootstrap must not inherit the application deadline");
+        assert_eq!(isolate.vm.deadline_remaining(), None);
+
+        let error = isolate
+            .evaluate("for (;;) {}", "test:///application-deadline.js")
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            RuntimeError::Jsc(ref error)
+                if error.termination_reason() == Some(TerminationReason::DeadlineExceeded)
+        ));
+        assert!(matches!(
+            isolate.evaluate("'not-run'", "test:///after-deadline.js"),
+            Err(RuntimeError::Jsc(ref error))
+                if error.termination_reason() == Some(TerminationReason::DeadlineExceeded)
+        ));
+    }
+
+    #[test]
+    fn bootstrap_does_not_accept_an_invalid_application_timeout() {
+        for execution_timeout in [Duration::ZERO, Duration::MAX] {
+            let error = TokioIsolate::new_with_permissions_and_limits(
+                "invalid-application-timeout",
+                HostPermissions::none(),
+                RuntimeLimits {
+                    execution_timeout,
+                    ..RuntimeLimits::default()
+                },
+            )
+            .err()
+            .expect("invalid application timeout must not produce an isolate");
+            assert!(error.to_string().contains("execution timeout"));
+        }
+    }
+
+    #[test]
+    fn bootstrap_caps_watchdog_polling_and_restores_the_application_interval() {
+        for interval in [Duration::from_millis(2), Duration::from_secs(60)] {
+            let application = ResourcePolicy {
+                execution_timeout: Some(Duration::from_nanos(1)),
+                watchdog_interval: interval,
+                soft_heap_limit: Some(DEFAULT_SOFT_HEAP_LIMIT),
+                hard_heap_limit: Some(DEFAULT_HARD_HEAP_LIMIT),
+            };
+            let bootstrap = bootstrap_policy(application);
+            assert_eq!(
+                bootstrap.execution_timeout,
+                Some(BOOTSTRAP_EXECUTION_TIMEOUT)
+            );
+            assert_eq!(
+                bootstrap.watchdog_interval,
+                interval.min(DEFAULT_WATCHDOG_INTERVAL)
+            );
+            assert_eq!(bootstrap.soft_heap_limit, application.soft_heap_limit);
+            assert_eq!(bootstrap.hard_heap_limit, application.hard_heap_limit);
+
+            let isolate = TokioIsolate::new_with_permissions_and_limits(
+                "bootstrap-watchdog-interval",
+                HostPermissions::none(),
+                RuntimeLimits {
+                    execution_timeout: Duration::from_nanos(1),
+                    watchdog_interval: interval,
+                    ..RuntimeLimits::default()
+                },
+            )
+            .unwrap();
+            assert_eq!(isolate.vm.resource_poll_interval(), Some(interval));
+            assert_eq!(isolate.vm.deadline_remaining(), None);
+        }
+    }
+
+    #[cfg(feature = "bundled-jsc")]
+    #[test]
+    fn caller_heap_limit_is_enforced_during_or_after_bootstrap() {
+        let result = TokioIsolate::new_with_permissions_and_limits(
+            "bootstrap-heap-limit",
+            HostPermissions::none(),
+            RuntimeLimits {
+                soft_heap_limit: 1,
+                hard_heap_limit: 1,
+                ..RuntimeLimits::default()
+            },
+        );
+        // Small bootstrap allocations can report zero accounted bytes after GC.
+        // Accept early heap denial, or force a retained allocation after handoff;
+        // do not assume a platform-specific baseline for the engine's telemetry.
+        let error = match result {
+            Err(error) => error,
+            Ok(mut isolate) => isolate
+                .evaluate(
+                    "globalThis.retained = new Uint8Array(1024 * 1024);",
+                    "test:///after-bootstrap-heap.js",
+                )
+                .unwrap_err(),
+        };
+        assert!(matches!(
+            error,
+            RuntimeError::Jsc(ref error)
+                if error.termination_reason() == Some(TerminationReason::MemoryLimitExceeded)
+        ));
     }
 
     #[test]

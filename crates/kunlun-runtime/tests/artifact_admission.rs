@@ -26,7 +26,7 @@ impl Fixture {
         for path in [
             "manifest.json",
             "server.mjs",
-            "chunks/问候% space?.mjs",
+            "chunks/问候% space.mjs",
             "maps/server.mjs.map",
             "assets/help/欢迎 组件.svg",
         ] {
@@ -105,14 +105,11 @@ fn portable_fixture_admits_unicode_escaped_paths_subpath_assets_and_snapshots() 
     );
     assert!(sources.register_source_map(&entry, "{}").is_err());
     let chunk = sources
-        .resolve(
-            "./chunks/%E9%97%AE%E5%80%99%25%20space%3F.mjs",
-            Some(&entry),
-        )
+        .resolve("./chunks/%E9%97%AE%E5%80%99%25%20space.mjs", Some(&entry))
         .unwrap();
     let expected_source = sources.fetch(&chunk).unwrap();
     fs::write(
-        fixture.0.join("chunks/问候% space?.mjs"),
+        fixture.0.join("chunks/问候% space.mjs"),
         "export const greeting = 'changed';",
     )
     .unwrap();
@@ -136,14 +133,46 @@ fn portable_fixture_admits_unicode_escaped_paths_subpath_assets_and_snapshots() 
     {
         use std::os::unix::fs::symlink;
         let outside = Fixture::new();
-        fs::remove_file(fixture.0.join("chunks/问候% space?.mjs")).unwrap();
+        fs::remove_file(fixture.0.join("chunks/问候% space.mjs")).unwrap();
         symlink(
             outside.0.join("server.mjs"),
-            fixture.0.join("chunks/问候% space?.mjs"),
+            fixture.0.join("chunks/问候% space.mjs"),
         )
         .unwrap();
         assert!(sources.fetch(&chunk).is_err());
     }
+}
+
+#[cfg(unix)]
+#[test]
+fn question_mark_filename_admits_when_created_at_runtime() {
+    let fixture = Fixture::new();
+    let question_path = fixture.0.join("chunks/问候% space?.mjs");
+    fs::rename(fixture.0.join("chunks/问候% space.mjs"), &question_path).unwrap();
+
+    let entry_path = fixture.0.join("server.mjs");
+    let entry = fs::read_to_string(&entry_path).unwrap().replace(
+        "%E9%97%AE%E5%80%99%25%20space.mjs",
+        "%E9%97%AE%E5%80%99%25%20space%3F.mjs",
+    );
+    assert!(entry.contains("%E9%97%AE%E5%80%99%25%20space%3F.mjs"));
+    fs::write(&entry_path, entry).unwrap();
+
+    let mut manifest = fixture.manifest();
+    manifest["files"][0]["sha256"] = json!(sha(&fs::read(&entry_path).unwrap()));
+    manifest["files"][1]["url"] = json!("./chunks/%E9%97%AE%E5%80%99%25%20space%3F.mjs");
+    manifest["files"][1]["sha256"] = json!(sha(&fs::read(&question_path).unwrap()));
+    fixture.write_manifest(&manifest);
+
+    let artifact = admit_artifact(&fixture.0, &fixture.policy()).unwrap();
+    let (entry, sources, _) = artifact.into_parts();
+    let chunk = sources
+        .resolve(
+            "./chunks/%E9%97%AE%E5%80%99%25%20space%3F.mjs",
+            Some(&entry),
+        )
+        .unwrap();
+    assert!(sources.fetch(&chunk).unwrap().contains("你好"));
 }
 
 #[test]

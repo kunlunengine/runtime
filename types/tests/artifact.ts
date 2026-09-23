@@ -1,3 +1,4 @@
+/// <reference path="../index.d.ts" />
 import type { RuntimeManifestV1 } from "../runtime-manifest-v1"
 import type { ServerEntryV1 } from "../server-entry-v1"
 
@@ -15,7 +16,7 @@ const manifest = {
 const entry: ServerEntryV1 = {
   fetch(request, env, executionContext) {
     executionContext.waitUntil(Promise.resolve(request.url))
-    return new Response(String(env.message ?? "hello"))
+    return { status: 200, body: null }
   },
 }
 

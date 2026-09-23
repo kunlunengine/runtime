@@ -39,19 +39,52 @@ heap telemetry, host streams/abort, Temporal, the correct backend/target/revisio
 
 ## M2 closeout status
 
-The original M2 implementation issues are closed, but
-[#27](https://github.com/kunlunengine/runtime/issues/27) remains open pending exit review.
-The [post-merge run at `c277c6995d3518eb13af55843918df8caf62dcf9`](https://github.com/kunlunengine/runtime/actions/runs/35565536861)
-failed in the macOS x64 module-deadline fixture during trusted Streams bootstrap, despite the
-premerge run passing. [#46](https://github.com/kunlunengine/runtime/issues/46) tracks the bounded
-bootstrap/application scope correction and regression evidence.
+Verified on 2026-09-22: implementation and the ordinary four-platform main gate are green.
+[#27](https://github.com/kunlunengine/runtime/issues/27) is closed;
+[#46](https://github.com/kunlunengine/runtime/issues/46) remains open with unchecked closeout
+criteria. This record supplies the restored baseline evidence, not an automatic issue closure
+or signed release approval.
+The same evidence is recorded in [#46's post-merge report](https://github.com/kunlunengine/runtime/issues/46#issuecomment-5775217809).
 
-For closeout, retain the original four-target matrix and native/Miri checks. Record repeated
-targeted constructor/module/async deadline tests, a successful combined gate at the reviewed
-candidate, and the post-merge main run. Do not close the tracker on a local reproduction, a
-premerge pass alone, or repeated reruns of the old failure without an explained correction.
-Ordinary CI evidence and independent-rebuild/signed release validation remain distinct.
-M3 planning in [#47](https://github.com/kunlunengine/runtime/issues/47) is not M2 exit evidence.
+The [failed main run at `c277c6995d3518eb13af55843918df8caf62dcf9`](https://github.com/kunlunengine/runtime/actions/runs/35565536861)
+terminated the macOS x64 module-deadline fixture during trusted Streams bootstrap.
+[PR #54](https://github.com/kunlunengine/runtime/pull/54) separated the bounded bootstrap and
+application scopes; it did not remove x64, disable enforcement, or waive a test.
+
+| Evidence | Commit | Result |
+| --- | --- | --- |
+| [PR combined gate](https://github.com/kunlunengine/runtime/actions/runs/35690502557) | `02b6df613b15fed9bb0a75a13cf71067fd470851` | Passed |
+| [Main combined gate](https://github.com/kunlunengine/runtime/actions/runs/35693402408) | `be0347b9d891d30f2d12503ec9d19086cfaa1ee8` | Four platform jobs, Miri and **M2 required gate** passed |
+| [Main Check Rust](https://github.com/kunlunengine/runtime/actions/runs/35693402156) | `be0347b9d891d30f2d12503ec9d19086cfaa1ee8` | Passed |
+
+All four downloaded main reports were accepted by `m2_gate.py summarize` from that checkout.
+Each reports `status: passed`, `native_sanitizers: passed`, all required capabilities and all
+10 dedicated conformance tests. The runner also executes the locked bundled workspace.
+Shared identities:
+
+- WebKit revision: `4b62d53ec6c16753020dbe69e59bf761ed0948e3`.
+- Distribution manifest SHA-256: `0f8ed89b32ba24b63933476e52a815d4a7976e3d3d01842dec5ccef2f7c3957e`.
+- M2 corpus SHA-256: `4d1ff0dc38a494f5b0959535084c8331eede62eb13003f48f2bb9310ee2b1085`.
+
+| Target | Archive SHA-256 | Verification receipt SHA-256 |
+| --- | --- | --- |
+| `aarch64-apple-darwin` | `4051e20e690a97e07a22b889f0774043086b241ea19f476b6fa335e34382889a` | `639efdd1575f461de972527b36eef96fc0e88073a02878735046ba07ba8656b2` |
+| `x86_64-apple-darwin` | `f634a008323b45fef222ae9eefb4cb794ccee05c2b08938be0cf1967cf923f09` | `310d648db66dd47e9f0153aec3e7aba3f611346c878605cddff8fe46195ac65d` |
+| `aarch64-unknown-linux-gnu` | `256c490a14268e358d856c589078a35a080ef2dfced7ae71dd041774cfa1591f` | `3b03bf72e1439bf4fc72fd950332e1aa564297d018fa098e90f4390a59a10df1` |
+| `x86_64-unknown-linux-gnu` | `d13d9b40adf8b1d07d8037fb268f2c0a3348107ecc752db244bb2dd3f4240fef` | `438dbc0360292dd5ac8cd04583d2c37ba5cde7e02bdb7e89d09d043c60ce9e2b` |
+
+The main run was ordinary CI: independent cold rebuilds and attestation jobs were skipped by
+design. It does **not** supply signed release or physical Intel qualification. Reports/logs and
+release inputs remain subject to Actions retention; these hashes do not archive their contents.
+Preserve those inputs in the release record using the procedure below before claiming release
+validation. Distribution target states remain `planned`.
+
+The repeated local constructor/module deadline evidence is recorded in PR #54 and
+[#46's implementation report](https://github.com/kunlunengine/runtime/issues/46#issuecomment-5771616306).
+That report also discloses an intermediate stall in an unchanged arm64 callback-reentry test;
+subsequent passes do not establish its cause or prove that the bootstrap fix resolved it.
+Retain that observation during final closeout review. M3 work in
+[#47](https://github.com/kunlunengine/runtime/issues/47) is not additional M2 exit evidence.
 
 ## Corpus and leak coverage
 

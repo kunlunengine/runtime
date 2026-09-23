@@ -427,8 +427,9 @@ name.
 M2-R1 (#28) owns the engine-independent resolver, contextual errors, URL/cache identity contract,
 and adversarial resolver fixtures. M2-R2 (#29) adds the JSC callbacks that consume this contract and
 the native static/dynamic import corpus, including cycles, live bindings, TLA, and source maps.
-These tests run against pinned artifacts on each supported platform. The overall M2 exit gate
-remains open for the foundational runtime Web APIs and final cross-platform conformance gates.
+These tests run against pinned artifacts on each supported platform. The foundational Web APIs
+and cross-platform gates have landed; see [M2 closeout status](./m2-exit-gate.md#m2-closeout-status)
+for the restored main baseline, outstanding #46 review and separate release-validation requirements.
 
 ## Primary references
 

@@ -1,6 +1,6 @@
 # Kunlun Runtime Roadmap
 
-Status date: 2026-09-21
+Status date: 2026-09-22
 
 This roadmap starts from the actual repository state, not from the aspirations in the core README.
 Before this revision the repository contained only a `Hello, world!` binary and no runtime
@@ -73,7 +73,8 @@ downloads an unaudited native archive implicitly.
 
 Goal: run real bundled server entrypoints rather than classic scripts.
 
-Status: implementation landed; exit verification pending (#27, #46).
+Status: implementation landed and four-platform main CI restored; #27 is closed, while
+#46 remains open for final closeout review. See the [verified evidence](./docs/m2-exit-gate.md#m2-closeout-status).
 
 - [x] Engine-independent URL resolver for file, `kunlun:`, and generated modules (#28), with
   contextual errors, canonical cache keys, and Unicode/escaping/cycle/policy contract tests.
@@ -91,21 +92,23 @@ Status: implementation landed; exit verification pending (#27, #46).
 Exit gate: ESM/TLA/dynamic-import/Promise tests are deterministic, leak checks are clean, and a
 cancelled request cannot keep an isolate alive indefinitely.
 
-All original implementation items (#28–#34) have landed. The [M2 tracker](https://github.com/kunlunengine/runtime/issues/27)
-remains open: the post-merge gate at `c277c6995d3518eb13af55843918df8caf62dcf9` failed on macOS x64
-because trusted Streams bootstrap inherited a short application deadline.
-[The closeout follow-up](https://github.com/kunlunengine/runtime/issues/46) separates those bounded
-scopes and tracks revalidation. A premerge pass does not replace a green main baseline or the
-reviewed evidence required by [the M2 exit procedure](./docs/m2-exit-gate.md).
+All original implementation items (#28–#34) have landed. PR #54 separates trusted bootstrap
+from the application deadline, correcting the macOS x64 failure at `c277c69`.
+The [post-merge combined gate](https://github.com/kunlunengine/runtime/actions/runs/35693402408)
+passed at `be0347b9d891d30f2d12503ec9d19086cfaa1ee8`, including all four targets, native checks,
+and Miri. Ordinary CI does not establish independent-rebuild or signed release qualification;
+the [M2 exit procedure](./docs/m2-exit-gate.md) records the remaining evidence boundaries.
 
 ### M3 — Kunlun application runtime compatibility
 
 Goal: execute an artifact produced by `@kunlun-js/core` and a `BuildEngine`.
 
-Planning is tracked in [#47](https://github.com/kunlunengine/runtime/issues/47), with implementation
+Work is tracked in [#47](https://github.com/kunlunengine/runtime/issues/47), with implementation
 slices #48–#53 and [Wuling SSR/docs qualification](https://github.com/kunlunengine/runtime/issues/42)
-as the first real consumer. Contract review can proceed during M2 closeout; broad implementation
-and qualification follow the restored M2 baseline. [Desktop/mobile work](https://github.com/kunlunengine/runtime/issues/43)
+as the first real consumer. The [consumer fixture requirements](./docs/m3-wuling-conformance.md)
+start the #42 → #48 contract review; they are not an implemented artifact contract or a native
+qualification result. The M2 main baseline is restored, but #42 acceptance still depends on
+#48–#53 and a Core-generated artifact. [Desktop/mobile work](https://github.com/kunlunengine/runtime/issues/43)
 is a separate, non-blocking workstream, not an additional server-runtime prerequisite.
 
 - Define `kunlun.runtime-manifest/v1` with engine ABI, entry URL, assets, capability declarations,

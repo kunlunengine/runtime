@@ -4,6 +4,10 @@ Status: accepted for the DevTools showcase
 
 Decision date: 2026-08-29
 
+Consumer extension: [Wuling ADE host contract](./wuling-host.md) adds a preview capability/session
+fixture without changing this renderer or update decision. The [mobile profile](./wuling-mobile.md)
+is a separate RFC, not an iOS CEF support claim. Neither provides native qualification evidence.
+
 ## Decision
 
 The first production-qualified Kunlun Desktop presentation backend uses a **pinned CEF/Chromium

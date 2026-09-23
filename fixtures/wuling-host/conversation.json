@@ -1,0 +1,18 @@
+{
+  "request": {
+    "protocol": "kunlun_host_preview_v1",
+    "profile": "desktop",
+    "request_id": "request-1",
+    "binding": {"app": "wuling", "window": "window-1", "session": "remote-1", "epoch": 1},
+    "grant": "grant-1",
+    "resource": "opaque-pty-1",
+    "lease": 7,
+    "operation": {"op": "pty_input", "data": "help\n"}
+  },
+  "frames": [
+    {"session": "remote-1", "history": 1, "sequence": 1, "event": {"event": "output", "data": "ready"}},
+    {"session": "remote-1", "history": 1, "sequence": 2, "event": {"event": "command_done", "command": "command-1"}},
+    {"session": "remote-1", "history": 1, "sequence": 3, "event": {"event": "auth_status", "connection": "provider-ref", "state": "reauthorization_required"}},
+    {"session": "remote-1", "history": 1, "sequence": 4, "event": {"event": "terminal"}}
+  ]
+}

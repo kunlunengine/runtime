@@ -108,6 +108,10 @@ as the first real consumer. Contract review can proceed during M2 closeout; broa
 and qualification follow the restored M2 baseline. [Desktop/mobile work](https://github.com/kunlunengine/runtime/issues/43)
 is a separate, non-blocking workstream, not an additional server-runtime prerequisite.
 
+The [Wuling host contract and consumer fixture](./docs/wuling-host.md) and
+[separate mobile profile](./docs/wuling-mobile.md) are preview RFC work. They do not select Qingting's
+Rust FFI/IPC protocol or qualify a native Desktop/mobile host.
+
 - Define `kunlun.runtime-manifest/v1` with engine ABI, entry URL, assets, capability declarations,
   source maps, compatibility flags, and integrity hashes.
 - Add the server-entry contract: `export default { fetch(request, env, executionContext) }`.

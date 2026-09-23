@@ -64,6 +64,12 @@ URL, Web Streams and crypto primitives, available globally and from `kunlun:web`
 - [docs/jsc-distribution.md](./docs/jsc-distribution.md) — pinned engine inputs, artifact metadata,
   validation, and revision review procedure.
 - [docs/devtools.md](./docs/devtools.md) — Inspector backend and the standalone DevTools platform.
+- [docs/kunlun-desktop.md](./docs/kunlun-desktop.md) — accepted pinned-CEF presentation architecture
+  and native sandbox/signing/update qualification gates.
+- [docs/wuling-host.md](./docs/wuling-host.md) — Wuling ADE preview host contract, consumer fixture,
+  scoped capabilities, independent Qingting sessions and update adapter boundary.
+- [docs/wuling-mobile.md](./docs/wuling-mobile.md) — separate remote-first mobile preview RFC and
+  viewport, lifecycle, accessibility and device qualification requirements.
 - [docs/builtins.md](./docs/builtins.md) — built-in module ABI, permissions, and TypeScript types.
 - [docs/microtasks.md](./docs/microtasks.md) — explicit Promise checkpoints and rejection transitions.
 - [docs/lifecycle.md](./docs/lifecycle.md) — AbortSignal, bounded host streams, and graceful shutdown.

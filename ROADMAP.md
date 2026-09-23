@@ -111,6 +111,10 @@ qualification result. The M2 main baseline is restored, but #42 acceptance still
 #48–#53 and a Core-generated artifact. [Desktop/mobile work](https://github.com/kunlunengine/runtime/issues/43)
 is a separate, non-blocking workstream, not an additional server-runtime prerequisite.
 
+The [Wuling host contract and consumer fixture](./docs/wuling-host.md) and
+[separate mobile profile](./docs/wuling-mobile.md) are preview RFC work. They do not select Qingting's
+Rust FFI/IPC protocol or qualify a native Desktop/mobile host.
+
 - Define `kunlun.runtime-manifest/v1` with engine ABI, entry URL, assets, capability declarations,
   source maps, compatibility flags, and integrity hashes.
 - Add the server-entry contract: `export default { fetch(request, env, executionContext) }`.

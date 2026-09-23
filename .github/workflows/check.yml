@@ -46,6 +46,8 @@ jobs:
                   node-version: '24'
             - name: Check Web profile declarations
               run: npx --yes -p typescript@5.9.3 tsc --noEmit --strict --lib es2022 types/tests/profile.ts
+            - name: Check artifact contract types
+              run: npx --yes -p typescript@5.9.3 tsc --noEmit --strict --lib es2022,dom types/tests/artifact.ts
             - name: Check code formatting
               run: cargo fmt --all -- --check
             - name: Check code linting

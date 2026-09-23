@@ -21,6 +21,7 @@ pub struct ModuleSources {
     resolver: ModuleResolver,
     directory: Dir,
     generated: HashMap<String, String>,
+    admitted: Option<HashMap<String, String>>,
     fetched: RefCell<HashMap<String, usize>>,
     maps: RefCell<SourceMaps>,
 }
@@ -34,9 +35,23 @@ impl ModuleSources {
             resolver,
             directory,
             generated: HashMap::new(),
+            admitted: None,
             fetched: RefCell::new(HashMap::new()),
             maps: RefCell::new(SourceMaps::default()),
         })
+    }
+
+    /// Installs only integrity-checked source snapshots. The resolver still
+    /// checks every static and dynamic URL, while fetch never reopens a file.
+    pub(crate) fn from_admitted(
+        root: impl AsRef<Path>,
+        sources: HashMap<String, String>,
+        maps: SourceMaps,
+    ) -> Result<Self, String> {
+        let mut loader = Self::new(root)?;
+        loader.admitted = Some(sources);
+        *loader.maps.get_mut() = maps;
+        Ok(loader)
     }
 
     pub fn register_generated(
@@ -44,6 +59,9 @@ impl ModuleSources {
         url: &str,
         source: impl Into<String>,
     ) -> Result<ModuleUrl, String> {
+        if self.admitted.is_some() {
+            return Err("admitted artifacts cannot register generated module sources".to_owned());
+        }
         let source = source.into();
         if self.generated.len() >= MAX_MODULES
             || self.generated.values().map(String::len).sum::<usize>() + source.len()
@@ -68,6 +86,9 @@ impl ModuleSources {
     /// Registers a v3 map explicitly, including for generated modules. Relative
     /// original-source names are resolved against the module URL, without I/O.
     pub fn register_source_map(&mut self, module_url: &str, json: &str) -> Result<(), String> {
+        if self.admitted.is_some() {
+            return Err("admitted artifacts cannot register source maps".to_owned());
+        }
         let module = self
             .resolver
             .resolve_absolute_url(module_url)
@@ -78,6 +99,12 @@ impl ModuleSources {
     }
 
     fn record_source_map(&self, module: &ModuleUrl, source: &str) {
+        // Admission already decoded every indexed map from its checked bytes.
+        // Automatic sidecar reads would reopen mutable, potentially unindexed
+        // files after admission.
+        if self.admitted.is_some() {
+            return;
+        }
         if self.maps.borrow().contains(module.as_str()) {
             return;
         }
@@ -192,7 +219,13 @@ impl ModuleLoader for ModuleSources {
             return Err("module graph exceeds the 1024 module limit".to_owned());
         }
         let source = match url.kind() {
-            ModuleKind::File => self.read_file(&url, MAX_SOURCE_BYTES)?,
+            ModuleKind::File => match &self.admitted {
+                Some(sources) => sources
+                    .get(canonical_url)
+                    .ok_or_else(|| format!("undeclared module source {url}"))?
+                    .clone(),
+                None => self.read_file(&url, MAX_SOURCE_BYTES)?,
+            },
             ModuleKind::Generated => self
                 .generated
                 .get(canonical_url)

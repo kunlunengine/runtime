@@ -1,11 +1,18 @@
 //! Tokio-backed JavaScriptCore host primitives for Kunlun Runtime.
 
+mod artifact;
 mod builtins;
 mod host;
 mod module_sources;
 mod modules;
 mod source_maps;
 mod web;
+pub use artifact::{
+    AdmissionError, AdmissionErrorKind, AdmissionPolicy, AdmittedArtifact, Capability,
+    CapabilityRequirements, EngineRequirement, FETCH_ENTRY_CONTRACT, ManifestFile,
+    ManifestFileKind, RUNTIME_ENGINE_ABI, RUNTIME_MANIFEST_SCHEMA, RUNTIME_PROFILE,
+    RuntimeManifest, admit_artifact,
+};
 pub use module_sources::ModuleSources;
 pub use web::ConsoleRecord;
 

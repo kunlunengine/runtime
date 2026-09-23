@@ -145,7 +145,9 @@ The native corpus covers cycles with live bindings, TLA with timers and host I/O
 cache identity and rejection, generated modules, permission denial, source maps, repeated teardown,
 Rust callback panics and reentry. The native sanitizer harness additionally checks C++ callback
 exceptions, revocation during graph loading, wrong-thread operations and module root balance.
-Explicit microtask and rejection policy is documented in [microtasks](./microtasks.md); the overall M2 gate remains open.
+Explicit microtask and rejection policy is documented in [microtasks](./microtasks.md).
+See [M2 closeout status](./m2-exit-gate.md#m2-closeout-status) for the restored four-platform
+main evidence, outstanding #46 review and separate release-validation requirements.
 
 ## Executing modules
 

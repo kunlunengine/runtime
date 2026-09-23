@@ -17,10 +17,12 @@ vulnerabilities according to the [security policy](./SECURITY.md), not in a publ
 4. Keep pull requests focused. A small change with explicit tests and reviewable invariants is
    preferred to a broad rewrite.
 
-M1 is complete. The current focus is [M2 closeout (#46)](https://github.com/kunlunengine/runtime/issues/46)
-and the evidence-backed handoff from [M2 (#27)](https://github.com/kunlunengine/runtime/issues/27)
-to [M3 planning (#47)](https://github.com/kunlunengine/runtime/issues/47). Follow the trackers'
-dependency order rather than treating merged feature issues as proof of a completed exit gate.
+M1 is complete and the [M2 main baseline is restored](./docs/m2-exit-gate.md#m2-closeout-status).
+The M2 tracker #27 is closed; [#46](https://github.com/kunlunengine/runtime/issues/46) still needs
+final closeout review. The next workstream is [M3 (#47)](https://github.com/kunlunengine/runtime/issues/47),
+starting with [Wuling fixture requirements](./docs/m3-wuling-conformance.md) for #42 and the #48
+artifact contract review. Follow the trackers' dependency order: fixture planning is not native
+compatibility, and ordinary green CI is not signed release authorization.
 
 ## Development Setup
 

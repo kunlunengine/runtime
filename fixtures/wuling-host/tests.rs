@@ -85,26 +85,26 @@ fn schema_rejects_unknowns_and_bounds() {
 
 #[test]
 fn grants_default_deny_and_bind_every_authority_dimension() {
-    for case in [
-        "peer",
-        "app",
-        "window",
-        "session",
-        "epoch",
-        "missing",
-        "revoked",
-        "expired",
-        "resource_expired",
-        "resource",
-        "operation",
-        "lease",
-        "lease_owner",
-        "lease_expired",
-        "readonly",
-        "background",
-        "input_owner",
-        "mobile",
-        "no_consent",
+    for (case, expected) in [
+        ("peer", "binding"),
+        ("app", "binding"),
+        ("window", "binding"),
+        ("session", "binding"),
+        ("epoch", "binding"),
+        ("missing", "grant"),
+        ("revoked", "grant"),
+        ("expired", "grant"),
+        ("resource_expired", "grant"),
+        ("resource", "resource"),
+        ("operation", "grant"),
+        ("lease", "lease"),
+        ("lease_owner", "lease"),
+        ("lease_expired", "lease"),
+        ("readonly", "read only"),
+        ("background", "input owner"),
+        ("input_owner", "input owner"),
+        ("mobile", "unsupported"),
+        ("no_consent", "grant"),
     ] {
         let mut request = fixture().request;
         let mut host = broker(&request);
@@ -118,7 +118,13 @@ fn grants_default_deny_and_bind_every_authority_dimension() {
             "epoch" => request.binding.epoch += 1,
             "missing" => request.grant = "missing".into(),
             "revoked" => host.grants.clear(),
-            "expired" => now = 50,
+            "expired" => {
+                now = 50;
+                host.resources
+                    .get_mut(&request.resource)
+                    .unwrap()
+                    .lease_expires = now + 1;
+            }
             "resource_expired" => host.resources.get_mut(&request.resource).unwrap().expires = 1,
             "resource" => request.resource = "other".into(),
             "operation" => request.operation = Operation::FsRead {},
@@ -145,7 +151,11 @@ fn grants_default_deny_and_bind_every_authority_dimension() {
             }
             _ => unreachable!(),
         }
-        assert!(host.authorize(&peer, &request, now).is_err(), "{case}");
+        assert_eq!(
+            host.authorize(&peer, &request, now),
+            Err(expected),
+            "{case}"
+        );
     }
     for operation in [Operation::FsRead {}, Operation::SessionRead {}] {
         let mut request = fixture().request;
@@ -258,22 +268,21 @@ fn changing_approved_parameters_or_reusing_a_cross_window_grant_is_denied() {
         approval: "patch-digest-a".into(),
         allow: true,
     };
-    let host = broker(&request);
+    let mut host = broker(&request);
     assert_eq!(host.authorize(&host.peer, &request, 1), Ok(()));
     request.operation = Operation::ApprovalRespond {
         approval: "patch-digest-b".into(),
         allow: true,
     };
-    assert!(host.authorize(&host.peer, &request, 1).is_err());
+    assert_eq!(host.authorize(&host.peer, &request, 1), Err("grant"));
     request.operation = Operation::ApprovalRespond {
         approval: "patch-digest-a".into(),
         allow: false,
     };
-    assert!(host.authorize(&host.peer, &request, 1).is_err());
-    let mut new_peer = host.peer.clone();
-    new_peer.binding.window = "window-2".into();
-    request.binding = new_peer.binding.clone();
-    assert!(host.authorize(&new_peer, &request, 1).is_err());
+    assert_eq!(host.authorize(&host.peer, &request, 1), Err("grant"));
+    host.peer.binding.window = "window-2".into();
+    request.binding = host.peer.binding.clone();
+    assert_eq!(host.authorize(&host.peer, &request, 1), Err("grant"));
 }
 
 #[test]

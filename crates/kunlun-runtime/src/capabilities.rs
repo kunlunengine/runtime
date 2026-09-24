@@ -5,8 +5,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::marker::PhantomData;
 use std::path::Path;
 use std::rc::Rc;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, OnceLock};
 
 /// The admitted application's exact declaration/deployment intersection.
 /// Its host permissions are used for M3 built-ins and are revoked on drop.
@@ -15,6 +15,7 @@ pub struct ApplicationAuthority {
     effective: BTreeSet<Capability>,
     active: Arc<AtomicBool>,
     claimed: AtomicBool,
+    isolate_thread: OnceLock<std::thread::ThreadId>,
 }
 
 impl ApplicationAuthority {
@@ -26,6 +27,7 @@ impl ApplicationAuthority {
             effective,
             active,
             claimed: AtomicBool::new(false),
+            isolate_thread: OnceLock::new(),
         }
     }
 
@@ -45,6 +47,9 @@ impl ApplicationAuthority {
         if !self.claimed.load(Ordering::Acquire) {
             return Err("application authority has no isolate");
         }
+        if self.isolate_thread.get() != Some(&std::thread::current().id()) {
+            return Err("request environment must be created on the isolate thread");
+        }
         let active = Arc::new(AtomicBool::new(true));
         Ok(RequestEnvironment {
             permissions: self.permissions.for_request(Arc::clone(&active)),
@@ -63,6 +68,7 @@ impl ApplicationAuthority {
         self.claimed
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .map_err(|_| "application authority already belongs to an isolate")?;
+        let _ = self.isolate_thread.set(std::thread::current().id());
         Ok(Arc::clone(&self.active))
     }
 

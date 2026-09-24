@@ -44,7 +44,8 @@ After one isolate claims the application authority,
 `ApplicationAuthority::begin_request` owns a new `RequestContext` and produces
 one `RequestEnvironment`. A `ScopedHandle` can be obtained only for an effective
 grant, only used with the environment that issued it, and cannot be serialized
-or moved to another thread. Context values stay in that request environment;
+or moved to another thread. Request environments can only be created on the
+claiming isolate's thread. Context values stay in that request environment;
 there is no process-global current caller. Dropping or revoking a request
 environment invalidates its retained handles without affecting a concurrent
 request. Revoking the application, requesting isolate shutdown, or dropping

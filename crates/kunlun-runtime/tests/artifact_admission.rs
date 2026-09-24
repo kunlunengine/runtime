@@ -110,6 +110,16 @@ fn admitted_authority_intersects_grants_and_request_handles_expire() {
     assert!(authority.contains(&api));
     assert!(authority.contains(&public));
     assert!(!authority.contains(&undeclared));
+    std::thread::scope(|scope| {
+        let wrong_thread = scope
+            .spawn(|| authority.begin_request(RequestContext::new()).err())
+            .join()
+            .unwrap();
+        assert_eq!(
+            wrong_thread,
+            Some("request environment must be created on the isolate thread")
+        );
+    });
 
     let mut a_context = RequestContext::new();
     a_context.insert("auth", "private-A");

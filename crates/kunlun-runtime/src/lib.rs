@@ -2,6 +2,7 @@
 
 mod artifact;
 mod builtins;
+mod capabilities;
 mod host;
 mod module_sources;
 mod modules;
@@ -13,6 +14,7 @@ pub use artifact::{
     ManifestFileKind, RUNTIME_ENGINE_ABI, RUNTIME_MANIFEST_SCHEMA, RUNTIME_PROFILE,
     RuntimeManifest, admit_artifact,
 };
+pub use capabilities::{ApplicationAuthority, RequestContext, RequestEnvironment, ScopedHandle};
 pub use module_sources::ModuleSources;
 pub use web::ConsoleRecord;
 
@@ -35,7 +37,8 @@ use std::error::Error;
 use std::fmt::{self, Display, Formatter};
 use std::io::Write;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 use tokio::time::Instant;
 
@@ -105,12 +108,16 @@ pub struct RuntimeResourceCounts {
 pub struct ShutdownHandle {
     requested: Rc<Cell<bool>>,
     host_accepting: Rc<Cell<bool>>,
+    authority_scope: Option<Arc<AtomicBool>>,
 }
 
 impl ShutdownHandle {
     pub fn request(&self) {
         self.requested.set(true);
         self.host_accepting.set(false);
+        if let Some(scope) = &self.authority_scope {
+            scope.store(false, Ordering::Release);
+        }
     }
 
     pub fn is_requested(&self) -> bool {
@@ -160,6 +167,7 @@ pub struct TokioIsolate {
     console_sink: web::ConsoleSink,
     timers: TimerDispatcher,
     host: host::HostDispatcher,
+    authority_scope: Option<Arc<AtomicBool>>,
     vm: JscVm,
     module_cancelled: Cell<bool>,
     shutting_down: Rc<Cell<bool>>,
@@ -175,6 +183,21 @@ impl TokioIsolate {
         permissions: HostPermissions,
     ) -> Result<Self, RuntimeError> {
         Self::new_with_permissions_and_limits(name, permissions, RuntimeLimits::default())
+    }
+
+    /// Construct an admitted application with only its effective capabilities.
+    /// The caller must keep `authority` alive for the isolate's lifetime.
+    pub fn new_with_authority(
+        name: &str,
+        authority: &ApplicationAuthority,
+    ) -> Result<Self, RuntimeError> {
+        let mut isolate = Self::new_with_permissions(name, authority.host_permissions())?;
+        isolate.authority_scope = Some(
+            authority
+                .claim_isolate()
+                .map_err(|error| RuntimeError::HostInitialization(error.to_owned()))?,
+        );
+        Ok(isolate)
     }
 
     pub fn new_with_permissions_and_limits(
@@ -230,6 +253,7 @@ impl TokioIsolate {
             console_sink,
             timers,
             host,
+            authority_scope: None,
             vm,
             module_cancelled: Cell::new(false),
             shutting_down: Rc::new(Cell::new(false)),
@@ -351,6 +375,7 @@ impl TokioIsolate {
         ShutdownHandle {
             requested: Rc::clone(&self.shutting_down),
             host_accepting: self.host.admission_flag(),
+            authority_scope: self.authority_scope.clone(),
         }
     }
 
@@ -385,6 +410,14 @@ impl TokioIsolate {
             timers, host, vm, ..
         } = self;
         run_async_body(vm, timers, host, source, source_url).await
+    }
+}
+
+impl Drop for TokioIsolate {
+    fn drop(&mut self) {
+        if let Some(scope) = &self.authority_scope {
+            scope.store(false, Ordering::Release);
+        }
     }
 }
 

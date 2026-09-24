@@ -1,8 +1,8 @@
 # Runtime artifact manifest v1
 
-Status: **artifact parsing and native admission implemented**; Fetch entry invocation,
-request `env`, `executionContext`, and HTTP serving are **contract proposals** for
-[#50](https://github.com/kunlunengine/runtime/issues/50) and
+Status: **artifact parsing, native admission, and Rust scoped authority implemented**;
+Fetch entry invocation, JavaScript request `env`, `executionContext`, and HTTP serving
+remain **contract proposals** for
 [#51](https://github.com/kunlunengine/runtime/issues/51). Core and runtime-node producer
 integration belongs to [#52](https://github.com/kunlunengine/runtime/issues/52). The
 [portable fixture](../fixtures/runtime-manifest/v1/manifest.json) is a consumer contract
@@ -82,14 +82,18 @@ resolve/fetch and never obtains unindexed source bytes.
 ## Capabilities and admission errors
 
 `AdmissionPolicy` is supplied by the deployment, separately from the artifact.
-It names supported capability types and exact grants. Every required declaration
-must be present in those grants before admission succeeds. Optional declarations
-may be absent; their corresponding `env` binding is omitted. Unknown capability
-types fail, including optional ones, so a misspelled or future security feature
-cannot silently disappear. Declarations are not host permissions. #50 must derive
-the policy from real scoped handles and enforce every privileged operation; a
-caller constructing matching strings alone does not authorize filesystem,
-network, or secrets access. A JSC realm is not a hostile-code security boundary.
+It contains a trusted manifest digest and `HostPermissions`, not a writable list
+of capability strings. The supported v1 names are `http.host` (one canonical
+lowercase HTTP(S) host) and `fs.binding` (one named deployment directory).
+`bind_read_root` opens the directory with `cap-std`; a manifest cannot choose
+its host path. Every required declaration must have a matching deployment grant
+before admission succeeds. Optional declarations without grants are omitted.
+Unknown capability types fail, including optional ones. The admitted artifact
+carries only the declaration/grant intersection, and its scoped isolate
+constructor supplies exactly those permissions to M2 built-ins. Legacy M2
+`allow_read_root` permissions do not count as M3 named bindings. See
+[M3 scoped authority](./m3-scoped-authority.md) for lifetime and denial rules.
+A JSC realm is not a hostile-code security boundary.
 
 `AdmissionErrorKind` has stable categories: `manifest` (syntax/shape/digest
 spelling), `schema`, `compatibility`, `capability`, `path`, `identity`,
@@ -123,11 +127,12 @@ absence, malformed default export, and failed top-level await are startup
 failures and prevent traffic admission. Specific HTTP status/header/cancellation
 conformance remains #51 work; this is the shared producer/consumer shape.
 
-`env` contains only declared, explicitly granted opaque bindings. Required
-bindings must exist; absent optional bindings are omitted. Its values are
-request-scoped unless #50 explicitly defines an application-scoped service;
-caller auth/provider/billing data cannot be shared between requests. No
-deployment secret value appears in the manifest or browser artifact.
+The Rust `ApplicationAuthority` and `RequestEnvironment` implement the grant
+intersection, request ownership, and revocation. JavaScript `env` projection
+and its binding operations are still #51 work. Required bindings must exist;
+absent optional bindings are omitted. Any application-scoped built-in grant is
+separate from caller auth/provider/billing context, which is owned by one
+request. No deployment secret value appears in the manifest or browser artifact.
 
 The proposed v1 `executionContext` has `signal: AbortSignal` and
 `waitUntil(promise)`. The signal aborts on client disconnect, request deadline,

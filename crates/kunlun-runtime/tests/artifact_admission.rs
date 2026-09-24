@@ -1,10 +1,10 @@
 use kunlun_jsc::ModuleLoader;
 use kunlun_runtime::{
-    AdmissionErrorKind, AdmissionPolicy, Capability, RUNTIME_MANIFEST_SCHEMA, admit_artifact,
+    AdmissionErrorKind, AdmissionPolicy, Capability, HostPermissions, RUNTIME_MANIFEST_SCHEMA,
+    RequestContext, TokioIsolate, admit_artifact,
 };
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -38,15 +38,10 @@ impl Fixture {
     }
 
     fn policy(&self) -> AdmissionPolicy {
-        AdmissionPolicy {
-            expected_manifest_sha256: sha(&fs::read(self.0.join("manifest.json")).unwrap()),
-            supported_capabilities: ["http.host".to_owned(), "fs.binding".to_owned()].into(),
-            granted_capabilities: [Capability {
-                name: "http.host".to_owned(),
-                resource: "api.example.test".to_owned(),
-            }]
-            .into(),
-        }
+        AdmissionPolicy::new(
+            sha(&fs::read(self.0.join("manifest.json")).unwrap()),
+            HostPermissions::none().allow_net_host("api.example.test"),
+        )
     }
 
     fn manifest(&self) -> Value {
@@ -84,6 +79,207 @@ fn sha(bytes: &[u8]) -> String {
         .collect()
 }
 
+fn capability(name: &str, resource: &str) -> Capability {
+    Capability {
+        name: name.to_owned(),
+        resource: resource.to_owned(),
+    }
+}
+
+#[test]
+fn admitted_authority_intersects_grants_and_request_handles_expire() {
+    let fixture = Fixture::new();
+    let private = Fixture::new();
+    let deployment = HostPermissions::none()
+        .allow_net_host("api.example.test")
+        .allow_net_host("undeclared.example.test")
+        .allow_read_root(&private.0)
+        .unwrap()
+        .bind_read_root("public-data", &fixture.0)
+        .unwrap();
+    let policy = AdmissionPolicy::new(
+        sha(&fs::read(fixture.0.join("manifest.json")).unwrap()),
+        deployment,
+    );
+    let artifact = admit_artifact(&fixture.0, &policy).unwrap();
+    let authority = artifact.authority();
+    let _isolate = TokioIsolate::new_with_authority("request-scopes", authority).unwrap();
+    let api = capability("http.host", "api.example.test");
+    let undeclared = capability("http.host", "undeclared.example.test");
+    let public = capability("fs.binding", "public-data");
+    assert!(authority.contains(&api));
+    assert!(authority.contains(&public));
+    assert!(!authority.contains(&undeclared));
+    std::thread::scope(|scope| {
+        let wrong_thread = scope
+            .spawn(|| authority.begin_request(RequestContext::new()).err())
+            .join()
+            .unwrap();
+        assert_eq!(
+            wrong_thread,
+            Some("request environment must be created on the isolate thread")
+        );
+    });
+
+    let mut a_context = RequestContext::new();
+    a_context.insert("auth", "private-A");
+    let a = authority.begin_request(a_context).unwrap();
+    let mut b_context = RequestContext::new();
+    b_context.insert("auth", "private-B");
+    let b = authority.begin_request(b_context).unwrap();
+    assert_eq!(a.context_value("auth"), Some("private-A"));
+    assert_eq!(b.context_value("auth"), Some("private-B"));
+    assert!(a.handle(&undeclared).is_none());
+    let http = a.handle(&api).unwrap();
+    http.authorize_http(&a, "https://api.example.test/v1")
+        .unwrap();
+    assert!(
+        http.authorize_http(&a, "https://other.example.test/")
+            .is_err()
+    );
+    assert!(http.authorize_http(&a, "file:///etc/hosts").is_err());
+    assert!(
+        http.authorize_http(&b, "https://api.example.test/")
+            .is_err()
+    );
+
+    let fs_handle = a.handle(&public).unwrap();
+    fs_handle
+        .authorize_read(&a, Path::new("server.mjs"))
+        .unwrap();
+    assert!(
+        fs_handle
+            .authorize_read(&a, &private.0.join("server.mjs"))
+            .is_err()
+    );
+    assert!(
+        fs_handle
+            .authorize_read(&a, Path::new("../escaped"))
+            .is_err()
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+        let link = fixture.0.join("escaped-link");
+        symlink(private.0.join("server.mjs"), &link).unwrap();
+        assert!(
+            fs_handle
+                .authorize_read(&a, Path::new("escaped-link"))
+                .is_err()
+        );
+    }
+    a.revoke();
+    assert!(
+        http.authorize_http(&a, "https://api.example.test/")
+            .is_err()
+    );
+    assert_eq!(a.context_value("auth"), None);
+    assert!(b.handle(&api).is_some());
+    authority.revoke();
+    assert!(b.handle(&api).is_none());
+}
+
+#[test]
+fn optional_binding_is_omitted_and_legacy_read_root_is_not_a_manifest_grant() {
+    let fixture = Fixture::new();
+    let deployment = HostPermissions::none()
+        .allow_net_host("api.example.test")
+        .allow_read_root(&fixture.0)
+        .unwrap();
+    let policy = AdmissionPolicy::new(
+        sha(&fs::read(fixture.0.join("manifest.json")).unwrap()),
+        deployment,
+    );
+    let artifact = admit_artifact(&fixture.0, &policy).unwrap();
+    let authority = artifact.authority();
+    let _isolate = TokioIsolate::new_with_authority("optional-binding", authority).unwrap();
+    let optional = capability("fs.binding", "public-data");
+    assert!(!authority.contains(&optional));
+    let request = authority.begin_request(RequestContext::new()).unwrap();
+    assert!(request.handle(&optional).is_none());
+
+    let mut manifest = fixture.manifest();
+    manifest["capabilities"]["required"] = json!([
+        {"name":"http.host", "resource":"api.example.test"},
+        {"name":"fs.binding", "resource":"public-data"}
+    ]);
+    manifest["capabilities"]["optional"] = json!([]);
+    fixture.write_manifest(&manifest);
+    assert_eq!(
+        fixture.reject(AdmissionErrorKind::Capability),
+        "artifact capability at capabilities.required: missing grant for fs.binding:public-data"
+    );
+}
+
+#[test]
+fn admitted_isolate_denies_undeclared_builtin_authority() {
+    let fixture = Fixture::new();
+    let outside = Fixture::new();
+    let deployment = HostPermissions::none()
+        .allow_net_host("api.example.test")
+        .allow_net_host("undeclared.example.test")
+        .allow_read_root(&outside.0)
+        .unwrap();
+    let policy = AdmissionPolicy::new(
+        sha(&fs::read(fixture.0.join("manifest.json")).unwrap()),
+        deployment,
+    );
+    let artifact = admit_artifact(&fixture.0, &policy).unwrap();
+    let mut isolate =
+        TokioIsolate::new_with_authority("scoped-artifact", artifact.authority()).unwrap();
+    assert!(TokioIsolate::new_with_authority("second-isolate", artifact.authority()).is_err());
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let error = runtime
+        .block_on(isolate.evaluate_async_body(
+            "const http = await kunlun.import('kunlun:http'); return await http.request('http://undeclared.example.test/');",
+            "test:///undeclared-http.js",
+        ))
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("network access denied"),
+        "{error}"
+    );
+
+    let path = serde_json::to_string(&outside.0.join("server.mjs").display().to_string()).unwrap();
+    let error = runtime
+        .block_on(isolate.evaluate_async_body(
+            &format!(
+                "const fs = await kunlun.import('kunlun:fs'); return await fs.readTextFile({path});"
+            ),
+            "test:///undeclared-fs.js",
+        ))
+        .unwrap_err();
+    assert!(error.to_string().contains("read access denied"), "{error}");
+    assert!(!error.to_string().contains(&outside.0.display().to_string()));
+
+    let api = capability("http.host", "api.example.test");
+    let request = artifact
+        .authority()
+        .begin_request(RequestContext::new())
+        .unwrap();
+    let handle = request.handle(&api).unwrap();
+    isolate.shutdown_handle().request();
+    assert!(
+        handle
+            .authorize_http(&request, "https://api.example.test/")
+            .is_err()
+    );
+}
+
+#[test]
+fn malformed_capability_resource_fails_before_evaluation() {
+    let fixture = Fixture::new();
+    let mut manifest = fixture.manifest();
+    manifest["capabilities"]["required"][0]["resource"] = json!("api.example.test:8443");
+    fixture.write_manifest(&manifest);
+    let error = fixture.reject(AdmissionErrorKind::Capability);
+    assert!(error.contains("not canonical"));
+    assert!(!error.contains("8443"));
+}
+
 #[test]
 fn portable_fixture_admits_unicode_escaped_paths_subpath_assets_and_snapshots() {
     let fixture = Fixture::new();
@@ -97,7 +293,7 @@ fn portable_fixture_admits_unicode_escaped_paths_subpath_assets_and_snapshots() 
             .unwrap()
             .contains("欢迎")
     );
-    let (entry, mut sources, assets) = artifact.into_parts();
+    let (entry, mut sources, assets, _authority) = artifact.into_parts();
     assert!(
         sources
             .register_generated("kunlun-generated:///extra.mjs", "export default 1")
@@ -165,7 +361,7 @@ fn question_mark_filename_admits_when_created_at_runtime() {
     fixture.write_manifest(&manifest);
 
     let artifact = admit_artifact(&fixture.0, &fixture.policy()).unwrap();
-    let (entry, sources, _) = artifact.into_parts();
+    let (entry, sources, _, _authority) = artifact.into_parts();
     let chunk = sources
         .resolve(
             "./chunks/%E9%97%AE%E5%80%99%25%20space%3F.mjs",
@@ -247,7 +443,7 @@ fn schema_engine_unknown_fields_features_and_grants_fail_closed() {
     }
     let fixture = Fixture::new();
     let mut policy = fixture.policy();
-    policy.granted_capabilities = BTreeSet::new();
+    policy = AdmissionPolicy::new(policy.expected_manifest_sha256, HostPermissions::none());
     let error = match admit_artifact(&fixture.0, &policy) {
         Ok(_) => panic!(),
         Err(error) => error,

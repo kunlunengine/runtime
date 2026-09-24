@@ -2,6 +2,7 @@
 use crate::module_sources::ModuleSources;
 use crate::modules::{ModuleKind, ModuleResolver};
 use crate::source_maps::{MAX_MAP_BYTES, SourceMaps};
+use crate::{ApplicationAuthority, HostPermissions};
 use cap_std::ambient_authority;
 use cap_std::fs::{Dir, OpenOptions, OpenOptionsExt};
 use serde::Deserialize;
@@ -75,12 +76,20 @@ pub struct Capability {
     pub resource: String,
 }
 
-/// Deployment-supplied authority. #50 will build this from scoped host handles;
-/// manifest declarations alone never create a grant.
+/// Trusted deployment inputs. The grant set is derived from actual host
+/// permissions, not from arbitrary manifest-matching strings.
 pub struct AdmissionPolicy {
     pub expected_manifest_sha256: String,
-    pub supported_capabilities: BTreeSet<String>,
-    pub granted_capabilities: BTreeSet<Capability>,
+    deployment: HostPermissions,
+}
+
+impl AdmissionPolicy {
+    pub fn new(expected_manifest_sha256: impl Into<String>, deployment: HostPermissions) -> Self {
+        Self {
+            expected_manifest_sha256: expected_manifest_sha256.into(),
+            deployment,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -160,6 +169,7 @@ pub struct AdmittedArtifact {
     entry_url: String,
     sources: ModuleSources,
     assets: BTreeMap<String, Vec<u8>>,
+    authority: ApplicationAuthority,
 }
 
 impl AdmittedArtifact {
@@ -173,8 +183,19 @@ impl AdmittedArtifact {
     pub fn asset_bytes(&self, url: &str) -> Option<&[u8]> {
         self.assets.get(url).map(Vec::as_slice)
     }
-    pub fn into_parts(self) -> (String, ModuleSources, BTreeMap<String, Vec<u8>>) {
-        (self.entry_url, self.sources, self.assets)
+    pub fn authority(&self) -> &ApplicationAuthority {
+        &self.authority
+    }
+    /// Keep the authority alongside checked bytes when creating an M3 server.
+    pub fn into_parts(
+        self,
+    ) -> (
+        String,
+        ModuleSources,
+        BTreeMap<String, Vec<u8>>,
+        ApplicationAuthority,
+    ) {
+        (self.entry_url, self.sources, self.assets, self.authority)
     }
 }
 
@@ -374,11 +395,13 @@ pub fn admit_artifact(
     }
     let sources = ModuleSources::from_admitted(resolver.root(), sources, decoded_maps)
         .map_err(|e| AdmissionError::new(AdmissionErrorKind::Path, "artifact root", e))?;
+    let authority = ApplicationAuthority::new(&policy.deployment, &manifest.capabilities);
     Ok(AdmittedArtifact {
         manifest,
         entry_url,
         sources,
         assets,
+        authority,
     })
 }
 
@@ -470,6 +493,28 @@ fn validate_contract(
                 "invalid capability identifier",
             ));
         }
+        let valid_resource = match capability.name.as_str() {
+            "http.host" => Url::parse(&format!("https://{}/", capability.resource))
+                .ok()
+                .is_some_and(|url| {
+                    url.host_str() == Some(capability.resource.as_str())
+                        && url.port().is_none()
+                        && url.username().is_empty()
+                        && url.password().is_none()
+                }),
+            "fs.binding" => capability
+                .resource
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-')),
+            _ => true,
+        };
+        if !valid_resource {
+            return Err(AdmissionError::new(
+                AdmissionErrorKind::Capability,
+                "capabilities",
+                "capability resource is not canonical",
+            ));
+        }
         if !declared.insert(capability) {
             return Err(AdmissionError::new(
                 AdmissionErrorKind::Capability,
@@ -477,7 +522,7 @@ fn validate_contract(
                 "duplicate capability declaration",
             ));
         }
-        if !policy.supported_capabilities.contains(&capability.name) {
+        if !HostPermissions::supports_capability(&capability.name) {
             return Err(AdmissionError::new(
                 AdmissionErrorKind::Capability,
                 "capabilities",
@@ -486,7 +531,7 @@ fn validate_contract(
         }
     }
     for capability in &manifest.capabilities.required {
-        if !policy.granted_capabilities.contains(capability) {
+        if !policy.deployment.has_capability(capability) {
             return Err(AdmissionError::new(
                 AdmissionErrorKind::Capability,
                 "capabilities.required",

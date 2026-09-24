@@ -5,13 +5,13 @@ use kunlun_jsc::{DeferredPromise, HostCall, JscError, JscVm};
 use reqwest::redirect::Policy;
 use serde::{Deserialize, Serialize};
 use std::cell::{Cell, RefCell};
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::future::Future;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 use tokio::sync::mpsc::{self, Receiver, Sender};
 use tokio::sync::{Mutex, Notify, oneshot};
@@ -25,7 +25,10 @@ pub(crate) const STREAM_BUFFER_CHUNKS: usize = 2;
 #[derive(Debug, Clone, Default)]
 pub struct HostPermissions {
     read_roots: Vec<ReadRoot>,
+    read_bindings: BTreeMap<String, ReadRoot>,
     net_hosts: HashSet<String>,
+    active: Option<Arc<AtomicBool>>,
+    request_active: Option<Arc<AtomicBool>>,
 }
 
 #[derive(Debug, Clone)]
@@ -55,14 +58,173 @@ impl HostPermissions {
         Ok(self)
     }
 
+    /// Bind a named M3 filesystem capability to an opened deployment directory.
+    /// The manifest can name this binding but cannot choose its host path.
+    pub fn bind_read_root(
+        mut self,
+        name: impl Into<String>,
+        root: impl AsRef<Path>,
+    ) -> io::Result<Self> {
+        let name = name.into();
+        if name.is_empty()
+            || !name
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "invalid binding name",
+            ));
+        }
+        if self.read_bindings.contains_key(&name) {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "filesystem binding already exists",
+            ));
+        }
+        let root = std::fs::canonicalize(root)?;
+        let directory = Dir::open_ambient_dir(&root, ambient_authority())?;
+        self.read_bindings.insert(
+            name,
+            ReadRoot {
+                path: root,
+                directory: Arc::new(directory),
+            },
+        );
+        Ok(self)
+    }
+
     pub fn allow_net_host(mut self, host: impl Into<String>) -> Self {
         self.net_hosts.insert(host.into().to_ascii_lowercase());
         self
     }
 
+    pub(crate) fn supports_capability(name: &str) -> bool {
+        matches!(name, "http.host" | "fs.binding")
+    }
+
+    pub(crate) fn has_capability(&self, capability: &crate::Capability) -> bool {
+        match capability.name.as_str() {
+            "http.host" => self.net_hosts.contains(&capability.resource),
+            "fs.binding" => self.read_bindings.contains_key(&capability.resource),
+            _ => false,
+        }
+    }
+
+    /// Construct the exact manifest/deployment intersection. Legacy M2 read roots
+    /// are deliberately excluded from admitted application permissions.
+    pub(crate) fn scoped_to(
+        &self,
+        declarations: &crate::CapabilityRequirements,
+        active: Arc<AtomicBool>,
+    ) -> (Self, BTreeSet<crate::Capability>) {
+        let mut scoped = Self {
+            active: Some(active),
+            ..Self::none()
+        };
+        let mut effective = BTreeSet::new();
+        for capability in declarations.required.iter().chain(&declarations.optional) {
+            if !self.has_capability(capability) {
+                continue;
+            }
+            effective.insert(capability.clone());
+            match capability.name.as_str() {
+                "http.host" => {
+                    scoped.net_hosts.insert(capability.resource.clone());
+                }
+                "fs.binding" => {
+                    let root = self.read_bindings[&capability.resource].clone();
+                    scoped.read_roots.push(root.clone());
+                    scoped
+                        .read_bindings
+                        .insert(capability.resource.clone(), root);
+                }
+                _ => unreachable!("admission rejects unsupported capabilities"),
+            }
+        }
+        (scoped, effective)
+    }
+
+    fn ensure_active(&self) -> Result<(), String> {
+        if [self.active.as_ref(), self.request_active.as_ref()]
+            .into_iter()
+            .flatten()
+            .any(|active| !active.load(Ordering::Acquire))
+        {
+            return Err("host capability scope has ended".to_owned());
+        }
+        Ok(())
+    }
+
+    fn scoped_error(&self, message: &str, error: impl std::fmt::Display) -> String {
+        if self.active.is_some() {
+            message.to_owned()
+        } else {
+            format!("{message}: {error}")
+        }
+    }
+
+    pub(crate) fn for_request(&self, active: Arc<AtomicBool>) -> Self {
+        let mut scoped = self.clone();
+        scoped.request_active = Some(active);
+        scoped
+    }
+
+    pub(crate) fn authorize_binding_read(&self, binding: &str, path: &Path) -> Result<(), String> {
+        self.ensure_active()?;
+        let root = self
+            .read_bindings
+            .get(binding)
+            .ok_or_else(|| "filesystem binding is not granted".to_owned())?;
+        if path.as_os_str().is_empty()
+            || path.is_absolute()
+            || path.components().any(|part| {
+                matches!(
+                    part,
+                    std::path::Component::ParentDir | std::path::Component::Prefix(_)
+                )
+            })
+        {
+            return Err("expected a path relative to the filesystem binding".to_owned());
+        }
+        let mut options = OpenOptions::new();
+        options.read(true).custom_flags(libc::O_NONBLOCK);
+        let file = root
+            .directory
+            .open_with(path, &options)
+            .map_err(|_| "filesystem path is unavailable within the binding".to_owned())?;
+        if !file
+            .metadata()
+            .map_err(|_| "filesystem path is unavailable within the binding".to_owned())?
+            .is_file()
+        {
+            return Err("filesystem binding reads require a regular file".to_owned());
+        }
+        Ok(())
+    }
+
+    pub(crate) fn authorize_scoped_url(&self, host: &str, url: &str) -> Result<(), String> {
+        let url = reqwest::Url::parse(url).map_err(|_| "invalid HTTP URL".to_owned())?;
+        if url.host_str() != Some(host) {
+            return Err("HTTP destination is outside the handle scope".to_owned());
+        }
+        self.authorize_url(&url)
+    }
+
     fn authorize_read(&self, path: &Path) -> Result<AuthorizedRead, String> {
-        let absolute = std::path::absolute(path)
-            .map_err(|error| format!("cannot resolve {}: {error}", path.display()))?;
+        self.ensure_active()?;
+        let absolute = if self.active.is_some() {
+            std::fs::canonicalize(path)
+        } else {
+            std::path::absolute(path)
+        }
+        .map_err(|error| {
+            if self.active.is_some() {
+                "cannot resolve file path".to_owned()
+            } else {
+                format!("cannot resolve {}: {error}", path.display())
+            }
+        })?;
         for root in &self.read_roots {
             if let Ok(relative_path) = absolute.strip_prefix(&root.path) {
                 let relative_path = relative_path.to_owned();
@@ -73,13 +235,18 @@ impl HostPermissions {
                 });
             }
         }
-        Err(format!(
-            "read access denied for {}; grant a containing root with --allow-read",
-            absolute.display()
-        ))
+        if self.active.is_some() {
+            Err("read access denied by application capability scope".to_owned())
+        } else {
+            Err(format!(
+                "read access denied for {}; grant a containing root with --allow-read",
+                absolute.display()
+            ))
+        }
     }
 
     fn authorize_url(&self, url: &reqwest::Url) -> Result<(), String> {
+        self.ensure_active()?;
         if !matches!(url.scheme(), "http" | "https") {
             return Err(format!("unsupported URL scheme: {}", url.scheme()));
         }
@@ -302,6 +469,10 @@ impl HostDispatcher {
                     }
                 }
                 let _ = promise.resolve_undefined();
+                return;
+            }
+            if let Err(error) = permissions.ensure_active() {
+                let _ = promise.reject_message(&error);
                 return;
             }
             if !accepting.get() {
@@ -783,7 +954,11 @@ async fn read_text_file(
         serde_json::from_str(payload).map_err(|error| format!("invalid fs payload: {error}"))?;
     let _ = request.request_id;
     let authorized = permissions.authorize_read(Path::new(&request.path))?;
-    let display_path = authorized.display_path;
+    let display_path = if permissions.active.is_some() {
+        "scoped file".to_owned()
+    } else {
+        authorized.display_path.display().to_string()
+    };
     tasks
         .run_blocking(move || {
             let mut options = OpenOptions::new();
@@ -811,16 +986,10 @@ async fn read_text_file(
         })
         .await
         .map_err(|error| {
-            format!(
-                "file read task failed for {}: {error}",
-                display_path.display()
-            )
+            permissions.scoped_error(&format!("file read task failed for {display_path}"), error)
         })?
         .map_err(|error| {
-            format!(
-                "cannot read {} as UTF-8 text: {error}",
-                display_path.display()
-            )
+            permissions.scoped_error(&format!("cannot read {display_path} as UTF-8 text"), error)
         })
 }
 
@@ -833,7 +1002,12 @@ fn open_file_stream(
     let request: ReadTextFilePayload =
         serde_json::from_str(payload).map_err(|error| format!("invalid fs payload: {error}"))?;
     let authorized = permissions.authorize_read(Path::new(&request.path))?;
-    let display_path = authorized.display_path;
+    let display_path = if permissions.active.is_some() {
+        "scoped file".to_owned()
+    } else {
+        authorized.display_path.display().to_string()
+    };
+    let scoped = permissions.active.is_some();
     let (sender, receiver) = mpsc::channel(STREAM_BUFFER_CHUNKS);
     let producer = tasks.spawn_blocking(move || {
         let result = (|| -> io::Result<()> {
@@ -864,10 +1038,12 @@ fn open_file_stream(
             }
         })();
         if let Err(error) = result {
-            let _ = sender.blocking_send(StreamMessage::Error(format!(
-                "cannot stream {}: {error}",
-                display_path.display()
-            )));
+            let detail = if scoped {
+                "cannot stream scoped file".to_owned()
+            } else {
+                format!("cannot stream {display_path}: {error}")
+            };
+            let _ = sender.blocking_send(StreamMessage::Error(detail));
         }
     });
     let metadata = serde_json::to_string(&StreamMetadata { stream_id })
@@ -956,14 +1132,14 @@ async fn http_request(
     let mut response = prepare_http_request(payload, permissions, client)?
         .send()
         .await
-        .map_err(|error| format!("HTTP request failed: {error}"))?;
+        .map_err(|error| permissions.scoped_error("HTTP request failed", error))?;
     let status = response.status().as_u16();
     let headers = response_headers(&response);
     let mut body = Vec::new();
     while let Some(chunk) = response
         .chunk()
         .await
-        .map_err(|error| format!("could not read HTTP response body: {error}"))?
+        .map_err(|error| permissions.scoped_error("could not read HTTP response body", error))?
     {
         if body.len().saturating_add(chunk.len()) > MAX_HTTP_RESPONSE_BYTES {
             return Err(format!(
@@ -992,7 +1168,7 @@ async fn open_http_stream(
     let mut response = prepare_http_request(payload, permissions, client)?
         .send()
         .await
-        .map_err(|error| format!("HTTP request failed: {error}"))?;
+        .map_err(|error| permissions.scoped_error("HTTP request failed", error))?;
     let metadata = serde_json::to_string(&HttpStreamMetadata {
         stream_id,
         status: response.status().as_u16(),
@@ -1000,6 +1176,7 @@ async fn open_http_stream(
     })
     .map_err(|error| format!("could not encode HTTP stream metadata: {error}"))?;
     let (sender, receiver) = mpsc::channel(STREAM_BUFFER_CHUNKS);
+    let scoped = permissions.active.is_some();
     let producer = tasks.spawn(async move {
         loop {
             match response.chunk().await {
@@ -1019,11 +1196,12 @@ async fn open_http_stream(
                     return;
                 }
                 Err(error) => {
-                    let _ = sender
-                        .send(StreamMessage::Error(format!(
-                            "could not read HTTP response body: {error}"
-                        )))
-                        .await;
+                    let detail = if scoped {
+                        "could not read HTTP response body".to_owned()
+                    } else {
+                        format!("could not read HTTP response body: {error}")
+                    };
+                    let _ = sender.send(StreamMessage::Error(detail)).await;
                     return;
                 }
             }

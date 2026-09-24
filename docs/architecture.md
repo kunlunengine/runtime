@@ -44,9 +44,9 @@ export default {
 }
 ```
 
-The exact JavaScript API will be finalized with cross-runtime conformance tests. The manifest is
-data; the server bundle is code. Mixing the two would either lose handlers or require unsafe source
-serialization.
+The [runtime manifest v1 contract](./runtime-manifest-v1.md) now defines the data-only schema,
+artifact admission, and proposed Fetch entry shape. The server bundle remains separate executable
+code. Cross-runtime entry invocation and HTTP conformance are tracked by #51–#53.
 
 ## Native layers
 
@@ -124,5 +124,5 @@ The runtime manifest carries a schema version and required engine ABI. The runti
 major schemas and unsupported required features before executing code. Node and JSC implementations
 share conformance fixtures for Fetch behavior, routing, errors, streaming, aborts, and shutdown.
 
-The bootstrap in this repository intentionally stops below this contract. It supports async function
-bodies and capability-gated built-ins, but it is not yet a native ESM/Fetch production interface.
+The native runtime now parses and admits runtime-manifest v1 artifacts, including checked source
+and asset snapshots. Fetch entry invocation and HTTP serving remain future M3 work.

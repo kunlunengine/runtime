@@ -7,10 +7,18 @@
   "exports": {
     ".": {
       "types": "./index.d.ts"
+    },
+    "./runtime-manifest-v1": {
+      "types": "./runtime-manifest-v1.d.ts"
+    },
+    "./server-entry-v1": {
+      "types": "./server-entry-v1.d.ts"
     }
   },
   "files": [
     "index.d.ts",
+    "runtime-manifest-v1.d.ts",
+    "server-entry-v1.d.ts",
     "web.d.ts",
     "streams.d.ts",
     "STREAMS-LICENSE"

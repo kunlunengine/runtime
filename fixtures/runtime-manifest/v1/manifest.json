@@ -1,0 +1,52 @@
+{
+  "schema": "kunlun.runtime-manifest/v1",
+  "engine": {
+    "abi": 1,
+    "runtime_profile": "kunlun-m2-web/1"
+  },
+  "entry_contract": "kunlun.fetch-entry/v1",
+  "entry": "./server.mjs",
+  "files": [
+    {
+      "url": "./server.mjs",
+      "kind": "module",
+      "sha256": "3ac0c669f7e4da16d48424700542d019603f902f9ffcf5c36a253b3295949588"
+    },
+    {
+      "url": "./chunks/%E9%97%AE%E5%80%99%25%20space.mjs",
+      "kind": "module",
+      "sha256": "d524fdf77d0f35d7b699b222b621c3f0487f82b403af26b64f753382f03c6c2d"
+    },
+    {
+      "url": "./maps/server.mjs.map",
+      "kind": "source_map",
+      "sha256": "4ad7c0b71aa98d240948a24d98bd54868e14ed2a6ae83d54552345a8016b63d5",
+      "for": "./server.mjs"
+    },
+    {
+      "url": "./assets/help/%E6%AC%A2%E8%BF%8E%20%E7%BB%84%E4%BB%B6.svg",
+      "kind": "asset",
+      "sha256": "4125930436b720da3bdd9eaca63e9c7b177d69aa958e2228b3503a032ff29f88"
+    }
+  ],
+  "required_features": [
+    "closed-module-graph"
+  ],
+  "compatibility_flags": [
+    "source-map-v3"
+  ],
+  "capabilities": {
+    "required": [
+      {
+        "name": "http.host",
+        "resource": "api.example.test"
+      }
+    ],
+    "optional": [
+      {
+        "name": "fs.binding",
+        "resource": "public-data"
+      }
+    ]
+  }
+}

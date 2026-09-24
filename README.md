@@ -55,6 +55,8 @@ availability and checks leap-day arithmetic. See [Temporal](./docs/module-loadin
 
 The M2 [Web runtime profile v1](./docs/runtime-profile-v1.md) provides console, UTF-8 encoding,
 URL, Web Streams and crypto primitives, available globally and from `kunlun:web`.
+The M3 [runtime manifest v1](./docs/runtime-manifest-v1.md) defines data-only server artifacts
+and fail-closed admission; Fetch entry invocation remains tracked by #51.
 
 ## Design documents
 
@@ -78,6 +80,8 @@ URL, Web Streams and crypto primitives, available globally and from `kunlun:web`
 - [docs/m2-exit-gate.md](./docs/m2-exit-gate.md) — four-platform conformance, leak/sanitizer evidence,
   and the immutable-commit M2 release-validation procedure.
 - [docs/module-loading.md](./docs/module-loading.md) — M2 URL resolver contract and native ESM boundary.
+- [docs/runtime-manifest-v1.md](./docs/runtime-manifest-v1.md) — M3 artifact schema, integrity,
+  admission, and proposed Fetch entry contract.
 - [docs/kunlun-cli.md](./docs/kunlun-cli.md) — the Vite+-class `kunlun` command surface and generator model.
 - [docs/cli-toolchain-plan.md](./docs/cli-toolchain-plan.md) — package-manager, toolchain, native-build,
   and Lightning-provider decisions.

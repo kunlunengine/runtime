@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/kunlunengine/runtime/blob/main/schemas/runtime-manifest-v1.schema.json",
+  "title": "Kunlun runtime artifact manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "engine", "entry_contract", "entry", "files", "required_features", "compatibility_flags", "capabilities"],
+  "properties": {
+    "schema": { "const": "kunlun.runtime-manifest/v1" },
+    "engine": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["abi", "runtime_profile"],
+      "properties": {
+        "abi": { "const": 1 },
+        "runtime_profile": { "const": "kunlun-m2-web/1" }
+      }
+    },
+    "entry_contract": { "const": "kunlun.fetch-entry/v1" },
+    "entry": { "$ref": "#/$defs/artifactUrl" },
+    "files": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 1024,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["url", "kind", "sha256"],
+        "if": { "properties": { "kind": { "const": "source_map" } }, "required": ["kind"] },
+        "then": { "required": ["for"] },
+        "else": { "not": { "required": ["for"] } },
+        "properties": {
+          "url": { "$ref": "#/$defs/artifactUrl" },
+          "kind": { "enum": ["module", "asset", "source_map"] },
+          "sha256": { "$ref": "#/$defs/sha256" },
+          "for": { "$ref": "#/$defs/artifactUrl" }
+        }
+      }
+    },
+    "required_features": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "enum": ["closed-module-graph"] }
+    },
+    "compatibility_flags": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "enum": ["source-map-v3"] }
+    },
+    "capabilities": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["required", "optional"],
+      "properties": {
+        "required": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/capability" } },
+        "optional": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/capability" } }
+      }
+    }
+  },
+  "$defs": {
+    "artifactUrl": {
+      "type": "string",
+      "pattern": "^\\./[^?#\\\\]+$",
+      "description": "Canonical percent-encoded root-relative file URL; semantic canonicality is checked by the runtime resolver."
+    },
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "capability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "resource"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "resource": { "type": "string", "minLength": 1, "maxLength": 256 }
+      }
+    }
+  }
+}

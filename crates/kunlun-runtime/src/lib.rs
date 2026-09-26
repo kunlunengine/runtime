@@ -99,6 +99,7 @@ pub struct RuntimeResourceCounts {
     pub pending_host_calls: usize,
     pub request_ids: usize,
     pub streams: usize,
+    pub uploads: usize,
     pub active_tasks: usize,
 }
 

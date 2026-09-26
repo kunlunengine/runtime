@@ -7,5 +7,6 @@ modules are supplied by `kunlun-runtime`. Run `cargo run -p kunlun-runtime -- ty
 declarations embedded in the native runtime.
 
 The `runtime-manifest-v1` subpath is the data-only artifact contract. The
-`server-entry-v1` subpath describes the proposed Fetch handler for M3; native
-invocation is not implemented yet. See [the contract](../docs/runtime-manifest-v1.md).
+`server-entry-v1` subpath describes the Fetch handler for M3; native inbound
+invocation is tracked by #51. The outbound Fetch profile is documented in
+[the Fetch profile](../docs/fetch-profile-v1.md).

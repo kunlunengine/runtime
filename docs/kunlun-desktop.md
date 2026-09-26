@@ -10,6 +10,25 @@ is a separate RFC, not an iOS CEF support claim. Neither provides native qualifi
 
 ## Decision
 
+### Repository ownership
+
+Kunlun Desktop implementation belongs in a **separate repository**, not a crate in
+this runtime workspace. That repository owns the CEF pin and renderer adapter,
+browser process, native windows and menus, IPC broker, signing, packaging,
+updater, and per-platform sandbox qualification. It releases and responds to
+Chromium security updates on its own cadence. The exact repository name can be
+chosen when the first implementation is created; this decision does not create
+or claim an existing repository.
+
+This runtime repository owns JSC execution, host capabilities, the Inspector
+endpoint, and the versioned protocol and conformance fixtures at the boundary.
+Desktop consumes the runtime as a separately contained service or pinned
+distribution. It must not make `kunlun-runtime` depend on CEF, GUI toolkits, or
+Desktop packaging. Protocol schemas and fixture revisions are pinned across the
+two repositories; an incompatible pairing fails startup negotiation. The
+standalone DevTools product remains a separate client of that boundary, with
+Kunlun Desktop as its first native presentation host.
+
 The first production-qualified Kunlun Desktop presentation backend uses a **pinned CEF/Chromium
 distribution**. Chromium is a presentation engine only: it does not become the Kunlun application
 runtime, and Kunlun Desktop does not adopt Electron's Node-in-the-renderer architecture.

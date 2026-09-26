@@ -23,6 +23,10 @@ pub const BUILTIN_MODULES: &[BuiltinModuleDescriptor] = &[
             "crypto",
             "AbortController",
             "AbortSignal",
+            "Headers",
+            "Request",
+            "Response",
+            "fetch",
         ],
     },
     BuiltinModuleDescriptor {
@@ -334,8 +338,12 @@ const BOOTSTRAP_SOURCE: &str = r#"
     },
   });
 
+  const webExports = {};
+  for (const name of ['console', 'TextEncoder', 'TextDecoder', 'URL', 'URLSearchParams', 'ReadableStream', 'WritableStream', 'TransformStream', 'ByteLengthQueuingStrategy', 'CountQueuingStrategy', 'crypto', 'AbortController', 'AbortSignal', 'Headers', 'Request', 'Response', 'fetch']) {
+    Object.defineProperty(webExports, name, { enumerable: true, get: () => globalThis[name] });
+  }
   const modules = Object.freeze({
-    'kunlun:web': asModule(Object.fromEntries(['console', 'TextEncoder', 'TextDecoder', 'URL', 'URLSearchParams', 'ReadableStream', 'WritableStream', 'TransformStream', 'ByteLengthQueuingStrategy', 'CountQueuingStrategy', 'crypto', 'AbortController', 'AbortSignal'].map(name => [name, globalThis[name]]))),
+    'kunlun:web': asModule(webExports),
     'kunlun:fs': fs,
     'kunlun:http': http,
   });
@@ -354,12 +362,19 @@ const BOOTSTRAP_SOURCE: &str = r#"
     enumerable: false,
     writable: false,
   });
+  Object.defineProperty(globalThis, '__kunlunFetchBridge', {
+    value: Object.freeze({
+      invoke, HostByteStream,
+      upload(operation, payload) { return hostCall(operation, JSON.stringify(payload)); },
+    }), configurable: true,
+  });
   delete globalThis.__kunlunHostCall;
 })();
 "#;
 
 pub(crate) fn install_builtin_modules(vm: &mut JscVm) -> Result<(), JscError> {
     vm.evaluate(BOOTSTRAP_SOURCE, "kunlun:bootstrap/builtins")?;
+    vm.evaluate(include_str!("fetch.js"), "kunlun:bootstrap/fetch")?;
     Ok(())
 }
 

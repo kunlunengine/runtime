@@ -29,6 +29,7 @@ sourcemap.workspace = true
 libc.workspace = true
 kunlun-jsc.workspace = true
 reqwest.workspace = true
+futures-util.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true

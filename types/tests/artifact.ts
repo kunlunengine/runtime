@@ -16,7 +16,7 @@ const manifest = {
 const entry: ServerEntryV1 = {
   fetch(request, env, executionContext) {
     executionContext.waitUntil(Promise.resolve(request.url))
-    return { status: 200, body: null }
+    return new Response(null, { status: 200 })
   },
 }
 

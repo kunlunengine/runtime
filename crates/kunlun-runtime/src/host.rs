@@ -27,6 +27,7 @@ pub struct HostPermissions {
     read_roots: Vec<ReadRoot>,
     read_bindings: BTreeMap<String, ReadRoot>,
     net_hosts: HashSet<String>,
+    fetch_hosts: HashSet<String>,
     active: Option<Arc<AtomicBool>>,
     request_active: Option<Arc<AtomicBool>>,
 }
@@ -99,6 +100,13 @@ impl HostPermissions {
         self
     }
 
+    /// Grant application Fetch access to one exact host for direct trusted
+    /// execution. Artifact admission derives Fetch grants from its own scope.
+    pub fn allow_fetch_host(mut self, host: impl Into<String>) -> Self {
+        self.fetch_hosts.insert(host.into().to_ascii_lowercase());
+        self
+    }
+
     pub(crate) fn supports_capability(name: &str) -> bool {
         matches!(name, "http.host" | "fs.binding")
     }
@@ -131,6 +139,7 @@ impl HostPermissions {
             match capability.name.as_str() {
                 "http.host" => {
                     scoped.net_hosts.insert(capability.resource.clone());
+                    scoped.fetch_hosts.insert(capability.resource.clone());
                 }
                 "fs.binding" => {
                     let root = self.read_bindings[&capability.resource].clone();
@@ -246,14 +255,7 @@ impl HostPermissions {
     }
 
     fn authorize_url(&self, url: &reqwest::Url) -> Result<(), String> {
-        self.ensure_active()?;
-        if !matches!(url.scheme(), "http" | "https") {
-            return Err(format!("unsupported URL scheme: {}", url.scheme()));
-        }
-        let host = url
-            .host_str()
-            .ok_or_else(|| "HTTP URL does not contain a host".to_owned())?
-            .to_ascii_lowercase();
+        let host = self.authorized_http_host(url)?;
         if self.net_hosts.contains(&host) {
             Ok(())
         } else {
@@ -261,6 +263,26 @@ impl HostPermissions {
                 "network access denied for {host}; grant it with --allow-net {host}"
             ))
         }
+    }
+
+    fn authorize_fetch_url(&self, url: &reqwest::Url) -> Result<(), String> {
+        let host = self.authorized_http_host(url)?;
+        if self.fetch_hosts.contains(&host) {
+            Ok(())
+        } else {
+            Err(format!("Fetch capability denied for {host}"))
+        }
+    }
+
+    fn authorized_http_host(&self, url: &reqwest::Url) -> Result<String, String> {
+        self.ensure_active()?;
+        if !matches!(url.scheme(), "http" | "https") {
+            return Err(format!("unsupported URL scheme: {}", url.scheme()));
+        }
+        let host = url
+            .host_str()
+            .ok_or_else(|| "HTTP URL does not contain a host".to_owned())?;
+        Ok(host.to_ascii_lowercase())
     }
 }
 
@@ -380,8 +402,15 @@ struct PendingHostCall {
     evaluation_id: Option<u64>,
     request_id: Option<u64>,
     stream_id: Option<u64>,
+    upload_id: Option<u64>,
     promise: DeferredPromise,
     task: AbortHandle,
+}
+
+struct UploadState {
+    evaluation_id: Option<u64>,
+    sender: Sender<Vec<u8>>,
+    aborted: Arc<AtomicBool>,
 }
 
 pub(crate) struct HostDispatcher {
@@ -390,6 +419,7 @@ pub(crate) struct HostDispatcher {
     pending: Rc<RefCell<HashMap<u64, PendingHostCall>>>,
     request_ids: Rc<RefCell<HashMap<u64, u64>>>,
     streams: Rc<RefCell<HashMap<u64, StreamState>>>,
+    uploads: Rc<RefCell<HashMap<u64, UploadState>>>,
     active_evaluation: Rc<Cell<Option<u64>>>,
     accepting: Rc<Cell<bool>>,
     completion_tx: Sender<Completion>,
@@ -397,6 +427,7 @@ pub(crate) struct HostDispatcher {
     buffered_completions: VecDeque<Completion>,
     permissions: HostPermissions,
     http_client: reqwest::Client,
+    fetch_client: reqwest::Client,
     tasks: TaskTracker,
 }
 
@@ -406,12 +437,17 @@ impl HostDispatcher {
         let http_client = reqwest::Client::builder()
             .redirect(Policy::none())
             .build()?;
+        let fetch_client = reqwest::Client::builder()
+            .redirect(Policy::none())
+            .no_proxy()
+            .build()?;
         Ok(Self {
             next_id: Rc::new(Cell::new(1)),
             next_stream_id: Rc::new(Cell::new(1)),
             pending: Rc::new(RefCell::new(HashMap::new())),
             request_ids: Rc::new(RefCell::new(HashMap::new())),
             streams: Rc::new(RefCell::new(HashMap::new())),
+            uploads: Rc::new(RefCell::new(HashMap::new())),
             active_evaluation: Rc::new(Cell::new(None)),
             accepting: Rc::new(Cell::new(true)),
             completion_tx,
@@ -419,6 +455,7 @@ impl HostDispatcher {
             buffered_completions: VecDeque::new(),
             permissions,
             http_client,
+            fetch_client,
             tasks: TaskTracker::default(),
         })
     }
@@ -429,11 +466,13 @@ impl HostDispatcher {
         let pending = Rc::clone(&self.pending);
         let request_ids = Rc::clone(&self.request_ids);
         let streams = Rc::clone(&self.streams);
+        let uploads = Rc::clone(&self.uploads);
         let active_evaluation = Rc::clone(&self.active_evaluation);
         let accepting = Rc::clone(&self.accepting);
         let completion_tx = self.completion_tx.clone();
         let permissions = self.permissions.clone();
         let http_client = self.http_client.clone();
+        let fetch_client = self.fetch_client.clone();
         let tasks = self.tasks.clone();
 
         vm.install_host_call_scheduler(move |call, promise| {
@@ -444,6 +483,7 @@ impl HostDispatcher {
                         &pending,
                         &request_ids,
                         &streams,
+                        &uploads,
                         "Kunlun host operation aborted",
                     ),
                     Err(error) => {
@@ -479,6 +519,31 @@ impl HostDispatcher {
                 let _ = promise.reject_message("Kunlun runtime is shutting down");
                 return;
             }
+            if matches!(
+                call.operation.as_str(),
+                "fetch.upload.close" | "fetch.upload.abort"
+            ) {
+                match serde_json::from_str::<UploadIdentity>(&call.payload) {
+                    Ok(identity)
+                        if uploads
+                            .borrow()
+                            .get(&identity.upload_id)
+                            .is_some_and(|upload| {
+                                upload.evaluation_id == active_evaluation.get()
+                            }) =>
+                    {
+                        let upload = uploads.borrow_mut().remove(&identity.upload_id).unwrap();
+                        if call.operation == "fetch.upload.abort" {
+                            upload.aborted.store(true, Ordering::Release);
+                        }
+                        let _ = promise.resolve_undefined();
+                    }
+                    _ => {
+                        let _ = promise.reject_message("unknown Fetch upload");
+                    }
+                }
+                return;
+            }
             if pending.borrow().len() >= MAX_IN_FLIGHT_HOST_CALLS {
                 let _ = promise.reject_message(&format!(
                     "too many in-flight Kunlun host calls; limit is {MAX_IN_FLIGHT_HOST_CALLS}"
@@ -500,6 +565,59 @@ impl HostDispatcher {
 
             let id = take_id(&next_id);
             let evaluation_id = active_evaluation.get();
+            let mut upload_receiver = None;
+            let mut upload_id = None;
+            if call.operation == "fetch.requestStream" {
+                match serde_json::from_str::<FetchRequestPayload>(&call.payload) {
+                    Ok(request) => {
+                        if let Some(candidate) = request.upload_id {
+                            if uploads.borrow().contains_key(&candidate)
+                                || uploads.borrow().len() >= MAX_IN_FLIGHT_HOST_CALLS
+                            {
+                                let _ = promise.reject_message(
+                                    "Fetch upload ID is already active or limit reached",
+                                );
+                                return;
+                            }
+                            let (sender, receiver) = mpsc::channel(STREAM_BUFFER_CHUNKS);
+                            let aborted = Arc::new(AtomicBool::new(false));
+                            uploads.borrow_mut().insert(
+                                candidate,
+                                UploadState {
+                                    evaluation_id,
+                                    sender,
+                                    aborted: Arc::clone(&aborted),
+                                },
+                            );
+                            upload_receiver = Some((receiver, aborted));
+                            upload_id = Some(candidate);
+                        }
+                    }
+                    Err(error) => {
+                        let _ = promise.reject_message(&format!("invalid Fetch payload: {error}"));
+                        return;
+                    }
+                }
+            }
+            let upload_sender = if call.operation == "fetch.upload.write" {
+                match serde_json::from_str::<UploadIdentity>(&call.payload) {
+                    Ok(identity) => match uploads.borrow().get(&identity.upload_id) {
+                        Some(upload) if upload.evaluation_id == evaluation_id => {
+                            Some(upload.sender.clone())
+                        }
+                        _ => {
+                            let _ = promise.reject_message("unknown Fetch upload");
+                            return;
+                        }
+                    },
+                    Err(error) => {
+                        let _ = promise.reject_message(&format!("invalid Fetch upload: {error}"));
+                        return;
+                    }
+                }
+            } else {
+                None
+            };
             let stream_id = if call.operation == "stream.next" {
                 match prepare_stream_pull(&call.payload, &streams) {
                     Ok(stream_id) => Some(stream_id),
@@ -513,7 +631,7 @@ impl HostDispatcher {
             };
             let opened_stream_id = matches!(
                 call.operation.as_str(),
-                "fs.openReadStream" | "http.requestStream"
+                "fs.openReadStream" | "http.requestStream" | "fetch.requestStream"
             )
             .then(|| take_id(&next_stream_id));
             let task = dispatch(
@@ -521,9 +639,12 @@ impl HostDispatcher {
                 call,
                 stream_id,
                 opened_stream_id,
+                upload_receiver,
+                upload_sender,
                 &streams,
                 permissions.clone(),
                 http_client.clone(),
+                fetch_client.clone(),
                 completion_tx.clone(),
                 tasks.clone(),
             );
@@ -533,6 +654,7 @@ impl HostDispatcher {
                     evaluation_id,
                     request_id,
                     stream_id,
+                    upload_id,
                     promise,
                     task,
                 },
@@ -557,6 +679,7 @@ impl HostDispatcher {
             pending_host_calls: self.pending.borrow().len(),
             request_ids: self.request_ids.borrow().len(),
             streams: self.streams.borrow().len(),
+            uploads: self.uploads.borrow().len(),
             active_tasks: self.tasks.active.load(Ordering::Acquire),
             ..crate::RuntimeResourceCounts::default()
         }
@@ -594,6 +717,13 @@ impl HostDispatcher {
         for id in &ids {
             remove_pending(*id, &self.pending, &self.request_ids, &self.streams, None);
         }
+        self.uploads.borrow_mut().retain(|_, upload| {
+            let keep = upload.evaluation_id != Some(evaluation_id);
+            if !keep {
+                upload.aborted.store(true, Ordering::Release);
+            }
+            keep
+        });
         self.discard_completions(&ids.into_iter().collect());
     }
 
@@ -613,6 +743,11 @@ impl HostDispatcher {
             let Some(call) = call else {
                 continue;
             };
+            if matches!(&completion.value, CompletionValue::Value(Err(_))) {
+                if let Some(upload_id) = call.upload_id {
+                    self.uploads.borrow_mut().remove(&upload_id);
+                }
+            }
             let terminal_stream = completion.terminal_stream;
             let stream_id = call.stream_id;
             match completion.value {
@@ -655,6 +790,7 @@ impl HostDispatcher {
     pub(crate) async fn shutdown(&mut self, vm: &JscVm, grace: Duration) -> Result<bool, JscError> {
         self.accepting.set(false);
         self.active_evaluation.set(None);
+        self.uploads.borrow_mut().clear();
         let stream_ids: Vec<_> = self.streams.borrow().keys().copied().collect();
         for stream_id in stream_ids {
             cancel_stream(
@@ -710,12 +846,66 @@ impl HostDispatcher {
 impl Drop for HostDispatcher {
     fn drop(&mut self) {
         self.accepting.set(false);
+        for upload in self.uploads.borrow().values() {
+            upload.aborted.store(true, Ordering::Release);
+        }
+        self.uploads.borrow_mut().clear();
         for call in self.pending.borrow().values() {
             call.task.abort();
         }
         self.pending.borrow_mut().clear();
         self.request_ids.borrow_mut().clear();
         self.streams.borrow_mut().clear();
+    }
+}
+
+#[cfg(test)]
+mod fetch_grant_tests {
+    use super::*;
+    use crate::{Capability, CapabilityRequirements};
+
+    #[test]
+    fn artifact_fetch_authority_is_the_declaration_grant_intersection() {
+        let capability = Capability {
+            name: "http.host".into(),
+            resource: "api.example.test".into(),
+        };
+        let declarations = CapabilityRequirements {
+            required: vec![capability.clone()],
+            optional: vec![Capability {
+                name: "http.host".into(),
+                resource: "missing.test".into(),
+            }],
+        };
+        let deployment = HostPermissions::none()
+            .allow_net_host("api.example.test")
+            .allow_net_host("unexpected.test")
+            .allow_fetch_host("unexpected.test");
+        let active = Arc::new(AtomicBool::new(true));
+        let (permissions, effective) = deployment.scoped_to(&declarations, Arc::clone(&active));
+        assert!(effective.contains(&capability));
+        assert_eq!(effective.len(), 1);
+        assert!(
+            permissions
+                .authorize_fetch_url(&reqwest::Url::parse("https://api.example.test/").unwrap())
+                .is_ok()
+        );
+        assert!(
+            permissions
+                .authorize_fetch_url(&reqwest::Url::parse("https://unexpected.test/").unwrap())
+                .is_err()
+        );
+        assert!(
+            permissions
+                .authorize_url(&reqwest::Url::parse("https://api.example.test/").unwrap())
+                .is_ok()
+        );
+        active.store(false, Ordering::Release);
+        assert!(
+            permissions
+                .authorize_fetch_url(&reqwest::Url::parse("https://api.example.test/").unwrap())
+                .is_err()
+        );
     }
 }
 
@@ -810,11 +1000,17 @@ fn cancel_request(
     pending: &Rc<RefCell<HashMap<u64, PendingHostCall>>>,
     request_ids: &Rc<RefCell<HashMap<u64, u64>>>,
     streams: &Rc<RefCell<HashMap<u64, StreamState>>>,
+    uploads: &Rc<RefCell<HashMap<u64, UploadState>>>,
     message: &str,
 ) {
     let Some(id) = request_ids.borrow().get(&request_id).copied() else {
         return;
     };
+    if let Some(upload_id) = pending.borrow().get(&id).and_then(|call| call.upload_id) {
+        if let Some(upload) = uploads.borrow_mut().remove(&upload_id) {
+            upload.aborted.store(true, Ordering::Release);
+        }
+    }
     let _ = remove_pending(id, pending, request_ids, streams, Some(message));
 }
 
@@ -842,9 +1038,12 @@ fn dispatch(
     call: HostCall,
     stream_id: Option<u64>,
     opened_stream_id: Option<u64>,
+    upload_receiver: Option<(Receiver<Vec<u8>>, Arc<AtomicBool>)>,
+    upload_sender: Option<Sender<Vec<u8>>>,
     streams: &Rc<RefCell<HashMap<u64, StreamState>>>,
     permissions: HostPermissions,
     http_client: reqwest::Client,
+    fetch_client: reqwest::Client,
     completion_tx: Sender<Completion>,
     tasks: TaskTracker,
 ) -> AbortHandle {
@@ -889,6 +1088,22 @@ fn dispatch(
                 .await;
                 (stream_result(result), false)
             }
+            "fetch.requestStream" => {
+                let result = open_fetch_stream(
+                    &call.payload,
+                    opened_stream_id.expect("stream ID assigned to stream operation"),
+                    upload_receiver,
+                    &permissions,
+                    &fetch_client,
+                    &task_tracker,
+                )
+                .await;
+                (stream_result(result), false)
+            }
+            "fetch.upload.write" => (
+                CompletionValue::Value(write_fetch_upload(&call.payload, upload_sender).await),
+                false,
+            ),
             "stream.next" => match stream_receiver {
                 Some(receiver) => {
                     let message = receiver.lock().await.recv().await;
@@ -1086,6 +1301,216 @@ struct HttpStreamMetadata {
     stream_id: u64,
     status: u16,
     headers: BTreeMap<String, String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct FetchRequestPayload {
+    url: String,
+    method: String,
+    headers: Vec<(String, String)>,
+    body_base64: Option<String>,
+    upload_id: Option<u64>,
+    request_id: Option<u64>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UploadIdentity {
+    upload_id: u64,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UploadChunkPayload {
+    upload_id: u64,
+    chunk_base64: String,
+}
+
+async fn write_fetch_upload(
+    payload: &str,
+    sender: Option<Sender<Vec<u8>>>,
+) -> Result<String, String> {
+    let request: UploadChunkPayload =
+        serde_json::from_str(payload).map_err(|error| format!("invalid Fetch upload: {error}"))?;
+    let _ = request.upload_id;
+    if request.chunk_base64.len() > 90_000 {
+        return Err("Fetch upload chunk exceeds 64 KiB".into());
+    }
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(request.chunk_base64)
+        .map_err(|error| format!("invalid Fetch upload chunk: {error}"))?;
+    if bytes.len() > STREAM_CHUNK_BYTES {
+        return Err("Fetch upload chunk exceeds 64 KiB".into());
+    }
+    sender
+        .ok_or("unknown Fetch upload")?
+        .send(bytes)
+        .await
+        .map_err(|_| "Fetch upload was cancelled".to_owned())?;
+    Ok(String::new())
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FetchStreamMetadata {
+    stream_id: u64,
+    url: String,
+    status: u16,
+    status_text: String,
+    headers: Vec<(String, String)>,
+}
+
+async fn open_fetch_stream(
+    payload: &str,
+    stream_id: u64,
+    upload_receiver: Option<(Receiver<Vec<u8>>, Arc<AtomicBool>)>,
+    permissions: &HostPermissions,
+    client: &reqwest::Client,
+    tasks: &TaskTracker,
+) -> Result<OpenedStream, String> {
+    let request: FetchRequestPayload =
+        serde_json::from_str(payload).map_err(|error| format!("invalid Fetch payload: {error}"))?;
+    let _ = request.request_id;
+    let url = reqwest::Url::parse(&request.url)
+        .map_err(|error| permissions.scoped_error("invalid Fetch URL", error))?;
+    permissions.authorize_fetch_url(&url)?;
+    let method = reqwest::Method::from_bytes(request.method.as_bytes())
+        .map_err(|error| format!("invalid Fetch method: {error}"))?;
+    if request.headers.len() > 256
+        || request
+            .headers
+            .iter()
+            .map(|(n, v)| n.len() + v.len())
+            .sum::<usize>()
+            > 64 * 1024
+    {
+        return Err("Fetch headers exceed the profile limit".into());
+    }
+    let mut builder = client.request(method, url);
+    for (name, value) in request.headers {
+        if matches!(
+            name.to_ascii_lowercase().as_str(),
+            "host"
+                | "content-length"
+                | "transfer-encoding"
+                | "connection"
+                | "upgrade"
+                | "proxy-authorization"
+                | "te"
+                | "trailer"
+                | "keep-alive"
+        ) {
+            return Err(format!("unsupported Fetch request header: {name}"));
+        }
+        builder = builder.header(&name, &value);
+    }
+    if request.upload_id.is_some() && request.body_base64.is_some() {
+        return Err("Fetch request cannot combine buffered and streaming bodies".into());
+    }
+    if request.upload_id.is_some() != upload_receiver.is_some() {
+        return Err("Fetch upload channel is missing".into());
+    }
+    if let Some((receiver, aborted)) = upload_receiver {
+        let stream = futures_util::stream::unfold(
+            (receiver, aborted, false),
+            |(mut receiver, aborted, ended)| async move {
+                if ended {
+                    return None;
+                }
+                match receiver.recv().await {
+                    Some(bytes) => {
+                        Some((Ok::<Vec<u8>, io::Error>(bytes), (receiver, aborted, false)))
+                    }
+                    None if aborted.load(Ordering::Acquire) => Some((
+                        Err(io::Error::other("Fetch upload aborted")),
+                        (receiver, aborted, true),
+                    )),
+                    None => None,
+                }
+            },
+        );
+        builder = builder.body(reqwest::Body::wrap_stream(stream));
+    } else if let Some(body) = request.body_base64 {
+        if body.len() > 2 * 1024 * 1024 {
+            return Err("Fetch request body exceeds the profile limit".into());
+        }
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(body)
+            .map_err(|error| format!("invalid Fetch request body: {error}"))?;
+        if bytes.len() > 1024 * 1024 {
+            return Err("Fetch request body exceeds the profile limit".into());
+        }
+        builder = builder.body(bytes);
+    }
+    let response = builder
+        .send()
+        .await
+        .map_err(|error| permissions.scoped_error("Fetch request failed", error))?;
+    let metadata = serde_json::to_string(&FetchStreamMetadata {
+        stream_id,
+        url: response.url().to_string(),
+        status: response.status().as_u16(),
+        status_text: response
+            .status()
+            .canonical_reason()
+            .unwrap_or("")
+            .to_owned(),
+        headers: response
+            .headers()
+            .iter()
+            .map(|(name, value)| {
+                (
+                    name.as_str().to_owned(),
+                    value
+                        .as_bytes()
+                        .iter()
+                        .map(|byte| char::from(*byte))
+                        .collect(),
+                )
+            })
+            .collect(),
+    })
+    .map_err(|error| format!("could not encode Fetch metadata: {error}"))?;
+    let (sender, receiver) = mpsc::channel(STREAM_BUFFER_CHUNKS);
+    let scoped = permissions.active.is_some();
+    let producer = tasks.spawn(async move {
+        let mut response = response;
+        loop {
+            match response.chunk().await {
+                Ok(Some(chunk)) => {
+                    for part in chunk.chunks(STREAM_CHUNK_BYTES) {
+                        if sender
+                            .send(StreamMessage::Chunk(part.to_vec()))
+                            .await
+                            .is_err()
+                        {
+                            return;
+                        }
+                    }
+                }
+                Ok(None) => {
+                    let _ = sender.send(StreamMessage::Eof).await;
+                    return;
+                }
+                Err(error) => {
+                    let message = if scoped {
+                        "Fetch body failed".to_owned()
+                    } else {
+                        format!("Fetch body failed: {error}")
+                    };
+                    let _ = sender.send(StreamMessage::Error(message)).await;
+                    return;
+                }
+            }
+        }
+    });
+    Ok(OpenedStream {
+        stream_id,
+        metadata,
+        receiver,
+        producer,
+    })
 }
 
 fn prepare_http_request(

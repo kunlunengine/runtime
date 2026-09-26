@@ -31,11 +31,13 @@ The hand-written encoding, URL and crypto adapters do not implement the full Web
 (e.g. property descriptors, illegal receiver checks, required-argument arity errors and all
 exotic-object coercion cases). SharedArrayBuffer is not part of this profile. APIs use the
 current isolate's constructors; cross-realm inputs are not a compatibility target. No DOM,
-Window, navigator, fetch/Request/Response/Headers, WebSocket, Node modules, setTimeout or
-setInterval are introduced by this profile. Native ECMAScript globals (including Temporal on
+Window, navigator, WebSocket, Node modules, setTimeout or setInterval are introduced by this
+profile. Native ECMAScript globals (including Temporal on
 the pinned engine) remain governed by the [engine profile](./module-loading.md#temporal).
-The existing `sleep`, `kunlun.import`, `kunlun:fs` and `kunlun:http` surfaces and permissions
-remain specified by [builtins](./builtins.md) and [lifecycle](./lifecycle.md).
+M3 adds the [application Fetch profile](./fetch-profile-v1.md) without changing this
+M2 foundation's identifier. The existing `sleep`, `kunlun.import`, `kunlun:fs`
+and `kunlun:http` surfaces and permissions remain specified by
+[builtins](./builtins.md) and [lifecycle](./lifecycle.md).
 
 ### URL base and referrer behavior
 

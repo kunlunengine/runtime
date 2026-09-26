@@ -94,6 +94,9 @@ constructor supplies exactly those permissions to M2 built-ins. Legacy M2
 `allow_read_root` permissions do not count as M3 named bindings. See
 [M3 scoped authority](./m3-scoped-authority.md) for lifetime and denial rules.
 A JSC realm is not a hostile-code security boundary.
+The [outbound Fetch profile](./fetch-profile-v1.md) uses that same admitted
+`http.host` intersection and application lifetime. Request-specific JavaScript
+`env` exposure and inbound dispatch remain #51 work.
 
 `AdmissionErrorKind` has stable categories: `manifest` (syntax/shape/digest
 spelling), `schema`, `compatibility`, `capability`, `path`, `identity`,

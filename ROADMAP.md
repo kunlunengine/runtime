@@ -119,8 +119,9 @@ Rust FFI/IPC protocol or qualify a native Desktop/mobile host.
   source maps, compatibility flags, and integrity hashes.
 - Add the server-entry contract: `export default { fetch(request, env, executionContext) }`.
 - Extend core/build adapters to emit a `consumer: 'server'` bundle and runtime manifest.
-- Implement Fetch `Request`/`Response`, streaming bodies, aborts, headers, HTTP server lifecycle,
-  CORS, and graceful drain behavior compatible with `@kunlun-js/runtime-api`.
+- Implement outbound Fetch `Request`/`Response`, streaming bodies, aborts, and headers (#49;
+  [profile](./docs/fetch-profile-v1.md)). HTTP server lifecycle, CORS, and graceful drain
+  remain #51 work compatible with `@kunlun-js/runtime-api`.
 - Convert declared capabilities into opaque, scoped host handles; deny undeclared operations.
 - Add shared conformance fixtures that run on both `runtime-node` and native JSC.
 
@@ -143,7 +144,8 @@ Goal: source-level debugging for GUI, terminal, and agent-only environments with
   plugin with Skills, agents, hooks, and MCP integration where deeper lifecycle integration helps.
 - Build the desktop client as the first showcase for the prospective Kunlun Desktop framework
   (Kunlun Engine plus CEF or a platform WebView), with an optional embedded agent using the same
-  public tool contract.
+  public tool contract. Implement the Desktop host in a separate repository; this workspace owns
+  its versioned runtime/Inspector boundary and conformance fixtures, not a GUI crate.
 - Add a DAP bridge for VS Code, JetBrains, Zed, and other compatible clients without making any IDE
   the product boundary. Keep the browser-hosted WebKit Web Inspector as a bootstrap/fallback client.
 - Evolve the standalone DevTools platform beyond JSC into shared Web/native sessions, including

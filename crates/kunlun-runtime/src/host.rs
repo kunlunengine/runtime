@@ -410,6 +410,7 @@ struct PendingHostCall {
 struct UploadState {
     evaluation_id: Option<u64>,
     sender: Sender<Vec<u8>>,
+    aborted: Arc<AtomicBool>,
 }
 
 pub(crate) struct HostDispatcher {
@@ -518,9 +519,23 @@ impl HostDispatcher {
                 let _ = promise.reject_message("Kunlun runtime is shutting down");
                 return;
             }
-            if call.operation == "fetch.upload.close" {
+            if matches!(
+                call.operation.as_str(),
+                "fetch.upload.close" | "fetch.upload.abort"
+            ) {
                 match serde_json::from_str::<UploadIdentity>(&call.payload) {
-                    Ok(identity) if uploads.borrow_mut().remove(&identity.upload_id).is_some() => {
+                    Ok(identity)
+                        if uploads
+                            .borrow()
+                            .get(&identity.upload_id)
+                            .is_some_and(|upload| {
+                                upload.evaluation_id == active_evaluation.get()
+                            }) =>
+                    {
+                        let upload = uploads.borrow_mut().remove(&identity.upload_id).unwrap();
+                        if call.operation == "fetch.upload.abort" {
+                            upload.aborted.store(true, Ordering::Release);
+                        }
                         let _ = promise.resolve_undefined();
                     }
                     _ => {
@@ -565,14 +580,16 @@ impl HostDispatcher {
                                 return;
                             }
                             let (sender, receiver) = mpsc::channel(STREAM_BUFFER_CHUNKS);
+                            let aborted = Arc::new(AtomicBool::new(false));
                             uploads.borrow_mut().insert(
                                 candidate,
                                 UploadState {
                                     evaluation_id,
                                     sender,
+                                    aborted: Arc::clone(&aborted),
                                 },
                             );
-                            upload_receiver = Some(receiver);
+                            upload_receiver = Some((receiver, aborted));
                             upload_id = Some(candidate);
                         }
                     }
@@ -700,9 +717,13 @@ impl HostDispatcher {
         for id in &ids {
             remove_pending(*id, &self.pending, &self.request_ids, &self.streams, None);
         }
-        self.uploads
-            .borrow_mut()
-            .retain(|_, upload| upload.evaluation_id != Some(evaluation_id));
+        self.uploads.borrow_mut().retain(|_, upload| {
+            let keep = upload.evaluation_id != Some(evaluation_id);
+            if !keep {
+                upload.aborted.store(true, Ordering::Release);
+            }
+            keep
+        });
         self.discard_completions(&ids.into_iter().collect());
     }
 
@@ -825,6 +846,9 @@ impl HostDispatcher {
 impl Drop for HostDispatcher {
     fn drop(&mut self) {
         self.accepting.set(false);
+        for upload in self.uploads.borrow().values() {
+            upload.aborted.store(true, Ordering::Release);
+        }
         self.uploads.borrow_mut().clear();
         for call in self.pending.borrow().values() {
             call.task.abort();
@@ -983,7 +1007,9 @@ fn cancel_request(
         return;
     };
     if let Some(upload_id) = pending.borrow().get(&id).and_then(|call| call.upload_id) {
-        uploads.borrow_mut().remove(&upload_id);
+        if let Some(upload) = uploads.borrow_mut().remove(&upload_id) {
+            upload.aborted.store(true, Ordering::Release);
+        }
     }
     let _ = remove_pending(id, pending, request_ids, streams, Some(message));
 }
@@ -1012,7 +1038,7 @@ fn dispatch(
     call: HostCall,
     stream_id: Option<u64>,
     opened_stream_id: Option<u64>,
-    upload_receiver: Option<Receiver<Vec<u8>>>,
+    upload_receiver: Option<(Receiver<Vec<u8>>, Arc<AtomicBool>)>,
     upload_sender: Option<Sender<Vec<u8>>>,
     streams: &Rc<RefCell<HashMap<u64, StreamState>>>,
     permissions: HostPermissions,
@@ -1338,7 +1364,7 @@ struct FetchStreamMetadata {
 async fn open_fetch_stream(
     payload: &str,
     stream_id: u64,
-    upload_receiver: Option<Receiver<Vec<u8>>>,
+    upload_receiver: Option<(Receiver<Vec<u8>>, Arc<AtomicBool>)>,
     permissions: &HostPermissions,
     client: &reqwest::Client,
     tasks: &TaskTracker,
@@ -1385,13 +1411,25 @@ async fn open_fetch_stream(
     if request.upload_id.is_some() != upload_receiver.is_some() {
         return Err("Fetch upload channel is missing".into());
     }
-    if let Some(receiver) = upload_receiver {
-        let stream = futures_util::stream::unfold(receiver, |mut receiver| async move {
-            receiver
-                .recv()
-                .await
-                .map(|bytes| (Ok::<Vec<u8>, io::Error>(bytes), receiver))
-        });
+    if let Some((receiver, aborted)) = upload_receiver {
+        let stream = futures_util::stream::unfold(
+            (receiver, aborted, false),
+            |(mut receiver, aborted, ended)| async move {
+                if ended {
+                    return None;
+                }
+                match receiver.recv().await {
+                    Some(bytes) => {
+                        Some((Ok::<Vec<u8>, io::Error>(bytes), (receiver, aborted, false)))
+                    }
+                    None if aborted.load(Ordering::Acquire) => Some((
+                        Err(io::Error::other("Fetch upload aborted")),
+                        (receiver, aborted, true),
+                    )),
+                    None => None,
+                }
+            },
+        );
         builder = builder.body(reqwest::Body::wrap_stream(stream));
     } else if let Some(body) = request.body_base64 {
         if body.len() > 2 * 1024 * 1024 {

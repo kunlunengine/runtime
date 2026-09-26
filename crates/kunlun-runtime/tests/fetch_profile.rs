@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 struct TestServer {
     base: String,
     stop: Arc<AtomicBool>,
+    completed_failed_upload: Arc<AtomicBool>,
     worker: Option<thread::JoinHandle<()>>,
 }
 
@@ -20,11 +21,13 @@ impl TestServer {
         let port = listener.local_addr().unwrap().port();
         let stop = Arc::new(AtomicBool::new(false));
         let worker_stop = Arc::clone(&stop);
+        let completed_failed_upload = Arc::new(AtomicBool::new(false));
+        let worker_completed_failed_upload = Arc::clone(&completed_failed_upload);
         let worker = thread::spawn(move || {
             let deadline = Instant::now() + Duration::from_secs(5);
             while !worker_stop.load(Ordering::Acquire) && Instant::now() < deadline {
                 match listener.accept() {
-                    Ok((stream, _)) => serve(stream, port),
+                    Ok((stream, _)) => serve(stream, port, &worker_completed_failed_upload),
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                         thread::sleep(Duration::from_millis(5))
                     }
@@ -35,6 +38,7 @@ impl TestServer {
         Self {
             base,
             stop,
+            completed_failed_upload,
             worker: Some(worker),
         }
     }
@@ -49,7 +53,7 @@ impl Drop for TestServer {
     }
 }
 
-fn serve(mut stream: TcpStream, port: u16) {
+fn serve(mut stream: TcpStream, port: u16, completed_failed_upload: &AtomicBool) {
     stream.set_nonblocking(false).unwrap();
     stream
         .set_read_timeout(Some(Duration::from_secs(2)))
@@ -89,21 +93,29 @@ fn serve(mut stream: TcpStream, port: u16) {
     if chunked {
         loop {
             let mut line = String::new();
-            reader.read_line(&mut line).unwrap();
+            if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                return;
+            }
             let size = usize::from_str_radix(line.trim().split(';').next().unwrap(), 16).unwrap();
             if size == 0 {
                 break;
             }
             let old = body.len();
             body.resize(old + size, 0);
-            reader.read_exact(&mut body[old..]).unwrap();
+            if reader.read_exact(&mut body[old..]).is_err() {
+                return;
+            }
             let mut end = [0; 2];
-            reader.read_exact(&mut end).unwrap();
+            if reader.read_exact(&mut end).is_err() {
+                return;
+            }
             assert_eq!(end, *b"\r\n");
         }
     } else if length > 0 {
         body.resize(length, 0);
-        reader.read_exact(&mut body).unwrap();
+        if reader.read_exact(&mut body).is_err() {
+            return;
+        }
     }
     match path {
         "/redirect" => {
@@ -140,6 +152,13 @@ fn serve(mut stream: TcpStream, port: u16) {
                 body.len()
             );
             let _ = stream.write_all(&body);
+        }
+        "/failed-upload" => {
+            completed_failed_upload.store(true, Ordering::Release);
+            let _ = write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"
+            );
         }
         "/verify-stream" => {
             let valid = body.len() == 12 * 131_072
@@ -276,6 +295,12 @@ async fn fetch_streams_uploads_redirects_and_denies_undeclared_hosts() {
         });
         const echoed = await fetch(base + '/echo', { method: 'POST', body: upload, duplex: 'half' });
         check((await echoed.bytes()).join(',') === '1,2,3,255,'.repeat(4).slice(0, -1), 'stream upload order');
+        const requestUpload = new Request(base + '/echo', { method: 'POST',
+          body: new ReadableStream({ start(controller) {
+            controller.enqueue(new Uint8Array([4, 5, 6])); controller.close();
+          } }), duplex: 'half' });
+        const requestEcho = await fetch(requestUpload);
+        check(requestUpload.bodyUsed && (await requestEcho.bytes()).join(',') === '4,5,6', 'fetch(Request) stream upload');
         let uploadOffset = 0;
         const largeUpload = new ReadableStream({ pull(controller) {
           if (uploadOffset === 12 * 131072) { controller.close(); return; }
@@ -302,8 +327,11 @@ async fn fetch_streams_uploads_redirects_and_denies_undeclared_hosts() {
         catch (error) { check(String(error).includes('Fetch capability denied'), 'redirect denial'); }
         try { await (await fetch(base + '/broken')).text(); throw Error('broken body resolved'); }
         catch (error) { check(String(error).includes('body') || String(error).includes('request'), 'producer error'); }
-        const failedUpload = new ReadableStream({ pull() { throw Error('upload producer failed'); } });
-        try { await fetch(base + '/echo', { method: 'POST', body: failedUpload }); throw Error('failed upload resolved'); }
+        const failedUpload = new ReadableStream({ pull(controller) {
+          if (!this.sent) { this.sent = true; controller.enqueue(new Uint8Array([1, 2, 3])); }
+          else throw Error('upload producer failed');
+        } }, { highWaterMark: 0 });
+        try { await fetch(base + '/failed-upload', { method: 'POST', body: failedUpload }); throw Error('failed upload resolved'); }
         catch (error) { check(String(error).includes('upload producer failed'), 'upload producer error'); }
         const abort = new AbortController();
         const reason = Error('test abort');
@@ -338,6 +366,10 @@ async fn fetch_streams_uploads_redirects_and_denies_undeclared_hosts() {
     assert_eq!(counts.request_ids, 0, "{counts:?}");
     assert_eq!(counts.streams, 0, "{counts:?}");
     assert_eq!(counts.uploads, 0, "{counts:?}");
+    assert!(
+        !server.completed_failed_upload.load(Ordering::Acquire),
+        "truncated upload was accepted as complete"
+    );
     assert_eq!(
         isolate.shutdown(Duration::from_secs(1)).await.unwrap(),
         ShutdownOutcome::Graceful

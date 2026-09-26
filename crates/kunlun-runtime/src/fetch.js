@@ -119,6 +119,25 @@
     if (state.bytes === null) throw new TypeError('Cloning a streaming body is unsupported');
     return new Uint8Array(state.bytes);
   };
+  const transferBody = prior => {
+    const reader = prior.stream.getReader();
+    let released = false;
+    const release = () => { if (!released) { reader.releaseLock(); released = true; } };
+    const state = { stream: null, bytes: prior.bytes, used: false };
+    const source = new ReadableStream({
+      async pull(controller) {
+        try {
+          const { done, value } = await reader.read();
+          if (done) { release(); controller.close(); }
+          else controller.enqueue(value);
+        } catch (error) { release(); controller.error(error); }
+      },
+      async cancel(reason) { try { await reader.cancel(reason); } finally { release(); } },
+    }, { highWaterMark: 0 });
+    state.stream = trackedStream(source, state);
+    prior.used = true;
+    return state;
+  };
   class BodyHolder {
     get body() { return bodyStates.get(this).stream; }
     get bodyUsed() { const state = bodyStates.get(this); return state.used || !!state.stream?.locked; }
@@ -182,12 +201,21 @@
       this.duplex = 'half';
       this.signal = init.signal ?? previous?.signal ?? new AbortController().signal;
       if (!(this.signal instanceof AbortSignal)) throw new TypeError('signal must be an AbortSignal');
-      const body = init.body !== undefined ? init.body : previous ? cloneBody(bodyStates.get(previous)) : null;
-      if ((this.method === 'GET' || this.method === 'HEAD') && body != null)
+      const prior = previous && bodyStates.get(previous);
+      const inherited = init.body === undefined && prior && prior.stream !== null;
+      if (init.body === undefined && prior && (prior.used || prior.stream?.locked))
+        throw new TypeError('Body has already been used');
+      const body = init.body === undefined ? null : init.body;
+      if ((this.method === 'GET' || this.method === 'HEAD') && (body != null || inherited))
         throw new TypeError('GET and HEAD requests cannot have a body');
-      bodyStates.set(this, makeBody(body, this.headers));
+      bodyStates.set(this, inherited ? transferBody(prior) : makeBody(body, this.headers));
     }
-    clone() { return new Request(this); }
+    clone() {
+      return new Request(this.url, {
+        method: this.method, headers: this.headers, signal: this.signal,
+        redirect: this.redirect, body: cloneBody(bodyStates.get(this)),
+      });
+    }
   }
   class Response extends BodyHolder {
     constructor(body = null, init = {}) {
@@ -237,6 +265,7 @@
     const reader = stream.getReader();
     const onAbort = () => { reader.cancel(signal.reason).catch(() => {}); };
     signal.addEventListener('abort', onAbort, { once: true });
+    let completed = false;
     try {
       for (;;) {
         signal.throwIfAborted();
@@ -250,10 +279,11 @@
           });
         }
       }
+      completed = true;
     } finally {
       signal.removeEventListener('abort', onAbort);
       reader.releaseLock();
-      await upload('fetch.upload.close', { uploadId }).catch(() => {});
+      await upload(completed ? 'fetch.upload.close' : 'fetch.upload.abort', { uploadId }).catch(() => {});
     }
   }
   async function fetch(input, init = undefined) {
@@ -272,19 +302,19 @@
       const onAbort = () => transfer.abort(signal.reason);
       signal.addEventListener('abort', onAbort, { once: true });
       if (signal.aborted) onAbort();
+      let opened;
       const pending = invoke('fetch.requestStream', {
         url: request.url, method: request.method, headers: rawHeaders(request.headers),
         bodyBase64: state.bytes === null ? null : encodeBase64(state.bytes), uploadId,
-      }, transfer.signal);
+      }, transfer.signal).then(encoded => { opened = JSON.parse(encoded); return opened; });
       const pump = streaming ? sendUpload(state.stream, uploadId, transfer.signal) : Promise.resolve();
-      let encoded;
-      try { [encoded] = await Promise.all([pending, pump]); }
+      try { await Promise.all([pending, pump]); }
       catch (error) {
         transfer.abort(error);
         await pump.catch(() => {});
+        if (opened) await new HostByteStream(opened.streamId).cancel().catch(() => {});
         throw error;
       } finally { signal.removeEventListener('abort', onAbort); }
-      const opened = JSON.parse(encoded);
       const hostBody = new HostByteStream(opened.streamId, signal);
       const nullBody = request.method === 'HEAD' || [204, 205, 304].includes(opened.status);
       let response;

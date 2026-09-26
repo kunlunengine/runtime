@@ -23,6 +23,9 @@ most 64 KiB per call through a two-chunk channel; downloads use a two-chunk,
 Response cancellation stops the host producer. The generic stream `tee()` exists,
 but Request/Response cloning deliberately rejects a streaming body because an
 unevenly consumed tee can buffer without bound.
+Constructing a Request from another Request transfers its body and marks the
+source used; `clone()` is the explicit buffered-copy operation. Upload producer
+failures terminate the HTTP body with an error rather than a valid short body.
 
 `bodyUsed` becomes true when consumption starts or a body is locked. Producer
 errors reject pending reads. Abort before open rejects with the signal reason

@@ -25,7 +25,7 @@ noncanonical resources reject, including in optional declarations. Deployment
 grants that were not declared are removed. The resulting
 `ApplicationAuthority` is owned by `AdmittedArtifact` and must travel with
 its validated source and asset snapshot. `TokioIsolate::new_with_authority`
-uses this intersection for all existing `kunlun:fs` and `kunlun:http`
+uses this intersection for `kunlun:fs`, `kunlun:http`, and outbound Fetch
 operations. An authority may be claimed by only one isolate. The M2 direct
 `new_with_permissions` constructor remains a separate trusted-host interface;
 the future M3 server must use the authority constructor.
@@ -57,9 +57,9 @@ Application-level built-in grants intentionally last for the admitted
 application. Request-specific caller context and any future `env` handles have
 shorter lifetimes. #51 must bind the JavaScript `env` projection and its host
 calls to the current request environment; no JavaScript `env` is currently
-installed by this code. #49's outbound Fetch implementation must reuse the
-same destination checks, including each redirect, rather than introducing an
-alternate ambient network route.
+installed by this code. [Outbound Fetch](./fetch-profile-v1.md) uses the same
+admitted `http.host` intersection and application lifetime. It checks each
+redirect destination before opening a connection.
 
 M3 scoped filesystem failures omit host paths, and scoped HTTP transport
 failures omit request URLs. Request context values and handles have no automatic

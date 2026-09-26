@@ -77,7 +77,8 @@ the exact shipped declarations with `kunlun-runtime types`.
 ## Next ABI additions
 
 - `kunlun:fs`: directory handles, metadata, and writes behind separate grants.
-- `kunlun:http`: streaming request bodies and Web `Request`/`Response` integration.
+- `kunlun:http`: remains the separate bootstrap HTTP contract; application Fetch is
+  specified in the [M3 Fetch profile](./fetch-profile-v1.md).
 - `kunlun:crypto`: Web Crypto-compatible primitives rather than a second incompatible crypto model.
 - `kunlun:process`: deployment metadata only; no ambient subprocess or raw environment access.
 
@@ -93,3 +94,5 @@ declaration, denial test, and completion-path test.
 available as globals only, not as module exports.
 Host `ByteStream.toReadableStream()` integrates with standard piping and backpressure.
 These primitives require no additional capabilities; I/O still uses the existing grants.
+M3 adds `Headers`, `Request`, `Response`, and `fetch` as globals and `kunlun:web`
+exports. Fetch uses a distinct `http.host` capability projection, not `--allow-net`.

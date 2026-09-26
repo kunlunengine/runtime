@@ -12,7 +12,8 @@ The bootstrap also exposes capability-gated `kunlun:fs` and `kunlun:http` module
 `kunlun.import()`. Their Tokio operations return plain completion data to the isolate; JSC Promise
 handles never cross the completion channel. The pinned WebKit backend additionally runs native
 ESM graphs, live bindings, cycles, top-level await, and dynamic imports through the canonical URL
-resolver. Full Fetch objects, the remote inspector, and sandboxing remain roadmap work.
+resolver. The M3 application Fetch profile is available; inbound Fetch entry dispatch,
+the remote inspector, and sandboxing remain roadmap work.
 
 ## Workspace
 
@@ -55,6 +56,8 @@ availability and checks leap-day arithmetic. See [Temporal](./docs/module-loadin
 
 The M2 [Web runtime profile v1](./docs/runtime-profile-v1.md) provides console, UTF-8 encoding,
 URL, Web Streams and crypto primitives, available globally and from `kunlun:web`.
+The M3 [application Fetch profile](./docs/fetch-profile-v1.md) adds Request,
+Response, Headers, and outbound fetch with independent capability grants.
 The M3 [runtime manifest v1](./docs/runtime-manifest-v1.md) defines data-only server artifacts
 and fail-closed admission; Fetch entry invocation remains tracked by #51.
 

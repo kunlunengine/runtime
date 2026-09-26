@@ -17,6 +17,9 @@ capability declarations                runtime manifest                    Fetch
 isolation, and the JSC Inspector endpoint. The standalone DevTools product owns cross-runtime debug
 sessions and user/agent clients. The CLI invokes the runtime; the runtime does not absorb project
 generation, bundler configuration, a desktop shell, or agent SDKs.
+The [Kunlun Desktop decision](./kunlun-desktop.md#repository-ownership) places the
+CEF host, native shell, packaging, and updater in a separate repository. This
+runtime workspace supplies the versioned service boundary and fixtures.
 
 ## Missing executable boundary in the current core
 

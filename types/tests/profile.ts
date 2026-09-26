@@ -17,5 +17,6 @@ void openReadStream('input').then(source => source.toReadableStream().getReader(
 void kunlun.import('kunlun:web').then(web => new web.TextDecoder().decode())
 // @ts-expect-error Floating point arrays are not accepted for OS random filling.
 webCrypto.getRandomValues(new Float32Array(1))
-// @ts-expect-error Fetch is intentionally outside profile v1.
-fetch('https://example.test')
+const request = new Request('https://example.test', { method: 'POST', body: encoder.encode('hello') })
+void fetch(request).then(response => response.bytes())
+void new Response('hello', { headers: new Headers({ 'content-type': 'text/plain' }) }).text()

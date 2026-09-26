@@ -48,6 +48,8 @@ jobs:
               run: npx --yes -p typescript@5.9.3 tsc --noEmit --strict --lib es2022 types/tests/profile.ts
             - name: Check artifact contract types
               run: npx --yes -p typescript@5.9.3 tsc --noEmit --strict --lib es2022 types/tests/artifact.ts
+            - name: Check shared Fetch fixture against Node
+              run: node -e "const fs = require('node:fs'); const AsyncFunction = Object.getPrototypeOf(async function(){}).constructor; new AsyncFunction(fs.readFileSync('crates/kunlun-runtime/tests/fixtures/fetch-shared.js', 'utf8'))().then(value => { if (value !== 'fetch-shared-ok') process.exitCode = 1 }, error => { console.error(error); process.exitCode = 1 })"
             - name: Check code formatting
               run: cargo fmt --all -- --check
             - name: Check code linting

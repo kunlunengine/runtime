@@ -279,11 +279,12 @@
           });
         }
       }
+      signal.throwIfAborted();
       completed = true;
     } finally {
       signal.removeEventListener('abort', onAbort);
       reader.releaseLock();
-      await upload(completed ? 'fetch.upload.close' : 'fetch.upload.abort', { uploadId }).catch(() => {});
+      await upload(completed && !signal.aborted ? 'fetch.upload.close' : 'fetch.upload.abort', { uploadId }).catch(() => {});
     }
   }
   async function fetch(input, init = undefined) {

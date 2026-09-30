@@ -9,6 +9,7 @@ use std::collections::BTreeSet;
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
 use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 use url::Url;
 
@@ -178,13 +179,19 @@ impl ModuleResolver {
     pub fn new(root: impl AsRef<Path>) -> Result<Self, ModuleResolutionError> {
         let supplied = root.as_ref();
         let error = |kind| ModuleResolutionError::new(&supplied.to_string_lossy(), None, kind);
-        let canonical = supplied.canonicalize().map_err(|cause| {
+        let canonical = retry_interrupted(|| supplied.canonicalize()).map_err(|cause| {
             error(ModuleResolutionErrorKind::InvalidModuleRoot {
                 path: supplied.to_path_buf(),
                 detail: cause.to_string(),
             })
         })?;
-        if !canonical.is_dir() {
+        let metadata = retry_interrupted(|| fs::metadata(&canonical)).map_err(|cause| {
+            error(ModuleResolutionErrorKind::InvalidModuleRoot {
+                path: canonical.clone(),
+                detail: cause.to_string(),
+            })
+        })?;
+        if !metadata.is_dir() {
             return Err(error(ModuleResolutionErrorKind::InvalidModuleRoot {
                 path: canonical,
                 detail: "root is not a directory".to_owned(),
@@ -342,19 +349,19 @@ impl ModuleResolver {
                     url: url.to_string(),
                     detail: "URL cannot be converted to a local path".to_owned(),
                 })?;
-        let canonical =
-            path.canonicalize()
-                .map_err(|cause| ModuleResolutionErrorKind::InvalidFileModule {
-                    url: url.to_string(),
-                    detail: cause.to_string(),
-                })?;
+        let canonical = retry_interrupted(|| path.canonicalize()).map_err(|cause| {
+            ModuleResolutionErrorKind::InvalidFileModule {
+                url: url.to_string(),
+                detail: cause.to_string(),
+            }
+        })?;
         if !canonical.starts_with(&self.root) {
             return Err(ModuleResolutionErrorKind::OutsideModuleRoot {
                 path: canonical,
                 root: self.root.clone(),
             });
         }
-        if !fs::metadata(&canonical)
+        if !retry_interrupted(|| fs::metadata(&canonical))
             .map_err(|cause| ModuleResolutionErrorKind::InvalidFileModule {
                 url: url.to_string(),
                 detail: cause.to_string(),
@@ -383,6 +390,18 @@ impl ModuleResolver {
             url: canonical_url,
             kind: ModuleKind::File,
         })
+    }
+}
+
+// Signals can interrupt filesystem lookups while the engine is running.
+// Retry only the interrupted, read-only operation, before mapping its error
+// into a resolution failure; all identity and root checks still run normally.
+fn retry_interrupted<T>(mut operation: impl FnMut() -> io::Result<T>) -> io::Result<T> {
+    loop {
+        match operation() {
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            result => return result,
+        }
     }
 }
 
@@ -567,6 +586,70 @@ mod tests {
     impl Drop for Fixture {
         fn drop(&mut self) {
             fs::remove_dir_all(&self.base).unwrap();
+        }
+    }
+
+    #[test]
+    fn retries_interrupted_filesystem_lookups_until_success() {
+        let fixture = Fixture::new();
+        let path = fixture.project.join("src/dep.mjs");
+        let mut attempts = 0;
+        let canonical = retry_interrupted(|| {
+            attempts += 1;
+            if attempts <= 3 {
+                Err(io::ErrorKind::Interrupted.into())
+            } else {
+                path.canonicalize()
+            }
+        })
+        .unwrap();
+        assert_eq!(attempts, 4);
+        assert_eq!(canonical, path.canonicalize().unwrap());
+
+        let mut attempts = 0;
+        let metadata = retry_interrupted(|| {
+            attempts += 1;
+            if attempts <= 2 {
+                Err(io::ErrorKind::Interrupted.into())
+            } else {
+                fs::metadata(&canonical)
+            }
+        })
+        .unwrap();
+        assert_eq!(attempts, 3);
+        assert!(metadata.is_file());
+    }
+
+    #[test]
+    fn successful_filesystem_lookup_is_not_retried() {
+        let mut attempts = 0;
+        let value = retry_interrupted(|| {
+            attempts += 1;
+            Ok(String::from("canonical identity"))
+        })
+        .unwrap();
+        assert_eq!(attempts, 1);
+        assert_eq!(value, "canonical identity");
+    }
+
+    #[test]
+    fn non_interrupted_filesystem_errors_are_preserved_without_retry() {
+        for errno in [libc::ENOENT, libc::EACCES, libc::EIO, libc::EAGAIN] {
+            for interruptions in [0, 2] {
+                let mut attempts = 0;
+                let error = retry_interrupted::<()>(|| {
+                    attempts += 1;
+                    assert!(attempts <= interruptions + 1, "permanent error retried");
+                    if attempts <= interruptions {
+                        Err(io::ErrorKind::Interrupted.into())
+                    } else {
+                        Err(io::Error::from_raw_os_error(errno))
+                    }
+                })
+                .unwrap_err();
+                assert_eq!(attempts, interruptions + 1);
+                assert_eq!(error.raw_os_error(), Some(errno));
+            }
         }
     }
 

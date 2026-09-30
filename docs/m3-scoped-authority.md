@@ -1,8 +1,8 @@
 # M3 scoped authority
 
-Status: Rust admission, built-in permission projection, and request-scope handles
-are implemented. Fetch `env` exposure and inbound HTTP request dispatch remain
-[#51](https://github.com/kunlunengine/runtime/issues/51); Node/native parity
+Status: Rust admission, built-in permission projection, JavaScript request `env`,
+and request-scope handles are implemented. Inbound HTTP request dispatch remains
+[#51](https://github.com/kunlunengine/runtime/issues/51); independent Node/native parity
 remains [#53](https://github.com/kunlunengine/runtime/issues/53). These APIs do
 not claim a JavaScript Fetch server or hostile-code isolation.
 
@@ -37,6 +37,8 @@ check. `http.host` scopes the hostname for HTTP(S); v1 does not restrict a
 specific port or path. Host permission checks occur on every operation. The
 admitted module loader independently limits executable sources to the indexed
 snapshot; a filesystem binding does not add module sources.
+Both HTTP clients ignore ambient proxy environment variables: a deployment's
+`HTTP_PROXY`/`HTTPS_PROXY`/`ALL_PROXY` is not an undeclared network grant.
 
 ## Request lifetime
 
@@ -50,18 +52,103 @@ there is no process-global current caller. Dropping or revoking a request
 environment invalidates its retained handles without affecting a concurrent
 request. Revoking the application, requesting isolate shutdown, or dropping
 the isolate invalidates all related handles and new privileged operations.
-The host must cancel and join already started work via the existing bounded
-isolate shutdown; revocation does not retroactively undo a completed operation.
+Revocation wakes pending I/O, aborts response producers, and closes upload/body
+channels; queued completions are rechecked before delivery. Request return,
+failure, or dropping the invocation future cancels its timers and host work.
+The host must still join workers via bounded isolate shutdown: an already
+running blocking filesystem syscall cannot be preempted, and revocation does
+not retroactively undo a completed operation or retract delivered bytes.
 
 Application-level built-in grants intentionally last for the admitted
-application. Request-specific caller context and any future `env` handles have
-shorter lifetimes. #51 must bind the JavaScript `env` projection and its host
-calls to the current request environment; no JavaScript `env` is currently
-installed by this code. [Outbound Fetch](./fetch-profile-v1.md) uses the same
-admitted `http.host` intersection and application lifetime. It checks each
-redirect destination before opening a connection.
+application. They do not carry caller auth/provider/billing data. Operations
+started during a request invocation additionally inherit its cancellation
+scope. Outside a request, the built-ins use only application authority.
+[Outbound Fetch](./fetch-profile-v1.md) uses the same admitted `http.host`
+intersection and checks each redirect before opening a connection.
+
+## Executable request projection
+
+The trusted adapter consumes a `RequestEnvironment` with
+`TokioIsolate::evaluate_request_body(environment, source, source_url)`. The body
+has a lexical, read-only `env`:
+
+```js
+const text = await env.fs["public-data"].readTextFile("help/欢迎.txt");
+const api = env.http["api.example.test"];
+if (api) {
+  const response = await api.fetch("https://api.example.test/help");
+  return await response.text();
+}
+return text;
+```
+
+`env.fs` and `env.http` are frozen, null-prototype binding maps. Missing optional
+grants are absent (`undefined`); required grants must have passed admission.
+Filesystem handles only read bounded UTF-8 regular files relative to the opened
+binding, with the same 1 MiB limit as `kunlun:fs`. HTTP handles expose the same
+Fetch profile as global `fetch`, narrowed to that one declared host. A redirect
+to another host is denied even when another application-level grant allows it.
+Hosts, including ports and paths, retain the v1 semantics above. Handles have no
+public identity, constructor, host path, or credential fields. JSON serialization
+of an environment or handle throws; copying methods does not mint a new grant.
+
+Every env operation carries a private request identity and resource selection.
+The host compares them with its own current request, checks the effective grant,
+narrows the existing host permission set, and rechecks the actual path or URL.
+The internal projection factory cannot grant authority from invented metadata.
+Raw bridge functions are removed before application evaluation. Identity alone
+is not the security claim: root-relative opens, destination checks, revocation,
+and the admitted module snapshot remain enforced independently.
+
+An environment belongs to exactly one isolate. Multiple environments may coexist
+on that thread, but this integration primitive serializes JavaScript invocations
+through `&mut TokioIsolate`; concurrent execution uses separate isolates. It does
+not infer caller identity from a process-global or async-local variable. A
+retained env method, body stream, or upload from an earlier invocation cannot be
+used by a later one. Completion, error, and cancellation all end the consumed
+environment. Detached application work is not a way to extend that lifetime.
+
+This primitive does not itself dispatch an exported `fetch` handler, implement
+`waitUntil`, or stream an inbound HTTP response. #51 must keep the scope alive
+for its entire handler/body/background-work contract before adopting those APIs;
+it must not return a live response body from this bounded string-result helper.
+
+## Context, secrets, and diagnostics
+
+`RequestContext` is owned by the trusted host, not by JavaScript. The adapter may
+read its own context while the request is active; it must not put raw auth,
+provider credentials, or billing state into module globals or `env`. V1 has no
+secret binding, arbitrary OS-env projection, provider service, credential
+issuance, or billing API. Such declarations fail admission, including optional
+ones. Future host services must resolve credentials on the host and check the
+same request owner and operation scope, not expose a transferable token.
 
 M3 scoped filesystem failures omit host paths, and scoped HTTP transport
 failures omit request URLs. Request context values and handles have no automatic
-Debug or serialization representation. These diagnostics are for operators;
+Debug or serialization representation; `HostPermissions` Debug is redacted.
+Runtime diagnostics never include the private request identity. Application code
+can deliberately log data it was allowed to read; this is not data-loss prevention
+or a hostile-code boundary. These diagnostics are for operators;
 public HTTP error responses and source-map disclosure policy belong to #51.
+
+## Verification and #53 handoff
+
+`tests/request_environment.rs` exercises real admitted JSC calls, filesystem
+escapes, cross-request/isolate denial, frozen/opaque projections, diagnostic
+redaction, and synchronized in-flight revocation. `tests/artifact_admission.rs`
+continues covering required grants and module snapshots. Dispatcher unit tests
+cover stale stream ownership, cancellation notifications, and discarded-stream
+teardown; the M0–M2 suite remains required.
+
+`tests/fixtures/request-authority.js` is an adapter-neutral probe consumed without
+rewriting its bytes. The harness must bind `public-data` to a directory containing
+`message.txt` with `public message`, omit `missing-optional`, keep `undeclared`
+deployment authority outside the manifest, and invoke it in two successive
+request environments in one application. Both invocations must return
+`request-authority-ok`. Denial, successful reads, optional absence, and stale
+handle behavior must not be normalized away.
+
+Native tests consume this probe now. Independent runtime-node execution and
+pinned four-platform comparison belong to #53 and are **not** replaced by a
+mock Node permission layer or a local system-JSC pass. #50's cross-adapter
+qualification remains open until that gate runs the real adapters.

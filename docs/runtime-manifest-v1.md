@@ -131,9 +131,12 @@ failures and prevent traffic admission. Specific HTTP status/header/cancellation
 conformance remains #51 work; this is the shared producer/consumer shape.
 
 The Rust `ApplicationAuthority` and `RequestEnvironment` implement the grant
-intersection, request ownership, and revocation. JavaScript `env` projection
-and its binding operations are still #51 work. Required bindings must exist;
-absent optional bindings are omitted. Any application-scoped built-in grant is
+intersection, request ownership, and revocation. The
+[request environment projection](./m3-scoped-authority.md#executable-request-projection)
+implements `env.fs[binding].readTextFile` and `env.http[host].fetch` through the
+trusted `evaluate_request_body` integration primitive; handler dispatch remains
+#51 work. Required bindings must exist; absent optional bindings are omitted.
+Any application-scoped built-in grant is
 separate from caller auth/provider/billing context, which is owned by one
 request. No deployment secret value appears in the manifest or browser artifact.
 

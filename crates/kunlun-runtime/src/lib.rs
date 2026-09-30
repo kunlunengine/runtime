@@ -1,6 +1,7 @@
 //! Tokio-backed JavaScriptCore host primitives for Kunlun Runtime.
 
 mod artifact;
+mod authority_scope;
 mod builtins;
 mod capabilities;
 mod host;
@@ -31,6 +32,7 @@ pub use modules::{
     ModuleResolver, ModuleUrl,
 };
 
+use authority_scope::AuthorityScope;
 use kunlun_jsc::{DeferredPromise, JscError, JscVm, ModuleState, ResourcePolicy};
 use std::cell::{Cell, RefCell};
 use std::error::Error;
@@ -38,7 +40,7 @@ use std::fmt::{self, Display, Formatter};
 use std::io::Write;
 use std::rc::Rc;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use tokio::time::Instant;
 
@@ -109,7 +111,7 @@ pub struct RuntimeResourceCounts {
 pub struct ShutdownHandle {
     requested: Rc<Cell<bool>>,
     host_accepting: Rc<Cell<bool>>,
-    authority_scope: Option<Arc<AtomicBool>>,
+    authority_scope: Option<Arc<AuthorityScope>>,
 }
 
 impl ShutdownHandle {
@@ -117,7 +119,7 @@ impl ShutdownHandle {
         self.requested.set(true);
         self.host_accepting.set(false);
         if let Some(scope) = &self.authority_scope {
-            scope.store(false, Ordering::Release);
+            scope.revoke();
         }
     }
 
@@ -168,7 +170,7 @@ pub struct TokioIsolate {
     console_sink: web::ConsoleSink,
     timers: TimerDispatcher,
     host: host::HostDispatcher,
-    authority_scope: Option<Arc<AtomicBool>>,
+    authority_scope: Option<Arc<AuthorityScope>>,
     vm: JscVm,
     module_cancelled: Cell<bool>,
     shutting_down: Rc<Cell<bool>>,
@@ -412,12 +414,50 @@ impl TokioIsolate {
         } = self;
         run_async_body(vm, timers, host, source, source_url).await
     }
+
+    /// Invoke trusted server-adapter code with a request-owned JavaScript `env`.
+    ///
+    /// The body has a lexical `env` with `fs[binding].readTextFile(path)` and
+    /// `http[host].fetch(input, init)` handles. Caller context remains host-only.
+    /// This is a host integration primitive, not the HTTP entry dispatcher.
+    ///
+    /// Invocation consumes the environment: return, failure, cancellation and
+    /// drop all revoke it and cancel its host resources. One invocation runs at
+    /// a time per isolate; use multiple isolates for parallel execution.
+    pub async fn evaluate_request_body(
+        &mut self,
+        environment: RequestEnvironment,
+        source: &str,
+        source_url: &str,
+    ) -> Result<String, RuntimeError> {
+        self.ensure_usable()?;
+        environment
+            .check_isolate(self.authority_scope.as_ref())
+            .map_err(|error| RuntimeError::Module(error.to_owned()))?;
+        let _request = self.host.enter_request(environment.host_scope());
+        let source = format!(
+            "return await (async function(env) {{\n\
+             'use strict';\n{source}\n\
+             }})(globalThis.__kunlunCreateEnvironment({}));",
+            environment.projection(),
+        );
+        let result = run_async_body(
+            &mut self.vm,
+            &self.timers,
+            &mut self.host,
+            &source,
+            source_url,
+        )
+        .await;
+        environment.revoke();
+        result
+    }
 }
 
 impl Drop for TokioIsolate {
     fn drop(&mut self) {
         if let Some(scope) = &self.authority_scope {
-            scope.store(false, Ordering::Release);
+            scope.revoke();
         }
     }
 }

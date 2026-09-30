@@ -52,6 +52,14 @@ const BOOTSTRAP_SOURCE: &str = r#"
   if (typeof hostCall !== 'function') {
     throw new Error('Kunlun host-call bridge is not installed');
   }
+  const stringify = JSON.stringify;
+  const create = Object.create;
+  const assign = Object.assign;
+  // Authority is never passed through application-replaceable JSON functions or
+  // inherited toJSON hooks. Resource checks still take place in the Rust host.
+  const encodeCall = (payload, authority) => stringify(assign(
+    create(null), payload, authority,
+  ));
 
   const asModule = (exports) => {
     Object.defineProperty(exports, Symbol.toStringTag, { value: 'Module' });
@@ -141,13 +149,13 @@ const BOOTSTRAP_SOURCE: &str = r#"
   });
 
   let nextRequestId = 1;
-  const invoke = (operation, payload, signal) => {
+  const invoke = (operation, payload, signal, authority = undefined) => {
     if (signal !== undefined && !(signal instanceof AbortSignal)) {
       return Promise.reject(new TypeError('signal must be an AbortSignal'));
     }
     if (signal?.aborted) return Promise.reject(signal.reason);
     const requestId = nextRequestId++;
-    const encoded = JSON.stringify({ ...payload, requestId });
+    const encoded = encodeCall({ ...payload, requestId }, authority);
     const pending = hostCall(operation, encoded);
     if (signal === undefined) return pending;
     return new Promise((resolve, reject) => {
@@ -157,7 +165,7 @@ const BOOTSTRAP_SOURCE: &str = r#"
         if (settled) return;
         settled = true;
         cleanup();
-        hostCall('host.cancel', JSON.stringify({ requestId })).then(() => {}, () => {});
+        hostCall('host.cancel', encodeCall({ requestId }, authority)).then(() => {}, () => {});
         reject(signal.reason);
       };
       signal.addEventListener('abort', onAbort, { once: true });
@@ -365,8 +373,11 @@ const BOOTSTRAP_SOURCE: &str = r#"
   Object.defineProperty(globalThis, '__kunlunFetchBridge', {
     value: Object.freeze({
       invoke, HostByteStream,
-      upload(operation, payload) { return hostCall(operation, JSON.stringify(payload)); },
+      upload(operation, payload, authority) { return hostCall(operation, encodeCall(payload, authority)); },
     }), configurable: true,
+  });
+  Object.defineProperty(globalThis, '__kunlunRequestBridge', {
+    value: invoke, configurable: true,
   });
   delete globalThis.__kunlunHostCall;
 })();
@@ -375,6 +386,10 @@ const BOOTSTRAP_SOURCE: &str = r#"
 pub(crate) fn install_builtin_modules(vm: &mut JscVm) -> Result<(), JscError> {
     vm.evaluate(BOOTSTRAP_SOURCE, "kunlun:bootstrap/builtins")?;
     vm.evaluate(include_str!("fetch.js"), "kunlun:bootstrap/fetch")?;
+    vm.evaluate(
+        include_str!("request_env.js"),
+        "kunlun:bootstrap/request-env",
+    )?;
     Ok(())
 }
 

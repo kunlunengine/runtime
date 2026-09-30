@@ -1,5 +1,6 @@
 //! Deployment authority projected into application and request lifetimes.
 use crate::artifact::{Capability, CapabilityRequirements};
+use crate::authority_scope::AuthorityScope;
 use crate::host::HostPermissions;
 use std::collections::{BTreeMap, BTreeSet};
 use std::marker::PhantomData;
@@ -13,14 +14,14 @@ use std::sync::{Arc, OnceLock};
 pub struct ApplicationAuthority {
     permissions: HostPermissions,
     effective: BTreeSet<Capability>,
-    active: Arc<AtomicBool>,
+    active: Arc<AuthorityScope>,
     claimed: AtomicBool,
     isolate_thread: OnceLock<std::thread::ThreadId>,
 }
 
 impl ApplicationAuthority {
     pub(crate) fn new(deployment: &HostPermissions, declarations: &CapabilityRequirements) -> Self {
-        let active = Arc::new(AtomicBool::new(true));
+        let active = Arc::new(AuthorityScope::new());
         let (permissions, effective) = deployment.scoped_to(declarations, Arc::clone(&active));
         Self {
             permissions,
@@ -33,7 +34,7 @@ impl ApplicationAuthority {
 
     /// Optional declarations without deployment grants are absent.
     pub fn contains(&self, capability: &Capability) -> bool {
-        self.active.load(Ordering::Acquire) && self.effective.contains(capability)
+        self.active.is_active() && self.effective.contains(capability)
     }
 
     /// Begin one request with context owned exclusively by that request.
@@ -41,7 +42,7 @@ impl ApplicationAuthority {
         &self,
         context: RequestContext,
     ) -> Result<RequestEnvironment, &'static str> {
-        if !self.active.load(Ordering::Acquire) {
+        if !self.active.is_active() {
             return Err("application authority has ended");
         }
         if !self.claimed.load(Ordering::Acquire) {
@@ -50,19 +51,22 @@ impl ApplicationAuthority {
         if self.isolate_thread.get() != Some(&std::thread::current().id()) {
             return Err("request environment must be created on the isolate thread");
         }
-        let active = Arc::new(AtomicBool::new(true));
+        let active = Arc::new(AuthorityScope::new());
+        let mut identity = [0u8; 32];
+        getrandom::fill(&mut identity).map_err(|_| "cannot create request authority")?;
         Ok(RequestEnvironment {
             permissions: self.permissions.for_request(Arc::clone(&active)),
             effective: self.effective.clone(),
             active,
             application_active: Arc::clone(&self.active),
             context,
+            identity: identity.iter().map(|byte| format!("{byte:02x}")).collect(),
             thread_affine: PhantomData,
         })
     }
 
-    pub(crate) fn claim_isolate(&self) -> Result<Arc<AtomicBool>, &'static str> {
-        if !self.active.load(Ordering::Acquire) {
+    pub(crate) fn claim_isolate(&self) -> Result<Arc<AuthorityScope>, &'static str> {
+        if !self.active.is_active() {
             return Err("application authority has ended");
         }
         self.claimed
@@ -74,7 +78,7 @@ impl ApplicationAuthority {
 
     /// Stop all new privileged operations, including those on retained request handles.
     pub fn revoke(&self) {
-        self.active.store(false, Ordering::Release);
+        self.active.revoke();
     }
 
     pub(crate) fn host_permissions(&self) -> HostPermissions {
@@ -109,9 +113,10 @@ impl RequestContext {
 pub struct RequestEnvironment {
     permissions: HostPermissions,
     effective: BTreeSet<Capability>,
-    active: Arc<AtomicBool>,
-    application_active: Arc<AtomicBool>,
+    active: Arc<AuthorityScope>,
+    application_active: Arc<AuthorityScope>,
     context: RequestContext,
+    identity: String,
     thread_affine: PhantomData<Rc<()>>,
 }
 
@@ -137,11 +142,58 @@ impl RequestEnvironment {
     }
 
     pub fn revoke(&self) {
-        self.active.store(false, Ordering::Release);
+        self.active.revoke();
     }
 
     fn is_active(&self) -> bool {
-        self.active.load(Ordering::Acquire) && self.application_active.load(Ordering::Acquire)
+        self.active.is_active() && self.application_active.is_active()
+    }
+
+    pub(crate) fn check_isolate(
+        &self,
+        scope: Option<&Arc<AuthorityScope>>,
+    ) -> Result<(), &'static str> {
+        if !self.is_active()
+            || !scope.is_some_and(|scope| Arc::ptr_eq(scope, &self.application_active))
+        {
+            return Err("request environment is expired or belongs to another isolate");
+        }
+        Ok(())
+    }
+
+    pub(crate) fn projection(&self) -> String {
+        serde_json::json!({
+            "scope": self.identity,
+            "capabilities": self.effective.iter().map(|capability| {
+                serde_json::json!({"name": capability.name, "resource": capability.resource})
+            }).collect::<Vec<_>>(),
+        })
+        .to_string()
+    }
+
+    pub(crate) fn host_scope(&self) -> RequestHostScope {
+        RequestHostScope {
+            permissions: self.permissions.clone(),
+            identity: self.identity.clone(),
+            effective: self.effective.clone(),
+        }
+    }
+}
+
+/// Host-owned current request, never included in diagnostics.
+#[derive(Clone)]
+pub(crate) struct RequestHostScope {
+    pub(crate) permissions: HostPermissions,
+    identity: String,
+    effective: BTreeSet<Capability>,
+}
+
+impl RequestHostScope {
+    pub(crate) fn authorize(&self, identity: &str, capability: &Capability) -> Result<(), String> {
+        if identity != self.identity || !self.effective.contains(capability) {
+            return Err("capability handle is expired or belongs to another request".to_owned());
+        }
+        Ok(())
     }
 }
 
@@ -153,10 +205,23 @@ impl Drop for RequestEnvironment {
 
 /// Opaque request-bound authority. Its fields cannot be constructed by an
 /// artifact or serialized into a browser bundle.
+///
+/// ```compile_fail
+/// use kunlun_runtime::ScopedHandle;
+/// fn assert_send<T: Send>() {}
+/// assert_send::<ScopedHandle>();
+/// ```
+///
+/// ```compile_fail
+/// use kunlun_runtime::ScopedHandle;
+/// fn serialize(handle: &ScopedHandle) {
+///     serde_json::to_string(handle).unwrap();
+/// }
+/// ```
 pub struct ScopedHandle {
     capability: Capability,
-    request_active: Arc<AtomicBool>,
-    application_active: Arc<AtomicBool>,
+    request_active: Arc<AuthorityScope>,
+    application_active: Arc<AuthorityScope>,
     thread_affine: PhantomData<Rc<()>>,
 }
 

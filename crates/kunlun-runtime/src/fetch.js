@@ -261,7 +261,7 @@
     return output;
   };
   let nextUploadId = 1;
-  async function sendUpload(stream, uploadId, signal) {
+  async function sendUpload(stream, uploadId, signal, authority) {
     const reader = stream.getReader();
     const onAbort = () => { reader.cancel(signal.reason).catch(() => {}); };
     signal.addEventListener('abort', onAbort, { once: true });
@@ -276,7 +276,7 @@
           signal.throwIfAborted();
           await upload('fetch.upload.write', {
             uploadId, chunkBase64: encodeBase64(value.subarray(offset, offset + 65536)),
-          });
+          }, authority);
         }
       }
       signal.throwIfAborted();
@@ -284,10 +284,10 @@
     } finally {
       signal.removeEventListener('abort', onAbort);
       reader.releaseLock();
-      await upload(completed && !signal.aborted ? 'fetch.upload.close' : 'fetch.upload.abort', { uploadId }).catch(() => {});
+      await upload(completed && !signal.aborted ? 'fetch.upload.close' : 'fetch.upload.abort', { uploadId }, authority).catch(() => {});
     }
   }
-  async function fetch(input, init = undefined) {
+  async function fetchWithAuthority(input, init, authority) {
     let request = new Request(input, init);
     const signal = request.signal;
     signal.throwIfAborted();
@@ -307,8 +307,8 @@
       const pending = invoke('fetch.requestStream', {
         url: request.url, method: request.method, headers: rawHeaders(request.headers),
         bodyBase64: state.bytes === null ? null : encodeBase64(state.bytes), uploadId,
-      }, transfer.signal).then(encoded => { opened = JSON.parse(encoded); return opened; });
-      const pump = streaming ? sendUpload(state.stream, uploadId, transfer.signal) : Promise.resolve();
+      }, transfer.signal, authority).then(encoded => { opened = JSON.parse(encoded); return opened; });
+      const pump = streaming ? sendUpload(state.stream, uploadId, transfer.signal, authority) : Promise.resolve();
       try { await Promise.all([pending, pump]); }
       catch (error) {
         transfer.abort(error);
@@ -350,6 +350,13 @@
       redirected = true;
     }
   }
+  async function fetch(input, init = undefined) {
+    return fetchWithAuthority(input, init, undefined);
+  }
+  Object.defineProperty(globalThis, '__kunlunCreateScopedFetch', {
+    value: authority => (input, init = undefined) => fetchWithAuthority(input, init, authority),
+    configurable: true,
+  });
   for (const [name, value] of Object.entries({ Headers, Request, Response, fetch })) {
     Object.defineProperty(globalThis, name, { value, writable: false, configurable: false });
   }

@@ -1,8 +1,8 @@
 # Runtime artifact manifest v1
 
-Status: **artifact parsing, native admission, and Rust scoped authority implemented**;
-Fetch entry invocation, JavaScript request `env`, `executionContext`, and HTTP serving
-remain **contract proposals** for
+Status: **artifact parsing, native admission, Rust scoped authority, and JavaScript
+request `env` projection implemented**; inbound Fetch entry dispatch,
+`executionContext`, and HTTP serving remain **contract proposals** for
 [#51](https://github.com/kunlunengine/runtime/issues/51). Core and runtime-node producer
 integration belongs to [#52](https://github.com/kunlunengine/runtime/issues/52). The
 [portable fixture](../fixtures/runtime-manifest/v1/manifest.json) is a consumer contract
@@ -96,7 +96,8 @@ constructor supplies exactly those permissions to M2 built-ins. Legacy M2
 A JSC realm is not a hostile-code security boundary.
 The [outbound Fetch profile](./fetch-profile-v1.md) uses that same admitted
 `http.host` intersection and application lifetime. Request-specific JavaScript
-`env` exposure and inbound dispatch remain #51 work.
+`env` projection is implemented; inbound dispatch, `executionContext`, and HTTP
+serving remain #51 work.
 
 `AdmissionErrorKind` has stable categories: `manifest` (syntax/shape/digest
 spelling), `schema`, `compatibility`, `capability`, `path`, `identity`,

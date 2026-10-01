@@ -1,3 +1,5 @@
+use crate::authority_scope::AuthorityScope;
+use crate::capabilities::RequestHostScope;
 use base64::Engine;
 use cap_std::ambient_authority;
 use cap_std::fs::{Dir, OpenOptions, OpenOptionsExt};
@@ -22,14 +24,23 @@ pub(crate) const MAX_IN_FLIGHT_HOST_CALLS: usize = 256;
 pub(crate) const STREAM_CHUNK_BYTES: usize = 64 * 1024;
 pub(crate) const STREAM_BUFFER_CHUNKS: usize = 2;
 
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct HostPermissions {
     read_roots: Vec<ReadRoot>,
     read_bindings: BTreeMap<String, ReadRoot>,
     net_hosts: HashSet<String>,
     fetch_hosts: HashSet<String>,
-    active: Option<Arc<AtomicBool>>,
-    request_active: Option<Arc<AtomicBool>>,
+    active: Option<Arc<AuthorityScope>>,
+    request_active: Option<Arc<AuthorityScope>>,
+    relative_binding: Option<String>,
+}
+
+impl std::fmt::Debug for HostPermissions {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("HostPermissions")
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -124,7 +135,7 @@ impl HostPermissions {
     pub(crate) fn scoped_to(
         &self,
         declarations: &crate::CapabilityRequirements,
-        active: Arc<AtomicBool>,
+        active: Arc<AuthorityScope>,
     ) -> (Self, BTreeSet<crate::Capability>) {
         let mut scoped = Self {
             active: Some(active),
@@ -158,7 +169,7 @@ impl HostPermissions {
         if [self.active.as_ref(), self.request_active.as_ref()]
             .into_iter()
             .flatten()
-            .any(|active| !active.load(Ordering::Acquire))
+            .any(|active| !active.is_active())
         {
             return Err("host capability scope has ended".to_owned());
         }
@@ -173,13 +184,57 @@ impl HostPermissions {
         }
     }
 
-    pub(crate) fn for_request(&self, active: Arc<AtomicBool>) -> Self {
+    async fn cancelled(&self) {
+        async fn wait(scope: &Option<Arc<AuthorityScope>>) {
+            match scope {
+                Some(scope) => scope.cancelled().await,
+                None => std::future::pending().await,
+            }
+        }
+        tokio::select! {
+            _ = wait(&self.active) => {},
+            _ = wait(&self.request_active) => {},
+        }
+    }
+
+    pub(crate) fn for_request(&self, active: Arc<AuthorityScope>) -> Self {
         let mut scoped = self.clone();
         scoped.request_active = Some(active);
         scoped
     }
 
-    pub(crate) fn authorize_binding_read(&self, binding: &str, path: &Path) -> Result<(), String> {
+    fn for_handle(&self, capability: &crate::Capability, operation: &str) -> Result<Self, String> {
+        self.ensure_active()?;
+        let mut scoped = self.clone();
+        scoped.net_hosts.clear();
+        scoped.fetch_hosts.clear();
+        scoped.read_roots.clear();
+        scoped
+            .read_bindings
+            .retain(|name, _| capability.name == "fs.binding" && name == &capability.resource);
+        match capability.name.as_str() {
+            "fs.binding" if operation == "fs.readTextFile" => {
+                scoped.relative_binding = Some(capability.resource.clone());
+            }
+            "http.host"
+                if matches!(
+                    operation,
+                    "fetch.requestStream"
+                        | "fetch.upload.write"
+                        | "fetch.upload.close"
+                        | "fetch.upload.abort"
+                        | "host.cancel"
+                ) =>
+            {
+                scoped.fetch_hosts.insert(capability.resource.clone());
+            }
+            "fs.binding" if operation == "host.cancel" => {}
+            _ => return Err("operation is outside the capability handle scope".to_owned()),
+        }
+        Ok(scoped)
+    }
+
+    fn binding_read(&self, binding: &str, path: &Path) -> Result<AuthorizedRead, String> {
         self.ensure_active()?;
         let root = self
             .read_bindings
@@ -196,11 +251,20 @@ impl HostPermissions {
         {
             return Err("expected a path relative to the filesystem binding".to_owned());
         }
+        Ok(AuthorizedRead {
+            display_path: PathBuf::from("scoped file"),
+            relative_path: path.to_owned(),
+            directory: Arc::clone(&root.directory),
+        })
+    }
+
+    pub(crate) fn authorize_binding_read(&self, binding: &str, path: &Path) -> Result<(), String> {
+        let authorized = self.binding_read(binding, path)?;
         let mut options = OpenOptions::new();
         options.read(true).custom_flags(libc::O_NONBLOCK);
-        let file = root
+        let file = authorized
             .directory
-            .open_with(path, &options)
+            .open_with(authorized.relative_path, &options)
             .map_err(|_| "filesystem path is unavailable within the binding".to_owned())?;
         if !file
             .metadata()
@@ -222,6 +286,9 @@ impl HostPermissions {
 
     fn authorize_read(&self, path: &Path) -> Result<AuthorizedRead, String> {
         self.ensure_active()?;
+        if let Some(binding) = &self.relative_binding {
+            return self.binding_read(binding, path);
+        }
         let absolute = if self.active.is_some() {
             std::fs::canonicalize(path)
         } else {
@@ -369,22 +436,54 @@ enum StreamMessage {
 
 struct StreamState {
     evaluation_id: Option<u64>,
+    permissions: HostPermissions,
     receiver: Arc<Mutex<Receiver<StreamMessage>>>,
-    producer: AbortHandle,
+    producer: AbortOnDrop,
     pulling: bool,
 }
 
 impl Drop for StreamState {
     fn drop(&mut self) {
-        self.producer.abort();
+        self.producer.0.abort();
     }
 }
 
 struct OpenedStream {
     stream_id: u64,
     metadata: String,
-    receiver: Receiver<StreamMessage>,
-    producer: AbortHandle,
+    receiver: Arc<Mutex<Receiver<StreamMessage>>>,
+    producer: AbortOnDrop,
+}
+
+struct AbortOnDrop(AbortHandle);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+impl OpenedStream {
+    fn scoped(self, permissions: &HostPermissions, tasks: &TaskTracker) -> Self {
+        if permissions.active.is_none() && permissions.request_active.is_none() {
+            return self;
+        }
+        let receiver = Arc::clone(&self.receiver);
+        let permissions = permissions.clone();
+        let producer = tasks.spawn(async move {
+            let _source = self.producer;
+            permissions.cancelled().await;
+            // Closing the existing receiver wakes even a blocking file sender.
+            // Do not add a forwarding queue: the two-chunk budget is unchanged.
+            self.receiver.lock().await.close();
+        });
+        Self {
+            stream_id: self.stream_id,
+            metadata: self.metadata,
+            receiver,
+            producer: AbortOnDrop(producer),
+        }
+    }
 }
 
 enum CompletionValue {
@@ -400,6 +499,7 @@ struct Completion {
 
 struct PendingHostCall {
     evaluation_id: Option<u64>,
+    permissions: HostPermissions,
     request_id: Option<u64>,
     stream_id: Option<u64>,
     upload_id: Option<u64>,
@@ -409,6 +509,7 @@ struct PendingHostCall {
 
 struct UploadState {
     evaluation_id: Option<u64>,
+    permissions: HostPermissions,
     sender: Sender<Vec<u8>>,
     aborted: Arc<AtomicBool>,
 }
@@ -421,6 +522,7 @@ pub(crate) struct HostDispatcher {
     streams: Rc<RefCell<HashMap<u64, StreamState>>>,
     uploads: Rc<RefCell<HashMap<u64, UploadState>>>,
     active_evaluation: Rc<Cell<Option<u64>>>,
+    request_scope: Rc<RefCell<Option<RequestHostScope>>>,
     accepting: Rc<Cell<bool>>,
     completion_tx: Sender<Completion>,
     completion_rx: Receiver<Completion>,
@@ -431,11 +533,51 @@ pub(crate) struct HostDispatcher {
     tasks: TaskTracker,
 }
 
+pub(crate) struct RequestScopeGuard(Rc<RefCell<Option<RequestHostScope>>>);
+
+impl Drop for RequestScopeGuard {
+    fn drop(&mut self) {
+        self.0.borrow_mut().take();
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ScopedCall {
+    scope: Option<String>,
+    capability_name: Option<String>,
+    capability_resource: Option<String>,
+}
+
+fn call_permissions(
+    call: &HostCall,
+    application: &HostPermissions,
+    request: Option<&RequestHostScope>,
+) -> Result<HostPermissions, String> {
+    let envelope: ScopedCall = serde_json::from_str(&call.payload)
+        .map_err(|_| "invalid host operation payload".to_owned())?;
+    match (
+        envelope.scope,
+        envelope.capability_name,
+        envelope.capability_resource,
+    ) {
+        (None, None, None) => Ok(request.map_or(application, |r| &r.permissions).clone()),
+        (Some(identity), Some(name), Some(resource)) => {
+            let request = request.ok_or("capability handle has no active request")?;
+            let capability = crate::Capability { name, resource };
+            request.authorize(&identity, &capability)?;
+            request.permissions.for_handle(&capability, &call.operation)
+        }
+        _ => Err("invalid capability handle".to_owned()),
+    }
+}
+
 impl HostDispatcher {
     pub(crate) fn new(permissions: HostPermissions) -> Result<Self, reqwest::Error> {
         let (completion_tx, completion_rx) = mpsc::channel(MAX_IN_FLIGHT_HOST_CALLS);
         let http_client = reqwest::Client::builder()
             .redirect(Policy::none())
+            .no_proxy()
             .build()?;
         let fetch_client = reqwest::Client::builder()
             .redirect(Policy::none())
@@ -449,6 +591,7 @@ impl HostDispatcher {
             streams: Rc::new(RefCell::new(HashMap::new())),
             uploads: Rc::new(RefCell::new(HashMap::new())),
             active_evaluation: Rc::new(Cell::new(None)),
+            request_scope: Rc::new(RefCell::new(None)),
             accepting: Rc::new(Cell::new(true)),
             completion_tx,
             completion_rx,
@@ -460,6 +603,12 @@ impl HostDispatcher {
         })
     }
 
+    pub(crate) fn enter_request(&self, scope: RequestHostScope) -> RequestScopeGuard {
+        assert!(self.request_scope.borrow().is_none());
+        *self.request_scope.borrow_mut() = Some(scope);
+        RequestScopeGuard(Rc::clone(&self.request_scope))
+    }
+
     pub(crate) fn install(&self, vm: &JscVm) -> Result<(), JscError> {
         let next_id = Rc::clone(&self.next_id);
         let next_stream_id = Rc::clone(&self.next_stream_id);
@@ -468,6 +617,7 @@ impl HostDispatcher {
         let streams = Rc::clone(&self.streams);
         let uploads = Rc::clone(&self.uploads);
         let active_evaluation = Rc::clone(&self.active_evaluation);
+        let request_scope = Rc::clone(&self.request_scope);
         let accepting = Rc::clone(&self.accepting);
         let completion_tx = self.completion_tx.clone();
         let permissions = self.permissions.clone();
@@ -476,7 +626,27 @@ impl HostDispatcher {
         let tasks = self.tasks.clone();
 
         vm.install_host_call_scheduler(move |call, promise| {
+            let permissions =
+                match call_permissions(&call, &permissions, request_scope.borrow().as_ref()) {
+                    Ok(permissions) => permissions,
+                    Err(error) => {
+                        let _ = promise.reject_message(&error);
+                        return;
+                    }
+                };
             if call.operation == "host.cancel" {
+                if let Ok(request_id) = parse_request_id(&call.payload) {
+                    let owned = request_ids.borrow().get(&request_id).is_none_or(|id| {
+                        pending
+                            .borrow()
+                            .get(id)
+                            .is_some_and(|call| call.evaluation_id == active_evaluation.get())
+                    });
+                    if !owned {
+                        let _ = promise.reject_message("unknown Kunlun host request");
+                        return;
+                    }
+                }
                 match parse_request_id(&call.payload) {
                     Ok(request_id) => cancel_request(
                         request_id,
@@ -495,6 +665,16 @@ impl HostDispatcher {
                 return;
             }
             if call.operation == "stream.cancel" {
+                if let Ok(stream_id) = parse_stream_id(&call.payload) {
+                    if streams
+                        .borrow()
+                        .get(&stream_id)
+                        .is_some_and(|stream| stream.evaluation_id != active_evaluation.get())
+                    {
+                        let _ = promise.reject_message("unknown Kunlun stream");
+                        return;
+                    }
+                }
                 match parse_stream_id(&call.payload) {
                     Ok(stream_id) => cancel_stream(
                         stream_id,
@@ -585,6 +765,7 @@ impl HostDispatcher {
                                 candidate,
                                 UploadState {
                                     evaluation_id,
+                                    permissions: permissions.clone(),
                                     sender,
                                     aborted: Arc::clone(&aborted),
                                 },
@@ -619,7 +800,7 @@ impl HostDispatcher {
                 None
             };
             let stream_id = if call.operation == "stream.next" {
-                match prepare_stream_pull(&call.payload, &streams) {
+                match prepare_stream_pull(&call.payload, &streams, evaluation_id) {
                     Ok(stream_id) => Some(stream_id),
                     Err(error) => {
                         let _ = promise.reject_message(&error);
@@ -652,6 +833,7 @@ impl HostDispatcher {
                 id,
                 PendingHostCall {
                     evaluation_id,
+                    permissions: permissions.clone(),
                     request_id,
                     stream_id,
                     upload_id,
@@ -728,11 +910,13 @@ impl HostDispatcher {
     }
 
     pub(crate) fn settle_completions(&mut self, vm: &JscVm) -> Result<(), JscError> {
+        self.reap_revoked();
         while let Some(completion) = self
             .buffered_completions
             .pop_front()
             .or_else(|| self.completion_rx.try_recv().ok())
         {
+            self.reap_revoked();
             let call = remove_pending(
                 completion.id,
                 &self.pending,
@@ -743,9 +927,17 @@ impl HostDispatcher {
             let Some(call) = call else {
                 continue;
             };
+            if let Err(message) = call.permissions.ensure_active() {
+                call.promise.reject_message(&message)?;
+                self.reap_revoked();
+                crate::checkpoint(vm)?;
+                continue;
+            }
             if matches!(&completion.value, CompletionValue::Value(Err(_))) {
                 if let Some(upload_id) = call.upload_id {
-                    self.uploads.borrow_mut().remove(&upload_id);
+                    if let Some(upload) = self.uploads.borrow_mut().remove(&upload_id) {
+                        upload.aborted.store(true, Ordering::Release);
+                    }
                 }
             }
             let terminal_stream = completion.terminal_stream;
@@ -759,7 +951,8 @@ impl HostDispatcher {
                         stream_id,
                         StreamState {
                             evaluation_id: call.evaluation_id,
-                            receiver: Arc::new(Mutex::new(opened.receiver)),
+                            permissions: call.permissions,
+                            receiver: opened.receiver,
                             producer: opened.producer,
                             pulling: false,
                         },
@@ -780,6 +973,35 @@ impl HostDispatcher {
         Ok(())
     }
 
+    fn reap_revoked(&mut self) {
+        self.uploads.borrow_mut().retain(|_, upload| {
+            let keep = upload.permissions.ensure_active().is_ok();
+            if !keep {
+                upload.aborted.store(true, Ordering::Release);
+            }
+            keep
+        });
+        self.streams
+            .borrow_mut()
+            .retain(|_, stream| stream.permissions.ensure_active().is_ok());
+        let ids: HashSet<_> = self
+            .pending
+            .borrow()
+            .iter()
+            .filter_map(|(id, call)| call.permissions.ensure_active().is_err().then_some(*id))
+            .collect();
+        for id in &ids {
+            remove_pending(
+                *id,
+                &self.pending,
+                &self.request_ids,
+                &self.streams,
+                Some("host capability scope has ended"),
+            );
+        }
+        self.discard_completions(&ids);
+    }
+
     pub(crate) async fn wait_for_completion(&mut self) {
         debug_assert!(self.buffered_completions.is_empty());
         if let Some(completion) = self.completion_rx.recv().await {
@@ -790,6 +1012,9 @@ impl HostDispatcher {
     pub(crate) async fn shutdown(&mut self, vm: &JscVm, grace: Duration) -> Result<bool, JscError> {
         self.accepting.set(false);
         self.active_evaluation.set(None);
+        for upload in self.uploads.borrow().values() {
+            upload.aborted.store(true, Ordering::Release);
+        }
         self.uploads.borrow_mut().clear();
         let stream_ids: Vec<_> = self.streams.borrow().keys().copied().collect();
         for stream_id in stream_ids {
@@ -860,6 +1085,93 @@ impl Drop for HostDispatcher {
 }
 
 #[cfg(test)]
+mod revocation_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn cancellation_wakes_all_waiters_and_remembers_revocation() {
+        let scope = AuthorityScope::new();
+        let first = scope.cancelled();
+        let second = scope.cancelled();
+        tokio::pin!(first, second);
+        assert!(
+            std::future::poll_fn(|cx| {
+                assert!(first.as_mut().poll(cx).is_pending());
+                assert!(second.as_mut().poll(cx).is_pending());
+                std::task::Poll::Ready(true)
+            })
+            .await
+        );
+        scope.revoke();
+        tokio::time::timeout(Duration::from_secs(1), async {
+            first.await;
+            second.await;
+            scope.cancelled().await;
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn discarded_stream_completion_aborts_its_producer() {
+        let tasks = TaskTracker::default();
+        let (_, receiver) = mpsc::channel(STREAM_BUFFER_CHUNKS);
+        let producer = tasks.spawn(std::future::pending());
+        let completion = CompletionValue::Stream(OpenedStream {
+            stream_id: 1,
+            metadata: String::new(),
+            receiver: Arc::new(Mutex::new(receiver)),
+            producer: AbortOnDrop(producer),
+        });
+        drop(completion);
+        assert!(tasks.wait_empty(Duration::from_secs(1)).await);
+    }
+
+    #[tokio::test]
+    async fn revocation_stops_idle_stream_without_a_pull() {
+        let tasks = TaskTracker::default();
+        let scope = Arc::new(AuthorityScope::new());
+        let permissions = HostPermissions::none().for_request(scope.clone());
+        let (sender, receiver) = mpsc::channel(STREAM_BUFFER_CHUNKS);
+        let producer = tasks.spawn(async move {
+            let _sender = sender;
+            std::future::pending::<()>().await;
+        });
+        let opened = OpenedStream {
+            stream_id: 1,
+            metadata: String::new(),
+            receiver: Arc::new(Mutex::new(receiver)),
+            producer: AbortOnDrop(producer),
+        }
+        .scoped(&permissions, &tasks);
+        scope.revoke();
+        assert!(tasks.wait_empty(Duration::from_secs(1)).await);
+        assert!(opened.receiver.lock().await.recv().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn another_evaluation_cannot_pull_a_stream() {
+        let tasks = TaskTracker::default();
+        let (_, receiver) = mpsc::channel(STREAM_BUFFER_CHUNKS);
+        let streams = Rc::new(RefCell::new(HashMap::from([(
+            1,
+            StreamState {
+                evaluation_id: Some(10),
+                permissions: HostPermissions::none(),
+                receiver: Arc::new(Mutex::new(receiver)),
+                producer: AbortOnDrop(tasks.spawn(std::future::pending())),
+                pulling: false,
+            },
+        )])));
+        assert!(prepare_stream_pull(r#"{"streamId":1}"#, &streams, Some(11)).is_err());
+        assert!(!streams.borrow()[&1].pulling);
+        assert!(prepare_stream_pull(r#"{"streamId":1}"#, &streams, Some(10)).is_ok());
+        drop(streams);
+        assert!(tasks.wait_empty(Duration::from_secs(1)).await);
+    }
+}
+
+#[cfg(test)]
 mod fetch_grant_tests {
     use super::*;
     use crate::{Capability, CapabilityRequirements};
@@ -881,7 +1193,7 @@ mod fetch_grant_tests {
             .allow_net_host("api.example.test")
             .allow_net_host("unexpected.test")
             .allow_fetch_host("unexpected.test");
-        let active = Arc::new(AtomicBool::new(true));
+        let active = Arc::new(AuthorityScope::new());
         let (permissions, effective) = deployment.scoped_to(&declarations, Arc::clone(&active));
         assert!(effective.contains(&capability));
         assert_eq!(effective.len(), 1);
@@ -900,7 +1212,7 @@ mod fetch_grant_tests {
                 .authorize_url(&reqwest::Url::parse("https://api.example.test/").unwrap())
                 .is_ok()
         );
-        active.store(false, Ordering::Release);
+        active.revoke();
         assert!(
             permissions
                 .authorize_fetch_url(&reqwest::Url::parse("https://api.example.test/").unwrap())
@@ -954,11 +1266,13 @@ fn parse_stream_id(payload: &str) -> Result<u64, String> {
 fn prepare_stream_pull(
     payload: &str,
     streams: &Rc<RefCell<HashMap<u64, StreamState>>>,
+    evaluation_id: Option<u64>,
 ) -> Result<u64, String> {
     let stream_id = parse_stream_id(payload)?;
     let mut streams = streams.borrow_mut();
     let stream = streams
         .get_mut(&stream_id)
+        .filter(|stream| stream.evaluation_id == evaluation_id)
         .ok_or_else(|| format!("unknown or closed Kunlun stream: {stream_id}"))?;
     if stream.pulling {
         return Err(format!(
@@ -1055,87 +1369,107 @@ fn dispatch(
     });
     let task_tracker = tasks.clone();
     tasks.spawn(async move {
-        let (value, terminal_stream) = match call.operation.as_str() {
-            "fs.readTextFile" => (
-                CompletionValue::Value(
-                    read_text_file(&call.payload, &permissions, &task_tracker).await,
+        let upload_aborted = upload_receiver.as_ref().map(|(_, aborted)| aborted.clone());
+        let operation = async {
+            match call.operation.as_str() {
+                "fs.readTextFile" => (
+                    CompletionValue::Value(
+                        read_text_file(&call.payload, &permissions, &task_tracker).await,
+                    ),
+                    false,
                 ),
-                false,
-            ),
-            "http.request" => (
-                CompletionValue::Value(
-                    http_request(&call.payload, &permissions, &http_client).await,
+                "http.request" => (
+                    CompletionValue::Value(
+                        http_request(&call.payload, &permissions, &http_client).await,
+                    ),
+                    false,
                 ),
-                false,
-            ),
-            "fs.openReadStream" => {
-                let result = open_file_stream(
-                    &call.payload,
-                    opened_stream_id.expect("stream ID assigned to stream operation"),
-                    &permissions,
-                    &task_tracker,
-                );
-                (stream_result(result), false)
-            }
-            "http.requestStream" => {
-                let result = open_http_stream(
-                    &call.payload,
-                    opened_stream_id.expect("stream ID assigned to stream operation"),
-                    &permissions,
-                    &http_client,
-                    &task_tracker,
-                )
-                .await;
-                (stream_result(result), false)
-            }
-            "fetch.requestStream" => {
-                let result = open_fetch_stream(
-                    &call.payload,
-                    opened_stream_id.expect("stream ID assigned to stream operation"),
-                    upload_receiver,
-                    &permissions,
-                    &fetch_client,
-                    &task_tracker,
-                )
-                .await;
-                (stream_result(result), false)
-            }
-            "fetch.upload.write" => (
-                CompletionValue::Value(write_fetch_upload(&call.payload, upload_sender).await),
-                false,
-            ),
-            "stream.next" => match stream_receiver {
-                Some(receiver) => {
-                    let message = receiver.lock().await.recv().await;
-                    match message {
-                        Some(StreamMessage::Chunk(bytes)) => {
-                            (CompletionValue::Value(encode_stream_chunk(&bytes)), false)
-                        }
-                        Some(StreamMessage::Eof) => {
-                            (CompletionValue::Value(encode_stream_eof()), true)
-                        }
-                        Some(StreamMessage::Error(error)) => {
-                            (CompletionValue::Value(Err(error)), true)
-                        }
-                        None => (
-                            CompletionValue::Value(Err(
-                                "Kunlun stream producer stopped without a terminal message"
-                                    .to_owned(),
-                            )),
-                            true,
-                        ),
-                    }
+                "fs.openReadStream" => {
+                    let result = open_file_stream(
+                        &call.payload,
+                        opened_stream_id.expect("stream ID assigned to stream operation"),
+                        &permissions,
+                        &task_tracker,
+                    );
+                    (stream_result(result), false)
                 }
-                None => (
-                    CompletionValue::Value(Err("Kunlun stream is no longer available".to_owned())),
-                    true,
+                "http.requestStream" => {
+                    let result = open_http_stream(
+                        &call.payload,
+                        opened_stream_id.expect("stream ID assigned to stream operation"),
+                        &permissions,
+                        &http_client,
+                        &task_tracker,
+                    )
+                    .await;
+                    (stream_result(result), false)
+                }
+                "fetch.requestStream" => {
+                    let result = open_fetch_stream(
+                        &call.payload,
+                        opened_stream_id.expect("stream ID assigned to stream operation"),
+                        upload_receiver,
+                        &permissions,
+                        &fetch_client,
+                        &task_tracker,
+                    )
+                    .await;
+                    (stream_result(result), false)
+                }
+                "fetch.upload.write" => (
+                    CompletionValue::Value(write_fetch_upload(&call.payload, upload_sender).await),
+                    false,
                 ),
-            },
-            operation => (
-                CompletionValue::Value(Err(format!("unknown Kunlun host operation: {operation}"))),
-                false,
-            ),
+                "stream.next" => match stream_receiver {
+                    Some(receiver) => {
+                        let message = receiver.lock().await.recv().await;
+                        match message {
+                            Some(StreamMessage::Chunk(bytes)) => {
+                                (CompletionValue::Value(encode_stream_chunk(&bytes)), false)
+                            }
+                            Some(StreamMessage::Eof) => {
+                                (CompletionValue::Value(encode_stream_eof()), true)
+                            }
+                            Some(StreamMessage::Error(error)) => {
+                                (CompletionValue::Value(Err(error)), true)
+                            }
+                            None => (
+                                CompletionValue::Value(Err(
+                                    "Kunlun stream producer stopped without a terminal message"
+                                        .to_owned(),
+                                )),
+                                true,
+                            ),
+                        }
+                    }
+                    None => (
+                        CompletionValue::Value(Err(
+                            "Kunlun stream is no longer available".to_owned()
+                        )),
+                        true,
+                    ),
+                },
+                operation => (
+                    CompletionValue::Value(Err(format!(
+                        "unknown Kunlun host operation: {operation}"
+                    ))),
+                    false,
+                ),
+            }
         };
+        let (mut value, terminal_stream) = tokio::select! {
+            biased;
+            _ = permissions.cancelled() => (
+                CompletionValue::Value(Err("host capability scope has ended".into())), true
+            ),
+            result = operation => result,
+        };
+        if let Err(error) = permissions.ensure_active() {
+            if let Some(aborted) = upload_aborted {
+                aborted.store(true, Ordering::Release);
+            }
+            value = CompletionValue::Value(Err(error));
+        }
         let _ = completion_tx
             .send(Completion {
                 id,
@@ -1266,9 +1600,10 @@ fn open_file_stream(
     Ok(OpenedStream {
         stream_id,
         metadata,
-        receiver,
-        producer,
-    })
+        receiver: Arc::new(Mutex::new(receiver)),
+        producer: AbortOnDrop(producer),
+    }
+    .scoped(permissions, tasks))
 }
 
 #[derive(Deserialize)]
@@ -1508,9 +1843,10 @@ async fn open_fetch_stream(
     Ok(OpenedStream {
         stream_id,
         metadata,
-        receiver,
-        producer,
-    })
+        receiver: Arc::new(Mutex::new(receiver)),
+        producer: AbortOnDrop(producer),
+    }
+    .scoped(permissions, tasks))
 }
 
 fn prepare_http_request(
@@ -1635,9 +1971,10 @@ async fn open_http_stream(
     Ok(OpenedStream {
         stream_id,
         metadata,
-        receiver,
-        producer,
-    })
+        receiver: Arc::new(Mutex::new(receiver)),
+        producer: AbortOnDrop(producer),
+    }
+    .scoped(permissions, tasks))
 }
 
 #[derive(Serialize)]
@@ -1801,7 +2138,7 @@ mod checkpoint_tests {
             let payload = serde_json::json!({ "path": path, "requestId": 1 }).to_string();
             let stream = open_file_stream(&payload, 1, &permissions, &tracker).unwrap();
             tokio::task::yield_now().await;
-            assert!(stream.receiver.len() <= STREAM_BUFFER_CHUNKS);
+            assert!(stream.receiver.lock().await.len() <= STREAM_BUFFER_CHUNKS);
             drop(stream);
             assert!(tracker.wait_empty(Duration::from_secs(1)).await);
             std::fs::remove_dir_all(root).unwrap();

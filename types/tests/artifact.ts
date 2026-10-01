@@ -16,6 +16,16 @@ const manifest = {
 const entry: ServerEntryV1 = {
   fetch(request, env, executionContext) {
     executionContext.waitUntil(Promise.resolve(request.url))
+    const file = env.fs["public-data"]
+    if (file) executionContext.waitUntil(file.readTextFile("hello.txt"))
+    const api = env.http["api.example.test"]
+    if (api) executionContext.waitUntil(api.fetch("https://api.example.test/"))
+    // @ts-expect-error Bindings must be checked for optional absence.
+    void env.fs["optional"].readTextFile("hello.txt")
+    // @ts-expect-error The projection is immutable.
+    env.fs = {}
+    // @ts-expect-error Credentials are not projected as arbitrary env values.
+    void env.PROVIDER_API_KEY
     return new Response(null, { status: 200 })
   },
 }

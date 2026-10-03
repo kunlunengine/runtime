@@ -1,7 +1,7 @@
 //! Native request authority checks; these tests make no Node compatibility claim.
 use kunlun_runtime::{
-    AdmissionPolicy, HostPermissions, RequestContext, RuntimeResourceCounts, ShutdownOutcome,
-    TokioIsolate, admit_artifact,
+    AdmissionPolicy, Capability, HostPermissions, RequestContext, RuntimeResourceCounts,
+    ShutdownOutcome, TokioIsolate, admit_artifact,
 };
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -45,6 +45,10 @@ impl Fixture {
         manifest["capabilities"]["required"] = json!([
             {"name": "http.host", "resource": "127.0.0.1"},
             {"name": "http.host", "resource": "localhost"}
+        ]);
+        manifest["capabilities"]["optional"] = json!([
+            {"name": "fs.binding", "resource": "public-data"},
+            {"name": "fs.binding", "resource": "missing-optional"}
         ]);
         fs::write(
             root.join("manifest.json"),
@@ -92,23 +96,166 @@ fn runtime() -> tokio::runtime::Runtime {
 
 #[test]
 fn adapter_neutral_authority_probe_runs_unchanged_across_requests() {
+    const SOURCE: &str = include_str!("fixtures/request-authority.js");
+    const CONTRACT: &[u8] = include_bytes!("fixtures/request-authority.contract.json");
+    let contract: serde_json::Value = serde_json::from_slice(CONTRACT).unwrap();
+    assert_eq!(contract["schema_version"], 1);
+    assert_eq!(contract["suite"], "request-authority/v1");
     let fixture = Fixture::new();
-    let artifact = admit_artifact(&fixture.0, &fixture.policy(true)).unwrap();
+    // Other native cases need HTTP authority; this shared slice must instead
+    // use exactly the contract declarations, just like the Core collector.
+    let mut manifest: serde_json::Value =
+        serde_json::from_slice(&fs::read(fixture.0.join("manifest.json")).unwrap()).unwrap();
+    let declarations = &contract["setup"]["declarations"];
+    manifest["capabilities"] = json!({
+        "required": declarations.get("required").cloned().unwrap_or_else(|| json!([])),
+        "optional": declarations["optional"]
+    });
+    fs::write(
+        fixture.0.join("manifest.json"),
+        serde_json::to_vec_pretty(&manifest).unwrap(),
+    )
+    .unwrap();
+    let public_root = fixture.0.join("public");
+    fs::create_dir(&public_root).unwrap();
+    fs::write(public_root.join("message.txt"), "public message").unwrap();
+    // The traversal target exists and is readable by the process, but is outside
+    // the selected binding. A nonexistent target would not prove confinement.
+    fs::write(fixture.0.join("escape.txt"), "private message").unwrap();
+    let permissions = HostPermissions::none()
+        .bind_read_root("public-data", &public_root)
+        .unwrap()
+        .bind_read_root("undeclared", &fixture.0)
+        .unwrap();
+    let policy = AdmissionPolicy::new(
+        sha256_hex(&fs::read(fixture.0.join("manifest.json")).unwrap()),
+        permissions,
+    );
+    let artifact = admit_artifact(&fixture.0, &policy).unwrap();
     let authority = artifact.authority();
+    for resource in ["127.0.0.1", "localhost"] {
+        assert!(!authority.contains(&Capability {
+            name: "http.host".to_owned(),
+            resource: resource.to_owned(),
+        }));
+    }
     let mut isolate =
         TokioIsolate::new_with_authority("shared-authority-probe", authority).unwrap();
+    isolate
+        .evaluate(
+            &format!(
+                "globalThis.requestAuthorityInputs = Object.freeze({{ absolutePath: {} }}); 'ready'",
+                json!(fixture.0.join("escape.txt").to_str().unwrap())
+            ),
+            "test:///request-authority-inputs.js",
+        )
+        .unwrap();
     let rt = runtime();
+    let mut observations = Vec::<serde_json::Value>::new();
     for _ in 0..2 {
-        assert_eq!(
-            rt.block_on(isolate.evaluate_request_body(
-                authority.begin_request(RequestContext::new()).unwrap(),
-                include_str!("fixtures/request-authority.js"),
-                "test:///request-authority.js",
-            ))
-            .unwrap(),
-            "request-authority-ok"
-        );
+        let output = rt
+            .block_on(async {
+                tokio::time::timeout(
+                    DEADLINE,
+                    isolate.evaluate_request_body(
+                        authority.begin_request(RequestContext::new()).unwrap(),
+                        SOURCE,
+                        "test:///request-authority.js",
+                    ),
+                )
+                .await
+            })
+            .expect("authority probe exceeded deadline")
+            .unwrap();
+        observations.push(serde_json::from_str(&output).unwrap());
     }
+    assert_eq!(json!(observations), contract["expected_observations"]);
+    assert_eq!(
+        rt.block_on(isolate.shutdown(DEADLINE)).unwrap(),
+        ShutdownOutcome::Graceful
+    );
+    assert_eq!(isolate.resource_counts(), RuntimeResourceCounts::default());
+    if let Some(path) = std::env::var_os("KUNLUN_AUTHORITY_OBSERVATIONS") {
+        write_authority_observations(Path::new(&path), SOURCE.as_bytes(), CONTRACT, &observations)
+            .expect("could not create authority observations report");
+    }
+}
+
+fn write_authority_observations(
+    path: &Path,
+    source: &[u8],
+    contract: &[u8],
+    observations: &[serde_json::Value],
+) -> std::io::Result<()> {
+    let backend = kunlun_jsc::JscVm::backend_info();
+    let report = json!({
+        "schema_version": 1,
+        "suite": "request-authority/v1",
+        "fixture_sha256": sha256_hex(source),
+        "contract_sha256": sha256_hex(contract),
+        "observations": observations,
+        "backend": {
+            "backend": backend.backend,
+            "target": backend.target,
+            "engine_revision": backend.engine_revision,
+            "distribution_mode": backend.distribution_mode,
+            "hermetic": backend.hermetic
+        }
+    });
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)?;
+    file.write_all(&serde_json::to_vec_pretty(&report)?)?;
+    file.write_all(b"\n")?;
+    file.sync_all()
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+#[test]
+fn authority_observations_report_records_exact_bytes_and_never_overwrites() {
+    let fixture = Fixture::new();
+    let path = fixture.0.join("observations.json");
+    let observations = vec![json!({"request": 1}), json!({"request": 2})];
+    write_authority_observations(&path, b"abc", b"", &observations).unwrap();
+    let original = fs::read(&path).unwrap();
+    let report: serde_json::Value = serde_json::from_slice(&original).unwrap();
+    assert_eq!(report.as_object().unwrap().len(), 6);
+    assert_eq!(report["schema_version"], 1);
+    assert_eq!(report["suite"], "request-authority/v1");
+    assert_eq!(
+        report["fixture_sha256"],
+        "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+    );
+    assert_eq!(
+        report["contract_sha256"],
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    );
+    assert_eq!(report["observations"], json!(observations));
+    let backend = kunlun_jsc::JscVm::backend_info();
+    assert_eq!(
+        report["backend"],
+        json!({
+            "backend": backend.backend,
+            "target": backend.target,
+            "engine_revision": backend.engine_revision,
+            "distribution_mode": backend.distribution_mode,
+            "hermetic": backend.hermetic
+        })
+    );
+    assert_eq!(
+        write_authority_observations(&path, b"other", b"other", &[])
+            .unwrap_err()
+            .kind(),
+        std::io::ErrorKind::AlreadyExists
+    );
+    assert_eq!(fs::read(&path).unwrap(), original);
 }
 
 #[test]

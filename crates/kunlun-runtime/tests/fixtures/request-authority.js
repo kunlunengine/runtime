@@ -1,23 +1,31 @@
-// Adapter-neutral #53 probe. The harness admits a "public-data" filesystem
-// binding containing message.txt ("public message"), omits "missing-optional",
-// and invokes these same bytes in two successive request environments.
+// Adapter-neutral authority slice; setup and expectations live in the adjacent
+// contract. Both requests execute these exact bytes, without adapter rewriting.
 const handle = env.fs['public-data'];
-if (!handle || env.fs['missing-optional'] !== undefined || env.fs.undeclared !== undefined)
-  throw new Error('incorrect declaration/grant intersection');
-if (!Object.isFrozen(env) || !Object.isFrozen(env.fs) || !Object.isFrozen(handle))
-  throw new Error('mutable request projection');
-async function mustDeny(operation) {
-  let denied = false;
-  try { await operation(); } catch (_) { denied = true; }
-  if (!denied) throw new Error('authority escalation');
+const absolutePath = globalThis.requestAuthorityInputs.absolutePath;
+if (typeof absolutePath !== 'string' || !absolutePath.startsWith('/'))
+  throw new Error('missing absolute escape-path test input');
+async function rejects(operation) {
+  try { await operation(); return false; } catch (_) { return true; }
 }
-for (const value of [env, handle])
-  await mustDeny(() => JSON.stringify(value));
-for (const path of ['../message.txt', '/message.txt', 'missing.txt'])
-  await mustDeny(() => handle.readTextFile(path));
-if (globalThis.previousRequestHandle)
-  await mustDeny(() => globalThis.previousRequestHandle.readTextFile('message.txt'));
-if (await handle.readTextFile('message.txt') !== 'public message')
-  throw new Error('incorrect scoped read');
+const observations = {
+  optional_binding_absent: !Object.hasOwn(env.fs, 'missing-optional'),
+  undeclared_binding_absent: !Object.hasOwn(env.fs, 'undeclared'),
+  environment_frozen: Object.isFrozen(env),
+  filesystem_map_frozen: Object.isFrozen(env.fs),
+  http_map_frozen: Object.isFrozen(env.http),
+  environment_null_prototype: Object.getPrototypeOf(env) === null,
+  filesystem_map_null_prototype: Object.getPrototypeOf(env.fs) === null,
+  http_map_null_prototype: Object.getPrototypeOf(env.http) === null,
+  handle_frozen: Object.isFrozen(handle),
+  environment_serialization_denied: await rejects(() => JSON.stringify(env)),
+  handle_serialization_denied: await rejects(() => JSON.stringify(handle)),
+  traversal_read_denied: await rejects(() => handle.readTextFile('../escape.txt')),
+  absolute_read_denied: await rejects(() => handle.readTextFile(absolutePath)),
+  missing_read_denied: await rejects(() => handle.readTextFile('missing.txt')),
+  permitted_read: await handle.readTextFile('message.txt'),
+  stale_handle_read_denied: globalThis.previousRequestHandle
+    ? await rejects(() => globalThis.previousRequestHandle.readTextFile('message.txt'))
+    : null
+};
 globalThis.previousRequestHandle = handle;
-return 'request-authority-ok';
+return JSON.stringify(observations);

@@ -85,6 +85,8 @@ and fail-closed admission; Fetch entry invocation remains tracked by #51.
 - [docs/module-loading.md](./docs/module-loading.md) — M2 URL resolver contract and native ESM boundary.
 - [docs/runtime-manifest-v1.md](./docs/runtime-manifest-v1.md) — M3 artifact schema, integrity,
   admission, and proposed Fetch entry contract.
+- [docs/m3-authority-conformance.md](./docs/m3-authority-conformance.md) — shared authority
+  observations, real Node integration, and outstanding pinned physical-platform qualification.
 - [docs/kunlun-cli.md](./docs/kunlun-cli.md) — the Vite+-class `kunlun` command surface and generator model.
 - [docs/cli-toolchain-plan.md](./docs/cli-toolchain-plan.md) — package-manager, toolchain, native-build,
   and Lightning-provider decisions.

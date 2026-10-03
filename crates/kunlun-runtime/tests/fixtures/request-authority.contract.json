@@ -1,0 +1,68 @@
+{
+  "schema_version": 1,
+  "suite": "request-authority/v1",
+  "setup": {
+    "source": "request-authority.js",
+    "execution": "Execute the exact same source bytes in two successive requests in one isolate; finish the first request before beginning the second.",
+    "declarations": {
+      "optional": [
+        { "name": "fs.binding", "resource": "public-data" },
+        { "name": "fs.binding", "resource": "missing-optional" }
+      ],
+      "undeclared": ["undeclared"]
+    },
+    "deployment_grants": {
+      "public-data": "A read-only filesystem root containing message.txt with exact UTF-8 contents public message.",
+      "undeclared": "An additional read-only filesystem deployment grant, not declared by the artifact.",
+      "missing-optional": false
+    },
+    "filesystem": {
+      "message.txt": "public message",
+      "../escape.txt": "private message",
+      "missing.txt": "Must not exist."
+    },
+    "global_test_inputs": {
+      "requestAuthorityInputs.absolutePath": "Before executing the unchanged probe, set this to the absolute path of the existing, process-readable ../escape.txt file outside the public-data root. This is explicit test-harness data, not an env binding or a value exposed by a host handle."
+    },
+    "request_context": "Fresh empty request context for each request; retain previousRequestHandle in the isolate global across requests.",
+    "scope": "Filesystem projection and request-local handle lifetime only; not full #50 coverage of HTTP, admission, context, or revocation."
+  },
+  "expected_observations": [
+    {
+      "optional_binding_absent": true,
+      "undeclared_binding_absent": true,
+      "environment_frozen": true,
+      "filesystem_map_frozen": true,
+      "http_map_frozen": true,
+      "environment_null_prototype": true,
+      "filesystem_map_null_prototype": true,
+      "http_map_null_prototype": true,
+      "handle_frozen": true,
+      "environment_serialization_denied": true,
+      "handle_serialization_denied": true,
+      "traversal_read_denied": true,
+      "absolute_read_denied": true,
+      "missing_read_denied": true,
+      "permitted_read": "public message",
+      "stale_handle_read_denied": null
+    },
+    {
+      "optional_binding_absent": true,
+      "undeclared_binding_absent": true,
+      "environment_frozen": true,
+      "filesystem_map_frozen": true,
+      "http_map_frozen": true,
+      "environment_null_prototype": true,
+      "filesystem_map_null_prototype": true,
+      "http_map_null_prototype": true,
+      "handle_frozen": true,
+      "environment_serialization_denied": true,
+      "handle_serialization_denied": true,
+      "traversal_read_denied": true,
+      "absolute_read_denied": true,
+      "missing_read_denied": true,
+      "permitted_read": "public message",
+      "stale_handle_read_denied": true
+    }
+  ]
+}

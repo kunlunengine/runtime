@@ -142,13 +142,19 @@ teardown; the M0–M2 suite remains required.
 
 `tests/fixtures/request-authority.js` is an adapter-neutral probe consumed without
 rewriting its bytes. The harness must bind `public-data` to a directory containing
-`message.txt` with `public message`, omit `missing-optional`, keep `undeclared`
-deployment authority outside the manifest, and invoke it in two successive
-request environments in one application. Both invocations must return
-`request-authority-ok`. Denial, successful reads, optional absence, and stale
+`message.txt` with `public message`, declare but not grant `missing-optional`,
+keep `undeclared` deployment authority outside the manifest, and invoke it in two
+successive request environments in one application. The adjacent
+`request-authority.contract.json` specifies the complete setup and expected
+two-request observations. Denial, successful reads, optional absence, and stale
 handle behavior must not be normalized away.
 
 Native tests consume this probe now. Independent runtime-node execution and
 pinned four-platform comparison belong to #53 and are **not** replaced by a
 mock Node permission layer or a local system-JSC pass. #50's cross-adapter
 qualification remains open until that gate runs the real adapters.
+
+The [authority conformance evidence slice](./m3-authority-conformance.md) defines
+the shared observation contract, native report collection, strict comparison,
+and real Core adapter integration / outstanding physical-platform dependencies.
+It is not the complete M3 application exit gate.

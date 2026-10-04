@@ -177,10 +177,14 @@ impl HostPermissions {
     }
 
     fn scoped_error(&self, message: &str, error: impl std::fmt::Display) -> String {
-        if self.active.is_some() {
+        self.scoped_diagnostic(message, || format!("{message}: {error}"))
+    }
+
+    fn scoped_diagnostic(&self, message: &str, unscoped: impl FnOnce() -> String) -> String {
+        if self.active.is_some() || self.request_active.is_some() {
             message.to_owned()
         } else {
-            format!("{message}: {error}")
+            unscoped()
         }
     }
 
@@ -326,9 +330,9 @@ impl HostPermissions {
         if self.net_hosts.contains(&host) {
             Ok(())
         } else {
-            Err(format!(
-                "network access denied for {host}; grant it with --allow-net {host}"
-            ))
+            Err(self.scoped_diagnostic("network access denied", || {
+                format!("network access denied for {host}; grant it with --allow-net {host}")
+            }))
         }
     }
 
@@ -337,14 +341,18 @@ impl HostPermissions {
         if self.fetch_hosts.contains(&host) {
             Ok(())
         } else {
-            Err(format!("Fetch capability denied for {host}"))
+            Err(self.scoped_diagnostic("Fetch capability denied", || {
+                format!("Fetch capability denied for {host}")
+            }))
         }
     }
 
     fn authorized_http_host(&self, url: &reqwest::Url) -> Result<String, String> {
         self.ensure_active()?;
         if !matches!(url.scheme(), "http" | "https") {
-            return Err(format!("unsupported URL scheme: {}", url.scheme()));
+            return Err(self.scoped_diagnostic("unsupported URL scheme", || {
+                format!("unsupported URL scheme: {}", url.scheme())
+            }));
         }
         let host = url
             .host_str()
@@ -1081,6 +1089,71 @@ impl Drop for HostDispatcher {
         self.pending.borrow_mut().clear();
         self.request_ids.borrow_mut().clear();
         self.streams.borrow_mut().clear();
+    }
+}
+
+#[cfg(test)]
+mod diagnostic_tests {
+    use super::*;
+
+    #[test]
+    fn authority_diagnostics_redact_application_and_request_scopes() {
+        let url = reqwest::Url::parse(
+            "https://private-user:private-password@private-host.test/private-path",
+        )
+        .unwrap();
+        let scheme = reqwest::Url::parse("private-scheme:private-data").unwrap();
+        for request_only in [false, true] {
+            let mut permissions = HostPermissions::none();
+            if request_only {
+                permissions.request_active = Some(Arc::new(AuthorityScope::new()));
+            } else {
+                permissions.active = Some(Arc::new(AuthorityScope::new()));
+            }
+            assert_eq!(
+                permissions.authorize_url(&url).unwrap_err(),
+                "network access denied"
+            );
+            assert_eq!(
+                permissions.authorize_fetch_url(&url).unwrap_err(),
+                "Fetch capability denied"
+            );
+            assert_eq!(
+                permissions.authorize_url(&scheme).unwrap_err(),
+                "unsupported URL scheme"
+            );
+            assert_eq!(
+                permissions.authorize_fetch_url(&scheme).unwrap_err(),
+                "unsupported URL scheme"
+            );
+            assert_eq!(
+                permissions.scoped_error("HTTP request failed", "private-data"),
+                "HTTP request failed"
+            );
+        }
+    }
+
+    #[test]
+    fn unscoped_diagnostics_keep_cli_details() {
+        let permissions = HostPermissions::none();
+        let url = reqwest::Url::parse("https://private-host.test/private-path").unwrap();
+        assert_eq!(
+            permissions.authorize_url(&url).unwrap_err(),
+            "network access denied for private-host.test; grant it with --allow-net private-host.test"
+        );
+        assert_eq!(
+            permissions.authorize_fetch_url(&url).unwrap_err(),
+            "Fetch capability denied for private-host.test"
+        );
+        let scheme = reqwest::Url::parse("private-scheme:private-data").unwrap();
+        assert_eq!(
+            permissions.authorize_url(&scheme).unwrap_err(),
+            "unsupported URL scheme: private-scheme"
+        );
+        assert_eq!(
+            permissions.scoped_error("HTTP request failed", "private-data"),
+            "HTTP request failed: private-data"
+        );
     }
 }
 

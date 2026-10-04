@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "suite": "request-authority-http/v1",
+  "qualification": false,
+  "setup": {
+    "declarations": {
+      "required": [
+        { "name": "http.host", "resource": "127.0.0.1" },
+        { "name": "http.host", "resource": "localhost" }
+      ],
+      "optional": [
+        { "name": "http.host", "resource": "optional.example.test" }
+      ]
+    },
+    "deployment_hosts": ["127.0.0.1", "localhost", "undeclared.example.test"]
+  },
+  "expected_requests": ["/ok", "/redirect", "/redirect", "/ok", "/redirect", "/redirect", "/pending"],
+  "expected_lifecycle": {
+    "pending_rejected_before_response": true,
+    "later_admission_denied": true
+  },
+  "expected_observations": [
+    {
+      "projection": true,
+      "serialization": "denied",
+      "allowed": { "status": 200, "header": "http", "body": "你好, scoped HTTP" },
+      "other_admitted_host": "denied",
+      "undeclared_host": "denied",
+      "credentials": "denied",
+      "unsupported_scheme": "denied",
+      "pre_aborted": "denied",
+      "manual_redirect": { "status": 302, "location_preserved": true, "body": "" },
+      "redirect_escape": "denied",
+      "previous_request": "not-retained"
+    },
+    {
+      "projection": true,
+      "serialization": "denied",
+      "allowed": { "status": 200, "header": "http", "body": "你好, scoped HTTP" },
+      "other_admitted_host": "denied",
+      "undeclared_host": "denied",
+      "credentials": "denied",
+      "unsupported_scheme": "denied",
+      "pre_aborted": "denied",
+      "manual_redirect": { "status": 302, "location_preserved": true, "body": "" },
+      "redirect_escape": "denied",
+      "previous_request": "denied"
+    }
+  ]
+}

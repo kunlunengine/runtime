@@ -120,11 +120,22 @@ def identity(root, target, directory, trusted_digest):
     }
 
 
-def command(arguments, log, timeout=1200):
-    """Bound the whole process group, including a stalled native test, not just Cargo."""
+def native_environment(directory, target):
+    """After identity verification, restore the loader path even if SIP stripped it."""
+    require(target in TARGETS, "unsupported native platform")
+    env = os.environ.copy()
+    variable = "DYLD_LIBRARY_PATH" if target.endswith("apple-darwin") else "LD_LIBRARY_PATH"
+    library = str(directory.resolve() / "lib")
+    inherited = env.get(variable)
+    env[variable] = library + (os.pathsep + inherited if inherited else "")
+    return env
+
+
+def command(arguments, log, timeout=1200, *, env=None):
+    """Bound the whole process group; env=None retains normal child inheritance."""
     print("+ " + " ".join(map(str, arguments)), flush=True)
     with subprocess.Popen(arguments, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                          text=True, start_new_session=True) as child:
+                          text=True, start_new_session=True, env=env) as child:
         try:
             output, _ = child.communicate(timeout=timeout)
         except subprocess.TimeoutExpired:
@@ -162,14 +173,17 @@ def run(args):
         command(["rustc", "-vV"], args.output / "rustc.txt")
         features = ["--locked", "--no-default-features", "--features", "bundled-jsc",
                     "--target", args.target]
+        child_env = native_environment(directory, args.target)
         doctor = command(["cargo", "run", "-p", "kunlun-runtime", *features, "--", "doctor"],
-                         args.output / "doctor.txt")
+                         args.output / "doctor.txt", env=child_env)
         report["capabilities"] = validate_doctor(
             doctor, args.target, report["engine_revision"], report["mode"])
         # Cargo's backend validator rehashes the entire installed artifact before these commands.
-        command(["cargo", "test", "--workspace", *features], args.output / "workspace.txt")
+        command(["cargo", "test", "--workspace", *features], args.output / "workspace.txt",
+                env=child_env)
         output = command(["cargo", "test", "-p", "kunlun-runtime", "--test", "m2_conformance",
-                          *features, "--", "--test-threads=1"], args.output / "corpus.txt")
+                          *features, "--", "--test-threads=1"], args.output / "corpus.txt",
+                         env=child_env)
         report["tests"] = validate_tests(output, expected_tests(ROOT))
         report["status"] = "passed"
     except (ValueError, OSError, KeyError, subprocess.SubprocessError) as error:

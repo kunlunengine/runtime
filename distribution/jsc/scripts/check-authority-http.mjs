@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { runtimeIdentity, dependencyClosure } from './node-provenance.mjs';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { readFile, writeFile } from 'node:fs/promises';
@@ -10,7 +11,7 @@ import { createContext, Script } from 'node:vm';
 
 const runtime = fileURLToPath(new URL('../../../', import.meta.url));
 const fixtures = path.join(runtime, 'crates/kunlun-runtime/tests/fixtures');
-const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
+export const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
 
 export function bounded(promise, timeoutMs = 10_000) {
   let timer;
@@ -23,6 +24,7 @@ export function bounded(promise, timeoutMs = 10_000) {
 // This development check must not be mistaken for the reviewed-commit collector.
 // No adapter, permission provider, or diagnostic text is simulated or normalized.
 export function validateHttpReport(report, contract, hashes, adapter) {
+  assert.equal(Object.hasOwn(report, 'error'), false);
   assert.equal(contract.schema_version, 1);
   assert.equal(contract.suite, 'request-authority-http/v1');
   assert.equal(contract.qualification, false);
@@ -42,12 +44,18 @@ export function validateHttpReport(report, contract, hashes, adapter) {
   assert.deepStrictEqual(report.requests, contract.expected_requests);
 }
 
-async function moduleHashes(core) {
+export async function moduleHashes(core) {
   return Object.fromEntries(await Promise.all(
     ['index.js', 'application.js', 'authority.js'].map(async module => [
       module, sha256(await readFile(path.join(core, 'packages/runtime-node/dist', module))),
     ]),
   ));
+}
+
+export function sourceCommit(core) {
+  return execFileSync('git', ['rev-parse', 'HEAD'], {
+    cwd: core, encoding: 'utf8', timeout: 30_000,
+  }).trim();
 }
 
 export async function checkHttpAuthority(core, nativePath) {
@@ -74,9 +82,9 @@ export async function checkHttpAuthority(core, nativePath) {
       package: metadata.name,
       package_version: metadata.version,
       version: process.version,
-      source_commit: execFileSync('git', ['rev-parse', 'HEAD'], {
-        cwd: core, encoding: 'utf8', timeout: 30_000,
-      }).trim(),
+      runtime: runtimeIdentity(),
+      dependencies: dependencyClosure(core),
+      source_commit: sourceCommit(core),
       modules: before,
     },
   };
@@ -219,16 +227,12 @@ export async function checkHttpAuthority(core, nativePath) {
   report.requests = requests;
   try {
     assert.deepStrictEqual(await moduleHashes(core), before);
-    assert.equal(
-      execFileSync('git', ['rev-parse', 'HEAD'], {
-        cwd: core, encoding: 'utf8', timeout: 30_000,
-      }).trim(),
-      report.node.source_commit,
-    );
+    assert.equal(sourceCommit(core), report.node.source_commit);
     assert.equal(sha256(await readFile(path.join(fixtures, 'request-authority-http.js'))), report.fixture_sha256);
     assert.equal(sha256(await readFile(path.join(fixtures, 'request-authority-http.contract.json'))), report.contract_sha256);
     assert.equal(sha256(await readFile(path.join(fixtures, 'request-authority-http-revocation.js'))), report.revocation_sha256);
     assert.equal(report.error, undefined);
+    assert.deepStrictEqual(dependencyClosure(core), report.node.dependencies);
     report.status = 'development';
     validateHttpReport(report, contract, report, 'node');
     if (nativePath) {

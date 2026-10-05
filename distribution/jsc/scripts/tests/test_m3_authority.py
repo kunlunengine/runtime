@@ -294,8 +294,10 @@ class AuthorityGateTests(unittest.TestCase):
                    command_error=None, github_sha=COMMIT, translated=False,
                    receipt_change=None, trusted_digest=None, probe_output=None,
                    final_commit=COMMIT, final_dirty=False, subprocess_transport=False,
-                   inherited_loader=None, target_index=0, doctor_change=None):
+                   inherited_loader=None, target_index=0, doctor_change=None, suite=gate.SUITE):
         """Mock command transport only to exercise gate failure persistence."""
+        _, _, probe = gate.suite_settings(suite)
+        execution, variable = gate.suite_execution(suite)
         target = self.reports[target_index]["target"]
         output = self.root / "collected"
         dist = self.root / "dist"
@@ -376,15 +378,21 @@ class AuthorityGateTests(unittest.TestCase):
                 self.assertIn("--exact", arguments)
                 self.assertIn("--no-default-features", arguments)
                 self.assertIn("bundled-jsc", arguments)
-                self.assertIn(gate.PROBE, arguments)
-                raw = {"schema_version": 1, "suite": gate.SUITE, **gate.corpus(self.root),
+                self.assertIn(probe, arguments)
+                self.assertIn(execution, arguments)
+                raw = {"schema_version": 1, "suite": suite, **gate.corpus(self.root, suite),
                        "backend": copy.deepcopy(self.reports[target_index]["backend"])}
+                if suite != gate.SUITE:
+                    raw.update(adapter="native", status="development", qualification=False)
+                if suite == gate.LIFECYCLE_SUITE:
+                    raw["native_assertions"] = gate.load_json(
+                        self.root / gate.LIFECYCLE_FIXTURE.with_suffix(".contract.json"))["expected_native_assertions"]
                 if raw_change:
                     raw_change(raw)
                 if not missing_raw:
-                    Path(env["KUNLUN_AUTHORITY_OBSERVATIONS"]).write_text(json.dumps(raw))
+                    Path(env[variable]).write_text(json.dumps(raw))
                 text = probe_output if probe_output is not None else (
-                    f"test {gate.PROBE} ... ok\n"
+                    f"test {probe} ... ok\n"
                     "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 12 filtered out;\n")
             log.write_text(text)
             return text
@@ -396,7 +404,7 @@ class AuthorityGateTests(unittest.TestCase):
                 patch.object(gate.m2, "command", side_effect=command):
             before = dict(os.environ)
             try:
-                gate.collect_native(argparse.Namespace(target=target, output=output))
+                gate.collect_native(argparse.Namespace(target=target, output=output, suite=suite))
             finally:
                 self.assertEqual(dict(os.environ), before)
         return gate.load_json(output / "report.json"), calls
@@ -523,9 +531,21 @@ class AuthorityGateTests(unittest.TestCase):
         raw = {"schema_version": 1, "suite": gate.SUITE, **gate.corpus(self.root),
                "backend": self.reports[0]["backend"]}
         for key, value in (("schema_version", True), ("fixture_sha256", "0" * 64),
-                           ("contract_sha256", "0" * 64), ("observations", [])):
+                           ("contract_sha256", "0" * 64), ("observations", []),
+                           ("error", None), ("error", "")):
             with self.subTest(key=key), self.assertRaises(ValueError):
                 gate.validate_raw(self.root, {**raw, key: value}, self.reports[0])
+
+    def test_successful_reports_reject_error_key_but_allow_metadata(self):
+        for index in (0, 4):
+            for value in (None, "", False, "failed"):
+                reports = copy.deepcopy(self.reports)
+                reports[index]["error"] = value
+                with self.subTest(index=index, value=value), self.assertRaises(ValueError):
+                    self.validate(reports)
+        reports = copy.deepcopy(self.reports)
+        reports[0]["review_metadata"] = {"reviewed": True}
+        self.validate(reports)
 
     def test_existing_output_not_overwritten(self):
         output = self.root / "existing"

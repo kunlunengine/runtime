@@ -1,10 +1,14 @@
-# M3 authority conformance: first evidence slice
+# M3 scoped authority conformance
 
-Status: **in progress, not qualified**. This is the first shared observation and
-evidence slice for [#50](https://github.com/kunlunengine/runtime/issues/50) and
+Status: **shared implementation checks available; physical qualification deferred**.
+These are shared observation and evidence slices for
+[#50](https://github.com/kunlunengine/runtime/issues/50) and
 [#53](https://github.com/kunlunengine/runtime/issues/53), not the full M3 exit gate.
 Neither a native-only pass nor successful evidence-tool unit tests qualify the
 independent Node adapter. No mock Node permission implementation is provided.
+Physical execution is separately scheduled in
+[#63](https://github.com/kunlunengine/runtime/issues/63); implementation work need
+not wait for those runners, but no report is promoted to formal qualification.
 
 ## Corpus and comparison policy
 
@@ -244,12 +248,141 @@ limits; the shared binary case uses explicit RequestInit bytes, and the native
 profile does not support FormData. Do not generalize this pass to full Fetch
 compatibility or hide one-shot body differences by buffering streams.
 
-This is not full HTTP/lifecycle qualification. Request-owned confidential context
-has no equivalent Node host-context API yet. Concurrent requests, cancellation
-and revocation after headers, background work, and complete diagnostic
-coverage still need shared host orchestration and formal collectors; native-only
-tests are not substitutes. In particular, `waitUntil()` remains unsupported in
-the Core slice.
+This is not full HTTP/lifecycle qualification. The next slice covers bounded
+invocation cancellation after headers and concurrent isolate independence; it
+does not qualify inbound response delivery or background work. In particular,
+`waitUntil()` remains unsupported in the Core slice.
+
+## Shared post-headers and concurrent-isolate check
+
+[`request-authority-lifecycle.js`](../crates/kunlun-runtime/tests/fixtures/request-authority-lifecycle.js)
+and its [contract](../crates/kunlun-runtime/tests/fixtures/request-authority-lifecycle.contract.json)
+run unchanged on both real adapters. The fixture sends response headers and the
+first chunk, but withholds the rest. JavaScript starts a second body read before
+sending `/ready?pending=true`; receipt of that request is the host's explicit
+progress barrier. A microtask checkpoint rejects an already-settled read, and
+settlement while the acknowledgement is pending rejects the probe as well.
+The host reads an immutable observation captured at that barrier, not a fabricated
+pending value after cancellation. No delay is used to infer that headers/body
+were received.
+
+The host then either revokes the application or cancels just the invocation.
+Native cancellation drops the consumed evaluation future; Node cancellation
+aborts the real invocation's host-owned signal. Both must stop before the fixture
+releases either pending response. Application revocation denies later admission.
+Request cancellation leaves the application usable: a subsequent request denies
+the retained handle and body reader, then successfully uses its own fresh handle.
+Repeated bounded close/shutdown must complete.
+
+The concurrent slice runs two real isolates/VM realms and independent authority
+owners. While A is still blocked, B must fetch successfully without seeing A's
+retained handle or progress globals. Only after that result does the host revoke
+A, observe rejection, and invoke B successfully again. Both ordered traffic
+lists are compared exactly. This is overlapping invocation execution in separate
+isolates, not concurrent JavaScript invocations in one native isolate, a process
+isolation claim, or a test of an inbound server's scheduling policy.
+
+The shared probe checks the exposed `fs`/`http` shape, non-serialization and
+absence of context/identity/secret fields. Native additionally supplies distinct
+auth/provider/billing sentinels to real `RequestContext` objects, verifies their
+owners and request-specific revocation, and asserts empty resource counts before
+and after graceful shutdown. These remain separately labeled `native_assertions`.
+Node has no public host-context or resource-counter API in this bounded primitive:
+the checker does **not** synthesize those assertions or claim credential-service
+parity. Neither adapter exposes a provider, billing or secret service in v1.
+Any future such service must bring its own shared owner/redaction cases.
+
+```sh
+KUNLUN_M3_LIFECYCLE_OBSERVATIONS="$TMPDIR/native-lifecycle.json" \
+  cargo test --locked -p kunlun-runtime --test request_authority_lifecycle \
+  --no-default-features --features system-jsc \
+  shared_post_headers_lifecycle_matches_contract -- --exact
+
+node distribution/jsc/scripts/check-authority-lifecycle.mjs \
+  --core-root /path/to/existing/core-build \
+  --native "$TMPDIR/native-lifecycle.json" \
+  --output "$TMPDIR/node-lifecycle.json"
+```
+
+Both developer reports are `status: "development"`, `qualification: false`.
+The checker is read-only, binds/rechecks actual Core module hashes and commit,
+and checks observations, lifecycle, concurrency and traffic against the contract
+and native report. Native context/counters are checked only for native reports.
+Successful Node cleanup requires authority-owned connections to close before
+the server joins; forced fixture interruption is reserved for failed cleanup.
+Native requires resource drain **before** releasing held fixture sockets, so peer
+EOF cannot be credited as cancellation cleanup. It exports only after bounded
+shutdown, resource accounting and fixture joins.
+Existing output files are never overwritten.
+
+Latest local verification of this follow-up used the real existing Core PR #9
+final-head build at `c2394d6944a4eb9ac89be007940f16fdaa2a8937` on Node 20.20.2,
+22.22.1 and 24.15.0, against native system-JSC on macOS arm64. Both HTTP and
+lifecycle checks matched their complete contracts and native observations,
+including concurrent traffic. The probe regression tests also reject immediate
+EOF/rejection and settlement during acknowledgement, and detect nested,
+symbol-keyed/symbol-valued and prototype secret data without calling getters.
+Workspace tests, Clippy, formatting, 104 Python tests, 64 Node tests and workflow
+lint passed. These are working-tree development checks, not clean reviewed
+pinned-platform collection or evidence for Core's later merge commit.
+
+## Reviewed HTTP and lifecycle evidence collection
+
+The same strict reviewed-commit collector now also supports
+`request-authority-http/v1` and `request-authority-lifecycle/v1`. Native
+collection requires a verified pinned JSC distribution and its receipt, runs
+exactly the selected probe, validates its actual backend, and rechecks
+source/corpus/artifact identities. The pinned workflows upload each suite
+separately from filesystem and M2 evidence.
+
+```sh
+for slice in http lifecycle; do
+  python3 distribution/jsc/scripts/m3_authority.py collect-native \
+    --suite "request-authority-$slice/v1" \
+    --target "$TARGET" --output "$EVIDENCE/$slice/native-$TARGET"
+
+  python3 distribution/jsc/scripts/m3_authority.py collect-node \
+    --suite "request-authority-$slice/v1" \
+    --core-root "$CORE_ROOT" --target "$TARGET" \
+    --output "$EVIDENCE/$slice/node-$TARGET" \
+    --commit "$REVIEWED_RUNTIME_COMMIT" --node-commit "$REVIEWED_CORE_COMMIT" \
+    --node-package-version "$REVIEWED_NODE_ADAPTER_VERSION"
+done
+```
+
+Native uses the same `KUNLUN_JSC_DIST_DIR` / `KUNLUN_JSC_RECEIPT_SHA256` loader
+environment as filesystem collection. Node collection requires clean exact
+reviewed Runtime and Core sources, a matching physical runner and Node process
+architecture, and a new output directory outside both checkouts. It deliberately
+reinstalls dependencies from the reviewed frozen lockfile into a fresh
+evidence-local pnpm store with lifecycle scripts disabled, then force-builds
+Core with `pnpm run build --force`. It executes the real selected probe and
+rechecks package/source/lockfile/corpus identities, dependency closure and emitted
+module hashes. Actual observation-process executable/architecture/platform and
+Linux glibc identity are recorded; ambient Node/preload/library injection is
+rejected. A preliminary `node -p` result alone is not process provenance.
+Unlike the read-only developer command, run this only in a disposable Core
+checkout where you intend to reinstall dependencies and build. Errors retain
+failed reports, not successful empty results.
+
+`collect-node-http` remains an alias with HTTP as the default suite. The earlier
+filesystem collector/report shape remains compatible; new HTTP/lifecycle formal
+reports must include the strengthened installation/runtime provenance.
+Developer reports cannot substitute for any formal suite.
+
+The strengthened report additionally binds:
+
+- `node.runtime`: the observation process's exact version, architecture,
+  platform, executable SHA-256 and libc identity.
+- `node.dependencies`: content hashes of the actual runtime dependency closure,
+  including the HTTP transport dependency, rechecked after execution.
+- `node.installation`: the frozen/no-scripts installation recipe, fresh store
+  and CI settings, and the reviewed lockfile SHA-256.
+
+Installation/dependency records must agree across the four Node reports for the
+same reviewed Core source. Executable hashes are process identities, not a
+requirement that different platforms share the same native Node binary. A report
+with an `error` field cannot be accepted as a successful execution.
 
 ## Four-platform comparison
 
@@ -278,7 +411,15 @@ remain useful diagnostics, but **do not qualify physical Intel coverage**.
 The comparison rejects them; a physical Intel pinned run is still required.
 This does not redefine or weaken the existing M2 gate.
 
-A successful comparison qualifies only `request-authority/v1`, not the whole
+The command defaults to `request-authority/v1`. For HTTP or lifecycle, add
+`--suite request-authority-http/v1` or `--suite request-authority-lifecycle/v1`
+and use separate evidence directories with eight reports **per suite**. HTTP
+comparison additionally requires the revocation probe hash, complete lifecycle
+and exact ordered traffic. Lifecycle additionally compares the concurrency
+observations/traffic and verifies native-only accounting without inventing it
+for Node. Both require matching reviewed installation/dependency provenance.
+
+A successful comparison qualifies only its selected slice, not the whole
 of #50 or #53. Do not wire an absent Node job as a skipped-but-green M3 gate.
 Full required-check integration must wait for reviewed adapter commits and a
 complete physical-platform evidence workflow; this change adds no Actions
@@ -288,15 +429,19 @@ aggregation job.
 
 | Work | Owner / tracker | Completion evidence |
 | --- | --- | --- |
-| Qualify scoped Node redirect behavior | Core adapter after merged PR #9, Runtime #50 / #53 | Local shared probe passes at `52e992b4`; new reviewed pinned collection must bind the updated merged Core commit |
-| Complete shared #50 adversarial coverage | Runtime #50 / #53 and Core adapter | Cross-isolate/concurrent contexts, revocation/cancellation after headers, full teardown/diagnostics, and formal HTTP collection on both adapters |
-| Four physical platform runs | Runtime #53 | Exact reviewed source/fixture identities and pinned receipts; no Rosetta substitution |
+| Shared bounded #50 implementation checks | Runtime #50 and real Core adapter | HTTP denials plus post-headers revocation/cancellation, stale stream/handle denial, concurrent isolate independence, opaque env and actual traffic; native-only context/counter proof remains labeled separately |
+| Reviewed HTTP/lifecycle collection tooling | Runtime #50 / #53 | Exact probe execution, pinned backend and clean source checks, frozen dependencies/actual Node process, real forced build, strict eight-report comparison |
+| Four physical platform runs | Deferred Runtime #63, formal gate #53 | Updated reviewed Runtime/Core/corpus identities, pinned receipts and complete per-slice reports; no Rosetta or developer-report substitution |
 | Same generated portable application artifact | Core producer / Runtime #52 | Build recipe, producer/adapter versions, artifact hashes, both adapters |
 | Inbound lifecycle and full application corpus | Runtime #51 / #53 | Routing/HTTP/streaming, bounded queues, errors, drain/restart and resource-accounting cases |
 | Native-boundary regression and consumer qualification | M0–M2, Runtime #42 / #53 | Pinned sanitizers/Miri plus actual public Wuling SSR/docs results and measurements |
 
-Keep #50 open until its complete acceptance criteria, including independent
-adapter denial parity, have evidence. Keep #53 open until its broader application
-and consumer exit criteria are met. Only a reviewed closeout PR satisfying the
-relevant issue should use a closing reference; prose negating a closing keyword
+Physical execution is intentionally split from the #50 implementation schedule
+into #63; #53 retains the formal qualification requirement. M4 business-logic
+development may proceed in parallel: these deferred evidence tasks are not
+prerequisites for starting that work. This scheduling decision does not qualify
+an adapter, platform or release. Keep #50 open until its
+implementation/shared-acceptance closeout is reviewed, and keep #53/#63 open
+until their respective evidence gates pass. Only a reviewed closeout PR satisfying
+the relevant issue should use a closing reference; prose negating a closing keyword
 next to an issue number can still create an accidental GitHub closing link.

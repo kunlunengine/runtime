@@ -1,0 +1,89 @@
+{
+  "schema_version": 1,
+  "suite": "request-authority-lifecycle/v1",
+  "setup": {
+    "declarations": {
+      "required": [{"name": "http.host", "resource": "127.0.0.1"}],
+      "optional": []
+    },
+    "deployment_hosts": ["127.0.0.1"],
+    "inputs": "requestAuthorityLifecycleInputs = { base: ephemeral loopback origin, phase: application | request | survivor | independent }",
+    "contexts": {
+      "A": {"auth": "private-A-auth", "provider": "private-A-provider", "billing": "private-A-billing"},
+      "B": {"auth": "private-B-auth", "provider": "private-B-provider", "billing": "private-B-billing"}
+    },
+    "ordering": [
+      "GET /body returns real chunked HTTP headers and first chunk 'first'; all remaining bytes withheld",
+      "JS receives headers, reads first chunk, starts next read, then GET /ready?pending=true",
+      "application: host revokes application only after /ready receipt; invocation rejects before body release",
+      "request: host cancels invocation after /ready receipt (native drops evaluation future; Core uses invoke AbortSignal); invocation does not return",
+      "request: next serial invocation denies retained handle and reader then GET /fresh succeeds",
+      "independent: a different admitted application and VM realm completes GET /fresh while A remains pending at /ready; only then revoke A and await rejection",
+      "independent: B completes a second GET /fresh after A revocation; both probes see no A retained globals and only frozen opaque fs/http",
+      "release held connection only after invocation settles; check empty resources and bounded graceful shutdown before export"
+    ],
+    "ownership": "Native-only held request environments prove context ownership. Serial survivor proves same-scope cross-request isolation. Separate admitted applications and real VM realms prove cross-isolate in-flight independence, with B invoked while A is suspended and again after A revocation.",
+    "limits": [
+      "Native request cancellation drops the executing evaluation future; Core request cancellation aborts the host invoke signal.",
+      "Held A/B context revocation is a separate host ownership check, not cancellation of the executing streaming request.",
+      "Opacity checks test supplied trusted context strings, not an invented provider or secret API.",
+      "No physical qualification, OS security, simultaneous CPU execution, or same-isolate parallel JS claim."
+    ]
+  },
+  "expected_progress": {
+    "application": {
+      "phase": "application", "keys": ["fs", "http"],
+      "contextAbsent": true, "secretStringsAbsent": true,
+      "serializationDenied": true, "headers": true,
+      "firstChunk": "first", "nextReadPending": true
+    },
+    "request": {
+      "phase": "request", "keys": ["fs", "http"],
+      "contextAbsent": true, "secretStringsAbsent": true,
+      "serializationDenied": true, "headers": true,
+      "firstChunk": "first", "nextReadPending": true
+    },
+    "survivor": {
+      "phase": "survivor", "staleHandleDenied": true,
+      "staleBodyDenied": true, "fresh": "fresh"
+    }
+  },
+  "expected_traffic": {
+    "application": ["GET /body", "GET /ready?pending=true"],
+    "request": ["GET /body", "GET /ready?pending=true", "GET /fresh"]
+  },
+  "expected_concurrency": {
+    "while_other_pending": {
+      "phase": "independent", "keys": ["fs", "http"],
+      "contextAbsent": true, "secretStringsAbsent": true,
+      "serializationDenied": true, "frozen": true,
+      "retainedAbsent": true, "progressAbsent": true, "fresh": "fresh"
+    },
+    "after_other_revoked": {
+      "phase": "independent", "keys": ["fs", "http"],
+      "contextAbsent": true, "secretStringsAbsent": true,
+      "serializationDenied": true, "frozen": true,
+      "retainedAbsent": true, "progressAbsent": true, "fresh": "fresh"
+    },
+    "other_invocation_rejected": true,
+    "independent_admission_preserved": true
+  },
+  "expected_concurrent_traffic": {
+    "blocked": ["GET /body", "GET /ready?pending=true"],
+    "independent": ["GET /fresh", "GET /fresh"]
+  },
+  "expected_lifecycle": {
+    "application_invocation": "rejected",
+    "request_invocation": "cancelled",
+    "later_application_admission_denied": true,
+    "surviving_request_admitted": true,
+    "repeated_close_completed": true
+  },
+  "expected_native_assertions": {
+    "held_A_revoked_B_preserved": true,
+    "cross_isolate_B_context_preserved": true,
+    "resources_empty_before_shutdown": true,
+    "shutdown": "graceful",
+    "resources_empty_after_shutdown": true
+  }
+}

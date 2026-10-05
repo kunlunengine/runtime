@@ -13,7 +13,7 @@ Fetch compatibility.
 | `Headers` | Record, pair, and Headers constructors; `append`, `set`, `delete`, `has`, `get`, `getSetCookie`, sorted iteration and `forEach`; case-insensitive names and repeated values | Browser header guards are absent. Invalid names and values reject. Transport-controlled request headers such as Host and Content-Length reject. Requests allow at most 256 headers and 64 KiB of names and values. |
 | `Request` | Absolute HTTP(S) URL; method, headers, body, signal, redirect mode, `duplex: 'half'`, `clone`, body readers and locks | Credential-bearing URLs, GET/HEAD body, CONNECT/TRACE/TRACK, FormData/Blob, cache/credentials/mode/integrity/referrer options. Unknown init keys throw. Streaming body clone throws. |
 | `Response` | Status 200–599, status text, headers, body, `ok`, `url`, `redirected`, `clone`, body readers, `Response.redirect` | `Response.error`, `Response.json` factory, trailers, FormData/Blob. 204/205/304 reject bodies. Streaming body clone throws. Network status text uses the canonical reason. |
-| `fetch` | HTTP(S), binary and Unicode buffered bodies, streaming `Uint8Array` upload/download, abort, `follow`/`manual`/`error` redirects | Cookies, cache, CORS, integrity, keepalive, proxy configuration, automatic decompression and browser security context. A streaming body cannot be replayed for a 307/308 redirect. At most 20 redirects. |
+| `fetch` | HTTP(S), binary and Unicode buffered bodies, streaming `Uint8Array` upload/download, abort, `follow`/`manual`/`error` redirects | Cookies, cache, CORS, integrity, keepalive, proxy configuration, automatic decompression and browser security context. Following a non-303 redirect with a streaming body rejects. At most 20 redirects. |
 
 Bodies are `ReadableStream<Uint8Array>` values. `arrayBuffer`, `bytes`, `text`, and
 `json` consume at most 1 MiB; applications can read larger bodies directly from
@@ -51,3 +51,18 @@ checked by the host before opening a connection, including revocation of an M3
 application authority. Automatic host-client redirects and system proxy discovery
 are disabled. Cross-origin redirects remove Authorization, Cookie, and
 Proxy-Authorization. The existing `kunlun:http` contract remains separate.
+
+Redirect method and body handling follows the
+[Fetch HTTP-redirect algorithm](https://fetch.spec.whatwg.org/#http-redirect-fetch):
+301/302 rewrite buffered POST to GET, and 303 rewrites methods other than GET/HEAD.
+Rewriting drops the body and its Content-Encoding, Content-Language,
+Content-Location, and Content-Type headers; unrelated headers remain. A 303 keeps
+GET/HEAD unchanged. Buffered bodies can be replayed for 307/308. A source-null
+streaming body rejects a non-303 redirect before method rewriting, including
+POST 301/302; 303 may discard the stream and continue as GET.
+
+The unchanged scoped HTTP probe in `tests/fixtures/request-authority-http.js`
+observes these rules against real servers on native JSC and the Core Node adapter.
+Its [development comparison](./m3-authority-conformance.md#shared-http-development-check)
+also checks redirect metadata and actual traffic, including the 20-hop limit.
+It does not replace pinned cross-platform qualification.

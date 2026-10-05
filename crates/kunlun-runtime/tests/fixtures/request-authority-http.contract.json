@@ -14,7 +14,27 @@
     },
     "deployment_hosts": ["127.0.0.1", "localhost", "undeclared.example.test"]
   },
-  "expected_requests": ["/ok", "/redirect", "/redirect", "/ok", "/redirect", "/redirect", "/pending"],
+  "expected_requests": [
+    "/ok", "/redirect", "/redirect", "/redirect",
+    "/same-origin", "/ok", "/same-origin", "/ok", "/same-origin",
+    "/loop", "/loop", "/loop", "/loop", "/loop", "/loop", "/loop",
+    "/loop", "/loop", "/loop", "/loop", "/loop", "/loop", "/loop",
+    "/loop", "/loop", "/loop", "/loop", "/loop", "/loop", "/loop",
+    "/rewrite/301", "/echo", "/rewrite/302", "/echo", "/rewrite/303", "/echo",
+    "/rewrite/303", "/echo", "/rewrite/303", "/echo",
+    "/replay/307", "/echo", "/replay/308", "/echo", "/replay/307", "/replay/308",
+    "/rewrite/301", "/rewrite/302", "/rewrite/303", "/echo",
+    "/ok", "/redirect", "/redirect", "/redirect",
+    "/same-origin", "/ok", "/same-origin", "/ok", "/same-origin",
+    "/loop", "/loop", "/loop", "/loop", "/loop", "/loop", "/loop",
+    "/loop", "/loop", "/loop", "/loop", "/loop", "/loop", "/loop",
+    "/loop", "/loop", "/loop", "/loop", "/loop", "/loop", "/loop",
+    "/rewrite/301", "/echo", "/rewrite/302", "/echo", "/rewrite/303", "/echo",
+    "/rewrite/303", "/echo", "/rewrite/303", "/echo",
+    "/replay/307", "/echo", "/replay/308", "/echo", "/replay/307", "/replay/308",
+    "/rewrite/301", "/rewrite/302", "/rewrite/303", "/echo",
+    "/pending"
+  ],
   "expected_lifecycle": {
     "pending_rejected_before_response": true,
     "later_admission_denied": true
@@ -31,6 +51,56 @@
       "pre_aborted": "denied",
       "manual_redirect": { "status": 302, "location_preserved": true, "body": "" },
       "redirect_escape": "denied",
+      "explicit_redirect_escape": "denied",
+      "default_follow": { "status": 200, "redirected": true, "final_url": true, "body": "你好, scoped HTTP" },
+      "explicit_follow": { "status": 200, "redirected": true, "final_url": true, "body": "你好, scoped HTTP" },
+      "redirect_error": "denied",
+      "redirect_limit": "denied",
+      "post_301": {
+        "method": "GET", "body": "", "content_type": null, "content_encoding": null,
+        "content_language": null, "content_location": null,
+        "authorization": "probe-auth", "cookie": "probe-cookie", "custom": "retained"
+      },
+      "post_302": {
+        "method": "GET", "body": "", "content_type": null, "content_encoding": null,
+        "content_language": null, "content_location": null,
+        "authorization": "probe-auth", "cookie": "probe-cookie", "custom": "retained"
+      },
+      "put_303": {
+        "method": "GET", "body": "", "content_type": null, "content_encoding": null,
+        "content_language": null, "content_location": null,
+        "authorization": "probe-auth", "cookie": "probe-cookie", "custom": "retained"
+      },
+      "get_303": {
+        "method": "GET", "body": "", "content_type": "text/plain;charset=UTF-8",
+        "content_encoding": "identity", "content_language": "en", "content_location": "/body-metadata",
+        "authorization": "probe-auth", "cookie": "probe-cookie", "custom": "retained"
+      },
+      "head_303": {
+        "status": 200, "redirected": true, "method": "HEAD",
+        "content_type": "text/plain;charset=UTF-8", "content_encoding": "identity",
+        "content_language": "en", "content_location": "/body-metadata",
+        "authorization": "probe-auth", "cookie": "probe-cookie", "custom": "retained", "body": ""
+      },
+      "buffered_307": {
+        "method": "POST", "body": "replay-你好", "content_type": "text/plain;charset=UTF-8",
+        "content_encoding": "identity", "content_language": "en", "content_location": "/body-metadata",
+        "authorization": "probe-auth", "cookie": "probe-cookie", "custom": "retained"
+      },
+      "buffered_308": {
+        "method": "POST", "body": "replay-你好", "content_type": "text/plain;charset=UTF-8",
+        "content_encoding": "identity", "content_language": "en", "content_location": "/body-metadata",
+        "authorization": "probe-auth", "cookie": "probe-cookie", "custom": "retained"
+      },
+      "streamed_307": "denied",
+      "streamed_308": "denied",
+      "streamed_301": "denied",
+      "streamed_302": "denied",
+      "streamed_303": {
+        "method": "GET", "body": "", "content_type": null, "content_encoding": null,
+        "content_language": null, "content_location": null,
+        "authorization": "probe-auth", "cookie": "probe-cookie", "custom": "retained"
+      },
       "previous_request": "not-retained"
     },
     {
@@ -44,6 +114,56 @@
       "pre_aborted": "denied",
       "manual_redirect": { "status": 302, "location_preserved": true, "body": "" },
       "redirect_escape": "denied",
+      "explicit_redirect_escape": "denied",
+      "default_follow": { "status": 200, "redirected": true, "final_url": true, "body": "你好, scoped HTTP" },
+      "explicit_follow": { "status": 200, "redirected": true, "final_url": true, "body": "你好, scoped HTTP" },
+      "redirect_error": "denied",
+      "redirect_limit": "denied",
+      "post_301": {
+        "method": "GET", "body": "", "content_type": null, "content_encoding": null,
+        "content_language": null, "content_location": null,
+        "authorization": "probe-auth", "cookie": "probe-cookie", "custom": "retained"
+      },
+      "post_302": {
+        "method": "GET", "body": "", "content_type": null, "content_encoding": null,
+        "content_language": null, "content_location": null,
+        "authorization": "probe-auth", "cookie": "probe-cookie", "custom": "retained"
+      },
+      "put_303": {
+        "method": "GET", "body": "", "content_type": null, "content_encoding": null,
+        "content_language": null, "content_location": null,
+        "authorization": "probe-auth", "cookie": "probe-cookie", "custom": "retained"
+      },
+      "get_303": {
+        "method": "GET", "body": "", "content_type": "text/plain;charset=UTF-8",
+        "content_encoding": "identity", "content_language": "en", "content_location": "/body-metadata",
+        "authorization": "probe-auth", "cookie": "probe-cookie", "custom": "retained"
+      },
+      "head_303": {
+        "status": 200, "redirected": true, "method": "HEAD",
+        "content_type": "text/plain;charset=UTF-8", "content_encoding": "identity",
+        "content_language": "en", "content_location": "/body-metadata",
+        "authorization": "probe-auth", "cookie": "probe-cookie", "custom": "retained", "body": ""
+      },
+      "buffered_307": {
+        "method": "POST", "body": "replay-你好", "content_type": "text/plain;charset=UTF-8",
+        "content_encoding": "identity", "content_language": "en", "content_location": "/body-metadata",
+        "authorization": "probe-auth", "cookie": "probe-cookie", "custom": "retained"
+      },
+      "buffered_308": {
+        "method": "POST", "body": "replay-你好", "content_type": "text/plain;charset=UTF-8",
+        "content_encoding": "identity", "content_language": "en", "content_location": "/body-metadata",
+        "authorization": "probe-auth", "cookie": "probe-cookie", "custom": "retained"
+      },
+      "streamed_307": "denied",
+      "streamed_308": "denied",
+      "streamed_301": "denied",
+      "streamed_302": "denied",
+      "streamed_303": {
+        "method": "GET", "body": "", "content_type": null, "content_encoding": null,
+        "content_language": null, "content_location": null,
+        "authorization": "probe-auth", "cookie": "probe-cookie", "custom": "retained"
+      },
       "previous_request": "denied"
     }
   ]

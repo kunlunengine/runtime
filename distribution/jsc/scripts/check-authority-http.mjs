@@ -84,19 +84,62 @@ export async function checkHttpAuthority(core, nativePath) {
   let acknowledgePending;
   const pendingReceipt = new Promise(resolve => { acknowledgePending = resolve; });
   let pendingResponse;
-  const server = createServer((request, response) => {
+  const server = createServer(async (request, response) => {
     requests.push(request.url);
-    if (request.url === '/pending') {
-      pendingResponse = response;
-      acknowledgePending();
-    } else if (request.url === '/redirect') {
-      response.writeHead(302, {
-        location: `http://localhost:${server.address().port}/forbidden?auth=auth-private&provider=provider-private&billing=billing-private`,
-      });
-      response.end();
-    } else {
-      response.writeHead(200, { 'x-authority-probe': 'http' });
-      response.end(request.url === '/ok' ? '你好, scoped HTTP' : 'unexpected destination reached');
+    try {
+      // Consume actual uploads before replying, including non-replayable streams.
+      const chunks = [];
+      let bytes = 0;
+      for await (const chunk of request) {
+        bytes += chunk.length;
+        assert.ok(bytes <= 1024 * 1024, 'Unbounded HTTP fixture upload');
+        chunks.push(chunk);
+      }
+      if (request.url === '/pending') {
+        pendingResponse = response;
+        acknowledgePending();
+      } else if (request.url === '/redirect') {
+        response.writeHead(302, {
+          location: `http://localhost:${server.address().port}/forbidden?auth=auth-private&provider=provider-private&billing=billing-private`,
+        });
+        response.end();
+      } else if (request.url === '/same-origin' || request.url === '/loop') {
+        response.writeHead(302, { location: request.url === '/loop' ? '/loop' : '/ok' });
+        response.end();
+      } else if (/^\/(?:rewrite\/30[123]|replay\/30[78])$/.test(request.url)) {
+        response.writeHead(Number(request.url.slice(-3)), { location: '/echo' });
+        response.end();
+      } else if (request.url === '/echo') {
+        const observed = {
+          method: request.method,
+          body: Buffer.concat(chunks).toString('utf8'),
+          content_type: request.headers['content-type'] ?? null,
+          content_encoding: request.headers['content-encoding'] ?? null,
+          content_language: request.headers['content-language'] ?? null,
+          content_location: request.headers['content-location'] ?? null,
+          authorization: request.headers.authorization ?? null,
+          cookie: request.headers.cookie ?? null,
+          custom: request.headers['x-authority-custom'] ?? null,
+        };
+        const body = JSON.stringify(observed);
+        // HEAD has no response body: reflect the same actual fields through headers.
+        const mirrored = Object.fromEntries(Object.entries(observed)
+          .filter(([name, value]) => name !== 'body' && value !== null)
+          .map(([name, value]) => ['x-observed-' + name.replaceAll('_', '-'), value]));
+        response.writeHead(200, {
+          'content-type': 'application/json',
+          'content-length': Buffer.byteLength(body),
+          ...mirrored,
+        });
+        response.end(request.method === 'HEAD' ? undefined : body);
+      } else {
+        assert.equal(request.url, '/ok', 'Unexpected HTTP fixture destination');
+        response.writeHead(200, { 'x-authority-probe': 'http' });
+        response.end('你好, scoped HTTP');
+      }
+    } catch {
+      report.error = 'HTTP fixture request failed';
+      response.destroy();
     }
   });
   let authority;
@@ -117,6 +160,7 @@ export async function checkHttpAuthority(core, nativePath) {
     }));
     const realm = createContext({
       AbortController,
+      ReadableStream,
       requestAuthorityHttpInputs: Object.freeze({ base: `http://127.0.0.1:${server.address().port}` }),
     });
     const probe = new Script(`(async function(env) {\n${source.toString('utf8')}\n})`, {

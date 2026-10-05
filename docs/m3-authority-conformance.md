@@ -102,12 +102,13 @@ the Runtime probe and contract directly, force-rebuilds the actual adapter, and
 records/rechecks the emitted implementation hashes. It does not simulate
 permissions or manufacture expected observations.
 
-The implementation is committed in [Core PR #7](https://github.com/kunlunengine/core/pull/7)
-at `43de55918eda6415d1e20f29452a782383fb7098`. That PR is still open; it is not
-a published adapter release or a completed cross-adapter qualification. The
-source-preview package version remains `0.1.0`; that version alone cannot
-identify these changes. Local development verification of the filesystem slice
-does not qualify the four-platform gate.
+The baseline implementation was merged in
+[Core PR #7](https://github.com/kunlunengine/core/pull/7), with merge commit
+`a612ed336d3b51bc338b498653a35d8512be5390`. It is not a published adapter release
+or a completed cross-adapter qualification. The source-preview package version
+remains `0.1.0`; that version alone cannot identify these changes or subsequent
+redirect fixes. Local development verification of the filesystem slice does not
+qualify the four-platform gate.
 
 From the Core checkout, with its dependencies installed:
 
@@ -160,9 +161,22 @@ the host revokes/closes authority, invocation must reject before response releas
 and later request admission must fail. Deadlines bound failures; explicit receipt
 and release barriers determine ordering, not sleeps.
 
+The expanded contract checks 28 observations in each request, including successful
+default/explicit same-origin following, explicit escaped-host denial, error mode,
+and the 20-hop limit. The servers consume real Content-Length/chunked uploads and
+echo the received method, bytes and headers. POST 301/302 and PUT 303 must become
+GET without body metadata headers, while GET/HEAD 303 keep their method and headers.
+String/binary buffered 307/308 bodies must be replayed intact. Streamed 301/302 and
+307/308 must reject without a destination request; streamed 303 may switch to GET.
+These cases follow the [Fetch redirect rules](https://fetch.spec.whatwg.org/#http-redirect-fetch),
+not a normalization of differing adapter behavior. Unrelated same-origin
+Authorization, Cookie, and custom headers must remain intact.
+
 The server records actual traffic: reaching a
 forbidden or aborted destination fails even if the returned observations look
-correct. Ephemeral ports are host inputs, not normalized response observations.
+correct. Both complete ordered traffic lists must match the contract, including
+exactly 21 `/loop` requests per invocation (initial request plus 20 allowed hops).
+Ephemeral ports are host inputs, not normalized response observations.
 
 Run the native side with a new output file:
 
@@ -190,14 +204,45 @@ eight-report gate. Native output is written only after shutdown, empty resource
 counts, server join, and fixture cleanup. Existing outputs are never overwritten.
 CI tests the report validator and runs the native fixture, not a fake Node provider.
 
-**Known Core dependency:** with PR #7's commit above, both Node invocations
-record `redirect_escape: "returned:302"` instead of the contract's `"denied"`.
-Node's scoped transport does not follow redirects even with `redirect: "follow"`;
-native Fetch follows only after rechecking destination authority and rejects the
-escape. All other HTTP observations and server traffic match in the local run.
-The pre-headers revocation/admission observations also match. Returning a redirect
-is not normalized into denial. Core must implement the
-agreed Fetch redirect behavior before this slice can claim parity.
+Native fixture parsing returns bounded errors for malformed or truncated uploads.
+Teardown interrupts an active socket before joining the server, and `Drop` does
+not panic when the test is already unwinding. Dedicated receipt handshakes test
+stalled-upload interruption; the normal success path still rejects server errors
+before exporting evidence. HEAD responses reflect every tested received header
+without emitting a response body, so header loss cannot hide behind HEAD semantics.
+
+**Local redirect parity (development only):**
+[Core PR #9](https://github.com/kunlunengine/core/pull/9), commit
+`52e992b4ca59d7ddb73442f59d2b953abcf00fbd`, fixes the merged PR #7 baseline that
+returned `redirect_escape: "returned:302"`. The actual rebuilt adapter on Node
+20.20.2, 22.22.1, and 24.15.0 has been compared independently with native
+system-JSC on local macOS arm64. All three runs match both 28-observation requests,
+all 101 ordered server paths, and the revocation/later-admission observations.
+The redirect escape is denied, not normalized from a returned 302.
+
+Core PR #9 merged on 2026-10-05 at
+`96b5c565385bf5160a81892d07e22b997bc31413`, with final PR head
+`c2394d6944a4eb9ac89be007940f16fdaa2a8937`. Landing the Core implementation is
+no longer a blocker. The development reports above remain tied to `52e992b4`;
+they must not be relabeled as evidence for the later merged source. New reviewed
+collection must use the exact updated Core commit and emitted module hashes.
+
+The verified shared inputs are:
+
+- Fixture SHA-256: `0071829a29bc3acca1a1db1e4c52625b044380e977c393d074302fd968846cd7`
+- Contract SHA-256: `59c38f183d75fc63c282ee3c6023e26c9cc89d0484c31eccc66264eb5d9fed31`
+
+These reports remain `status: "development"` and `qualification: false`. The
+comparison recomputes current corpus hashes, compares complete observations and
+traffic with native, and checks the exact Core source commit and Node version.
+Matching observations and emitted module hashes across three local Node versions
+do not replace reviewed pinned physical-platform collection.
+
+This corpus does not qualify redirect replay of an already-created byte-backed
+Node Request on Node 20/22 or multipart FormData. Core documents those upstream
+limits; the shared binary case uses explicit RequestInit bytes, and the native
+profile does not support FormData. Do not generalize this pass to full Fetch
+compatibility or hide one-shot body differences by buffering streams.
 
 This is not full HTTP/lifecycle qualification. Request-owned confidential context
 has no equivalent Node host-context API yet. Concurrent requests, cancellation
@@ -243,8 +288,7 @@ aggregation job.
 
 | Work | Owner / tracker | Completion evidence |
 | --- | --- | --- |
-| Review and freeze the committed Node adapter | Core PR #7, Runtime #52 | Reviewed clean Core commit, exact package version, unchanged probe executions |
-| Fix scoped Node redirect behavior | Core adapter, Runtime #50 / #53 | HTTP shared probe returns denial for redirect escalation, not a raw 302 |
+| Qualify scoped Node redirect behavior | Core adapter after merged PR #9, Runtime #50 / #53 | Local shared probe passes at `52e992b4`; new reviewed pinned collection must bind the updated merged Core commit |
 | Complete shared #50 adversarial coverage | Runtime #50 / #53 and Core adapter | Cross-isolate/concurrent contexts, revocation/cancellation after headers, full teardown/diagnostics, and formal HTTP collection on both adapters |
 | Four physical platform runs | Runtime #53 | Exact reviewed source/fixture identities and pinned receipts; no Rosetta substitution |
 | Same generated portable application artifact | Core producer / Runtime #52 | Build recipe, producer/adapter versions, artifact hashes, both adapters |

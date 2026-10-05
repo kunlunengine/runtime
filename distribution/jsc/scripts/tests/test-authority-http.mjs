@@ -35,6 +35,43 @@ test('rejects a returned redirect instead of denial', () => {
   assert.throws(() => validateHttpReport(actual, contract, hashes, 'native'));
 });
 
+// Synthetic report tests validate comparison policy, not adapter compatibility.
+for (const [name, corrupt] of [
+  ['default follow returning a redirect', observation => { observation.default_follow.status = 302; }],
+  ['explicit follow allowing an escaped destination', observation => { observation.explicit_redirect_escape = 'returned:302'; }],
+  ['error mode returning a response', observation => { observation.redirect_error = 'returned:302'; }],
+  ['incorrect final URL', observation => { observation.explicit_follow.final_url = false; }],
+  ['HEAD 303 rewritten to GET', observation => { observation.head_303.method = 'GET'; }],
+  ['GET 303 losing body metadata headers', observation => { observation.get_303.content_language = null; }],
+  ['rewritten POST retaining body headers', observation => { observation.post_302.content_location = '/body-metadata'; }],
+  ['buffered upload not replayed', observation => { observation.buffered_308.body = ''; }],
+  ['streamed POST incorrectly rewritten on 302', observation => { observation.streamed_302 = 'returned:200'; }],
+  ['streamed POST not rewritten on 303', observation => { observation.streamed_303.method = 'POST'; }],
+  ['streamed upload replayed', observation => { observation.streamed_307 = 'returned:200'; }],
+  ...['content_type', 'content_encoding', 'content_language', 'content_location',
+    'authorization', 'cookie', 'custom'].map(field => [
+    `HEAD 303 losing ${field}`, observation => { observation.head_303[field] = null; },
+  ]),
+]) {
+  test(`rejects ${name} in either request`, () => {
+    for (const request of [0, 1]) {
+      const actual = report();
+      corrupt(actual.observations[request]);
+      assert.throws(() => validateHttpReport(actual, contract, hashes, 'native'));
+    }
+  });
+}
+
+test('rejects redirect-limit off-by-one traffic even with denial observations', () => {
+  for (const extra of [false, true]) {
+    const actual = report();
+    const loop = actual.requests.indexOf('/loop');
+    if (extra) actual.requests.splice(loop, 0, '/loop');
+    else actual.requests.splice(loop, 1);
+    assert.throws(() => validateHttpReport(actual, contract, hashes, 'native'));
+  }
+});
+
 test('rejects traffic reaching a forbidden destination', () => {
   const actual = report();
   actual.requests.push('/forbidden');

@@ -335,14 +335,19 @@
       if (request.redirect === 'error') throw new TypeError('Fetch redirect disallowed');
       const next = new URL(location, request.url);
       if (!['http:', 'https:'].includes(next.protocol)) throw new TypeError('Unsupported redirect URL');
-      const switchToGet = response.status === 303 || ([301, 302].includes(response.status) && request.method === 'POST');
-      if (!switchToGet && state.bytes === null && state.stream !== null)
+      // Source-null bodies reject non-303 redirects before any method rewrite.
+      if (response.status !== 303 && state.bytes === null && state.stream !== null)
         throw new TypeError('Cannot replay a streaming request body');
+      const switchToGet = (response.status === 303 && !['GET', 'HEAD'].includes(request.method)) ||
+        ([301, 302].includes(response.status) && request.method === 'POST');
       const headers = new Headers(request.headers);
       if (next.origin !== new URL(request.url).origin) {
         for (const name of ['authorization', 'cookie', 'proxy-authorization']) headers.delete(name);
       }
-      if (switchToGet) for (const name of ['content-type', 'content-length', 'transfer-encoding']) headers.delete(name);
+      if (switchToGet) {
+        for (const name of ['content-encoding', 'content-language', 'content-location',
+          'content-type', 'content-length', 'transfer-encoding']) headers.delete(name);
+      }
       request = new Request(next.href, {
         method: switchToGet ? 'GET' : request.method, headers,
         body: switchToGet ? null : state.bytes, signal, redirect: request.redirect,

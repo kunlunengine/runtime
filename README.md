@@ -25,6 +25,7 @@ kunlun-runtime -> kunlun-jsc -> kunlun-jsc-sys -> JavaScriptCore
 - `kunlun-jsc` owns safe, `!Send + !Sync` contexts, protected Promise resolvers, revocable host
   callbacks, and checked ArrayBuffer/TypedArray handles. See the [ownership API](./docs/jsc-binding.md#safe-host-callbacks-and-buffers).
 - `kunlun-runtime` owns Tokio, isolate lifecycle, async evaluation, and the native process entry.
+- `kunlun-runtime-protocol` owns the engine-independent Core/provider process envelope and grammar.
 
 ## Bootstrap
 
@@ -88,6 +89,8 @@ and fail-closed admission; Fetch entry invocation remains tracked by #51.
 - [docs/m3-authority-conformance.md](./docs/m3-authority-conformance.md) — shared authority
   observations, real Node integration, and outstanding pinned physical-platform qualification.
 - [docs/kunlun-cli.md](./docs/kunlun-cli.md) — the Vite+-class `kunlun` command surface and generator model.
+- [docs/runtime-provider-v0.2.md](./docs/runtime-provider-v0.2.md) — the native provider handshake,
+  JSON diagnostics, and admission-only process interface consumed by Core's single workflow CLI.
 - [docs/cli-toolchain-plan.md](./docs/cli-toolchain-plan.md) — package-manager, toolchain, native-build,
   and Lightning-provider decisions.
 

@@ -132,6 +132,13 @@ passes on Node and JSC without application-source changes.
 
 Goal: source-level debugging for GUI, terminal, and agent-only environments without requiring an IDE.
 
+Tracked separately from M3 by [#65](https://github.com/kunlunengine/runtime/issues/65) and #66–#69.
+Milestone numbering is not a serial scheduling rule: runtime boundary fixtures and mock contract
+checks start without M3; the Inspector edge uses the existing M2 script/ESM/timer baseline.
+Only real Core-produced application/request/HMR qualification has item-level M3 dependencies.
+The [initial boundary slice](./docs/devtools-protocol-v1.md) records implemented/pending #66 scope;
+mock, native JSC, and application evidence remain separate, and the full M4 exit gate is pending.
+
 - Bridge JSC Inspector messages through an authenticated, loopback-only-by-default transport.
 - Serve target discovery, session multiplexing, sourcemap lookup, virtual sources, and structured
   debugger events through a versioned DevTools service contract.

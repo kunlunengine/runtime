@@ -45,6 +45,14 @@ contract. The standalone product owns the general platform, client applications,
 bridge, and adapters for other runtimes. Keeping that boundary prevents `kunlun-runtime` from
 absorbing a desktop shell or agent SDK while still making its debugger first-class.
 
+The [draft runtime boundary v1](./devtools-protocol-v1.md) and engine-independent protocol fixtures
+start [M4 #65](https://github.com/kunlunengine/runtime/issues/65) in parallel with M3. This initial
+#66 slice is business-contract evidence only: it supplies no production broker, native Inspector,
+or completed CLI/MCP product. M3 integration is required only for real application/request/HMR
+qualification, not for boundary or bridge development. The
+[#67 bridge investigation](./inspector-bridge-plan.md) records the pinned-source API and pause-loop
+constraints; it is not an implemented native bridge.
+
 The DevTools core initially owns:
 
 - target discovery, stable target IDs, and session multiplexing;

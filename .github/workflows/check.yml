@@ -56,6 +56,10 @@ jobs:
               run: cargo fmt --all -- --check
             - name: Check code linting
               run: cargo clippy -p xtask --all-targets -- -D warnings
+            - name: Check engine-independent DevTools contract
+              run: |
+                  cargo clippy --locked -p kunlun-devtools-protocol --all-targets -- -D warnings
+                  cargo test --locked -p kunlun-devtools-protocol
             - name: Run tests
               run: cargo test -p xtask
 

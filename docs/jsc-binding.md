@@ -190,6 +190,25 @@ transferable zero-copy I/O.
 The timer and built-in Promise schedulers retain their existing VM-owned registration lifecycle;
 the explicit per-function handle above is the general callback API.
 
+### VM-private callable slots
+
+`evaluate_private_callable` evaluates a function-valued expression and roots it in a VM-owned
+registry without publishing a JavaScript global. `PrivateCallable` is only an opaque plain
+VM/monotonic-slot identifier: no JSC reference or self-referential borrow escapes. The owning
+thread-affine VM can call it using one plain string and return a plain string through the existing
+native function-call ABI. Cross-VM and released identifiers fail; slots are never reused.
+
+`call_private_callable` clones its protected root before invoking JS, so reentrant host callbacks
+can mutate the registry without a live `RefCell` borrow or invalidating the call. Explicit
+`release_private_callable` or VM destruction releases the registry root; invocation-local roots
+and retained contexts follow the existing RAII ordering. No shim ABI/header change is needed.
+
+The Fetch dispatcher uses one such slot for private startup, invocation, poll and cleanup state.
+It captures required intrinsics before entry import; application-global property lookup cannot
+substitute its lifecycle controls. This protects the runtime-owned control path, not the entire
+realm from deliberate mutation of application-facing APIs. Ownership, GC pressure, stale/wrong-VM
+identifiers, exceptions and compile-fail thread affinity have tests.
+
 ### Ownership verification
 
 Run the normal workspace corpus with either selected backend. The added tests cover repeated

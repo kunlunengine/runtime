@@ -15,7 +15,7 @@ use std::fmt::{self, Display, Formatter};
 pub use native::{
     ArrayBuffer, CallbackReturn, CallbackValue, ContextGroup, DeferredPromise, ExecutionHandle,
     ExecutionScope, HeapStatistics, HostFunction, JscVm, ModuleLoader, ModuleRecord, ModuleState,
-    ResourcePolicy, RootedValue, TypedArray, TypedArrayKind,
+    PrivateCallable, ResourcePolicy, RootedValue, TypedArray, TypedArrayKind,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

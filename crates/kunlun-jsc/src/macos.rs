@@ -241,6 +241,8 @@ impl ContextGroup {
             callbacks: RefCell::new(Vec::new()),
             rejections: RefCell::new(Vec::new()),
             reported_rejections: RefCell::new(crate::rejection_ledger::RejectionLedger::new()),
+            private_callables: RefCell::new(HashMap::new()),
+            next_private_callable: std::cell::Cell::new(0),
             context: Rc::new(ContextInner {
                 handle,
                 _group: Rc::clone(&self.inner),
@@ -269,7 +271,24 @@ pub struct JscVm {
     callbacks: RefCell<Vec<callbacks::OwnedHostFunction>>,
     rejections: RefCell<Vec<crate::PromiseRejection>>,
     reported_rejections: RefCell<crate::rejection_ledger::RejectionLedger<JscError>>,
+    private_callables: RefCell<HashMap<u64, ProtectedValue>>,
+    next_private_callable: std::cell::Cell<u64>,
     context: Rc<ContextInner>,
+}
+
+/// An opaque, plain identifier for a callable rooted privately by its VM.
+/// It contains no JSC reference. Only its owning, thread-affine VM can use it.
+///
+/// ```compile_fail
+/// use kunlun_jsc::JscVm;
+/// let vm = JscVm::new("private").unwrap();
+/// let callable = vm.evaluate_private_callable("value => value", "test:///private.js").unwrap();
+/// std::thread::spawn(move || vm.call_private_callable(callable, "wrong thread"));
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PrivateCallable {
+    isolate_id: u64,
+    slot: u64,
 }
 
 impl JscVm {
@@ -499,6 +518,108 @@ impl JscVm {
         self.enforce_resource_policy()
             .map_err(|error| error.with_source_url(source_url))?;
         result
+    }
+
+    /// Evaluates a function-valued expression without publishing it to JS.
+    /// The slot is rooted until explicitly released or this VM is dropped.
+    pub fn evaluate_private_callable(
+        &self,
+        expression: &str,
+        source_url: &str,
+    ) -> Result<PrivateCallable, JscError> {
+        let source = format!(
+            "(() => {{ const value = ({expression}); \
+             if (typeof value !== 'function') throw 'Expected private callable'; return value; }})()"
+        );
+        let value = self.evaluate_rooted(&source, source_url)?;
+        let slot = self.next_private_callable.get();
+        let next = slot.checked_add(1).ok_or_else(|| {
+            JscError::invalid_input("private_callable_create", "callable slots exhausted")
+        })?;
+        self.private_callables
+            .borrow_mut()
+            .insert(slot, value.protected);
+        self.next_private_callable.set(next);
+        Ok(PrivateCallable {
+            isolate_id: self.context.isolate_id,
+            slot,
+        })
+    }
+
+    /// Calls a private callable with one plain string and returns a plain string.
+    /// No application global, property lookup, or cross-context JS value is used.
+    pub fn call_private_callable(
+        &self,
+        callable: PrivateCallable,
+        argument: &str,
+    ) -> Result<String, JscError> {
+        const OP: &str = "private_callable_call";
+        let _scope = self.context.execution_scope(OP)?;
+        if callable.isolate_id != self.context.isolate_id {
+            return Err(JscError::invalid_input(
+                OP,
+                "callable belongs to another VM",
+            ));
+        }
+        // Clone the root before invoking JS: reentrant host callbacks must not
+        // encounter a RefCell borrow, and release cannot invalidate this call.
+        let function = self
+            .private_callables
+            .borrow()
+            .get(&callable.slot)
+            .ok_or_else(|| JscError::invalid_input(OP, "callable was released"))?
+            .try_clone()?;
+        let string = OwnedJsString::new(argument, OP)?;
+        let mut argument = ptr::null();
+        // SAFETY: the string and protected callable belong to this live context.
+        self.context.expect_status(OP, unsafe {
+            sys::kunlun_jsc_value_make_string(
+                self.context.as_context(),
+                string.as_ptr(),
+                &mut argument,
+            )
+        })?;
+        let arguments = [argument];
+        let mut result = ptr::null();
+        let mut exception = ptr::null();
+        // SAFETY: creation checked function type; every argument is local and
+        // function remains protected during callbacks and exception handling.
+        let status = unsafe {
+            sys::kunlun_jsc_object_call_as_function(
+                self.context.as_context(),
+                function.as_object(),
+                ptr::null_mut(),
+                1,
+                arguments.as_ptr(),
+                &mut result,
+                &mut exception,
+            )
+        };
+        self.enforce_resource_policy()?;
+        if status == sys::KUNLUN_JSC_STATUS_JS_EXCEPTION && !exception.is_null() {
+            return Err(self.context.exception_error(OP, None, exception));
+        }
+        self.context.expect_status(OP, status)?;
+        let result = ProtectedValue::new(Rc::clone(&self.context), result, OP)?;
+        let string = self.context.value_to_string(result.as_value(), OP, None);
+        self.enforce_resource_policy()?;
+        string
+    }
+
+    /// Releases exactly this VM's root; stale identifiers cannot access new slots.
+    pub fn release_private_callable(&self, callable: PrivateCallable) -> Result<(), JscError> {
+        const OP: &str = "private_callable_release";
+        if callable.isolate_id != self.context.isolate_id {
+            return Err(JscError::invalid_input(
+                OP,
+                "callable belongs to another VM",
+            ));
+        }
+        self.private_callables
+            .borrow_mut()
+            .remove(&callable.slot)
+            .ok_or_else(|| JscError::invalid_input(OP, "callable was released"))?;
+        Ok(())
     }
 
     /// Evaluates a script and returns an owned, GC-rooted result tied to this

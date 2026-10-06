@@ -1,9 +1,10 @@
 # Runtime artifact manifest v1
 
 Status: **artifact parsing, native admission, Rust scoped authority, and JavaScript
-request `env` projection implemented**; inbound Fetch entry dispatch,
-`executionContext`, and HTTP serving remain **contract proposals** for
-[#51](https://github.com/kunlunengine/runtime/issues/51). Core and runtime-node producer
+request `env` projection implemented**. The [initial Fetch dispatcher](./m3-fetch-dispatch.md)
+implements a bounded library-only entry/`executionContext` slice; native entry qualification and
+HTTP serving remain pending in [#51](https://github.com/kunlunengine/runtime/issues/51).
+Core and runtime-node producer
 integration belongs to [#52](https://github.com/kunlunengine/runtime/issues/52). The
 [portable fixture](../fixtures/runtime-manifest/v1/manifest.json) is a consumer contract
 example, not evidence that a BuildEngine emits it yet.
@@ -76,7 +77,8 @@ module bytes. No post-admission file read can replace a checked source or asset.
 Resolution still rechecks the M2 path identity; removal or symlink replacement can
 fail closed, while ordinary content replacement cannot change executed bytes.
 The application must be loaded and its exports checked before opening traffic;
-that final startup step belongs to #51. An undeclared dynamic import fails at
+the initial #51 dispatcher implements this loading/preflight, but has no HTTP listener.
+An undeclared dynamic import fails at
 resolve/fetch and never obtains unindexed source bytes.
 
 ## Capabilities and admission errors
@@ -96,8 +98,8 @@ constructor supplies exactly those permissions to M2 built-ins. Legacy M2
 A JSC realm is not a hostile-code security boundary.
 The [outbound Fetch profile](./fetch-profile-v1.md) uses that same admitted
 `http.host` intersection and application lifetime. Request-specific JavaScript
-`env` projection is implemented; inbound dispatch, `executionContext`, and HTTP
-serving remain #51 work.
+`env` projection and initial library dispatch/`executionContext` are implemented;
+HTTP serving and native qualification remain #51 work.
 
 `AdmissionErrorKind` has stable categories: `manifest` (syntax/shape/digest
 spelling), `schema`, `compatibility`, `capability`, `path`, `identity`,
@@ -108,7 +110,7 @@ The [admission tests](../crates/kunlun-runtime/tests/artifact_admission.rs) cove
 tampering, missing files, schema/profile/ABI changes, denied grants, escaped
 paths, Unicode, duplicate identities, maps, and snapshot replacement.
 
-## Fetch entry contract (proposed; not yet executable)
+## Fetch entry contract (library foundation; native/HTTP qualification pending)
 
 The module at `entry` must export one default object with a callable `fetch`:
 
@@ -120,7 +122,7 @@ export default {
 };
 ```
 
-The [server-entry types](../types/server-entry-v1.d.ts) describe the proposal.
+The [server-entry types](../types/server-entry-v1.d.ts) describe this contract.
 `fetch` receives one standard `Request`, a per-request read-only `env` projection,
 and an `executionContext` bound to that request. It may return a `Response`
 synchronously or a promise/thenable that fulfills with one. A thrown exception,
@@ -135,20 +137,21 @@ The Rust `ApplicationAuthority` and `RequestEnvironment` implement the grant
 intersection, request ownership, and revocation. The
 [request environment projection](./m3-scoped-authority.md#executable-request-projection)
 implements `env.fs[binding].readTextFile` and `env.http[host].fetch` through the
-trusted `evaluate_request_body` integration primitive; handler dispatch remains
-#51 work. Required bindings must exist; absent optional bindings are omitted.
+trusted `evaluate_request_body` integration primitive and the initial dispatcher.
+Required bindings must exist; absent optional bindings are omitted.
 Any application-scoped built-in grant is
 separate from caller auth/provider/billing context, which is owned by one
 request. No deployment secret value appears in the manifest or browser artifact.
 
-The proposed v1 `executionContext` has `signal: AbortSignal` and
+The v1 `executionContext` has `signal: AbortSignal` and
 `waitUntil(promise)`. The signal aborts on client disconnect, request deadline,
 or shutdown. `waitUntil` tracks bounded background work accepted during the
 request; it cannot extend a request or isolate indefinitely. Calling it after
 the request scope closes fails. `passThroughOnException`, untracked detached
-tasks, and other Cloudflare/Node extensions are unsupported. #51 must define
-the exact budget, drain, and post-headers behavior in executable tests before
-advertising Fetch entry support.
+tasks, and other Cloudflare/Node extensions are unsupported. The initial dispatcher documents
+its whole-request budget and waits for registered work before returning a buffered response.
+Transport disconnect/drain/post-headers behavior and real native qualification still require
+executable #51 evidence before advertising a Fetch HTTP server.
 
 Core owns manifest/server bundle emission and producer examples; Runtime owns
 admission, native loading, and execution. Runtime-node owns an independent

@@ -12,8 +12,9 @@ The bootstrap also exposes capability-gated `kunlun:fs` and `kunlun:http` module
 `kunlun.import()`. Their Tokio operations return plain completion data to the isolate; JSC Promise
 handles never cross the completion channel. The pinned WebKit backend additionally runs native
 ESM graphs, live bindings, cycles, top-level await, and dynamic imports through the canonical URL
-resolver. The M3 application Fetch profile is available; inbound Fetch entry dispatch,
-the remote inspector, and sandboxing remain roadmap work.
+resolver. The M3 application Fetch profile is available; inbound Fetch entry dispatch
+has an initial library-only foundation with native qualification pending. The HTTP server,
+remote inspector, and sandboxing remain roadmap work.
 
 ## Workspace
 
@@ -59,7 +60,8 @@ URL, Web Streams and crypto primitives, available globally and from `kunlun:web`
 The M3 [application Fetch profile](./docs/fetch-profile-v1.md) adds Request,
 Response, Headers, and outbound fetch with independent capability grants.
 The M3 [runtime manifest v1](./docs/runtime-manifest-v1.md) defines data-only server artifacts
-and fail-closed admission; Fetch entry invocation remains tracked by #51.
+and fail-closed admission. The [initial Fetch dispatcher](./docs/m3-fetch-dispatch.md) starts #51
+with bounded serial library invocation; HTTP lifecycle and pinned-engine qualification remain pending.
 
 ## Design documents
 
@@ -85,6 +87,8 @@ and fail-closed admission; Fetch entry invocation remains tracked by #51.
 - [docs/module-loading.md](./docs/module-loading.md) — M2 URL resolver contract and native ESM boundary.
 - [docs/runtime-manifest-v1.md](./docs/runtime-manifest-v1.md) — M3 artifact schema, integrity,
   admission, and proposed Fetch entry contract.
+- [docs/m3-fetch-dispatch.md](./docs/m3-fetch-dispatch.md) — initial library-only Fetch entry
+  dispatch, lifecycle bounds, and outstanding native/HTTP qualification.
 - [docs/m3-authority-conformance.md](./docs/m3-authority-conformance.md) — shared authority
   observations, real Node integration, and outstanding pinned physical-platform qualification.
 - [docs/kunlun-cli.md](./docs/kunlun-cli.md) — the Vite+-class `kunlun` command surface and generator model.

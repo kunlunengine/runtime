@@ -52,7 +52,7 @@ The DevTools core initially owns:
 - source maps, virtual sources, and source retrieval;
 - breakpoint, pause, scope, evaluation, console, request, profiler, and heap events;
 - backpressure, maximum message sizes, event recording, and protocol diagnostics;
-- the nested/pause event-loop pump required while JavaScript execution is stopped;
+- pause/continue session orchestration through the runtime-owned isolate-local pause-loop pump;
 - explicit permissions and audit events for state-changing or code-executing operations.
 
 The common model is not a promise of lossless WIP-to-CDP or Web-to-native protocol translation.
@@ -144,6 +144,27 @@ capture without opening a window. Machine-readable output is required for agents
 - Desktop, CLI, MCP, plugins, and IDE adapters all pass through the same authorization layer.
 
 ## Delivery order
+
+M4 is tracked in [#65](https://github.com/kunlunengine/runtime/issues/65), independently of
+[M3 #47](https://github.com/kunlunengine/runtime/issues/47). The order below describes contract
+and integration prerequisites within DevTools, not a requirement to finish M3 first.
+
+- [#66](https://github.com/kunlunengine/runtime/issues/66) defines the versioned boundary and
+  standalone target/session/source/authorization business logic using deterministic mock adapters.
+  It does not require a native Fetch server or a Core-produced application artifact.
+- [#67](https://github.com/kunlunengine/runtime/issues/67) develops the runtime Inspector edge and
+  pause-loop primitive on existing M2 script/ESM/timer fixtures, in parallel with that business logic.
+  The isolate-local pump stays in the runtime; the general session state machine stays in DevTools.
+- [#68](https://github.com/kunlunengine/runtime/issues/68) builds standalone CLI/MCP workflows
+  against the same contract and mocks while the real Inspector adapter is implemented.
+- [#69](https://github.com/kunlunengine/runtime/issues/69) records mock-contract, pinned-JSC, and
+  real application qualification separately. Only its Core/M3 application rows need the relevant
+  artifact, server, scoped-authority, and producer/HMR integration. Do not block the whole M4
+  tracker on M3 closeout or treat a mock reconnect as real application/HMR evidence.
+
+General service/core and client implementation remains in the separate DevTools product.
+Link its implementation issues when the owner/repository is selected; the runtime issues coordinate
+the shared boundary and fixtures, not a new GUI or general DevTools crate.
 
 1. Use the platform Web Inspector locally to validate JSC source naming, WIP messages, and pause-loop
    behavior during the engine work.

@@ -111,6 +111,10 @@ qualification result. The M2 main baseline is restored, but #42 acceptance still
 #48–#53 and a Core-generated artifact. [Desktop/mobile work](https://github.com/kunlunengine/runtime/issues/43)
 is a separate, non-blocking workstream, not an additional server-runtime prerequisite.
 
+M3 and [M4](https://github.com/kunlunengine/runtime/issues/65) run in parallel with separate
+trackers, implementation issues, and acceptance evidence. M3 completion is not a prerequisite
+for M4 business logic or the initial JSC Inspector bridge.
+
 The [Wuling host contract and consumer fixture](./docs/wuling-host.md) and
 [separate mobile profile](./docs/wuling-mobile.md) are preview RFC work. They do not select Qingting's
 Rust FFI/IPC protocol or qualify a native Desktop/mobile host.
@@ -132,10 +136,27 @@ passes on Node and JSC without application-source changes.
 
 Goal: source-level debugging for GUI, terminal, and agent-only environments without requiring an IDE.
 
+Work is tracked independently in [#65](https://github.com/kunlunengine/runtime/issues/65).
+Milestone numbering is not a serial scheduling rule: M4 business logic uses versioned contracts
+and deterministic mock adapters while M3 application compatibility proceeds. The runtime Inspector
+edge uses the existing M2 pinned JSC/ESM/event-loop baseline, not an M3 Fetch server.
+
+| Issue | Reviewable slice | Actual prerequisite |
+| --- | --- | --- |
+| [#66](https://github.com/kunlunengine/runtime/issues/66) | DevTools contract and standalone session/source business logic | Architecture and protocol fixtures; no M3 dependency |
+| [#67](https://github.com/kunlunengine/runtime/issues/67) | Runtime JSC Inspector transport and pause-loop primitive | M2 baseline and the reviewed #66 boundary |
+| [#68](https://github.com/kunlunengine/runtime/issues/68) | Standalone CLI and MCP + Skill workflows | #66 contract/mock adapter; #67 only for native attach validation |
+| [#69](https://github.com/kunlunengine/runtime/issues/69) | Native qualification and real application integration | #66–#68 for native debugging; concrete M3 artifact/server slices only for application rows |
+
+This workspace owns the runtime/Inspector boundary and native fixtures. General service/core
+business logic and clients belong to the separate DevTools product; these issues coordinate that
+work without adding a GUI or general DevTools service to this Cargo workspace.
+
 - Bridge JSC Inspector messages through an authenticated, loopback-only-by-default transport.
-- Serve target discovery, session multiplexing, sourcemap lookup, virtual sources, and structured
-  debugger events through a versioned DevTools service contract.
-- Integrate pause-loop pumping so breakpoints do not deadlock the host event loop.
+- Define the versioned runtime-to-DevTools boundary; the standalone service supplies target
+  discovery, session multiplexing, sourcemap lookup, virtual sources, and structured debugger events.
+- Implement the runtime-owned isolate-local pause-loop pump and expose it to standalone session
+  orchestration so breakpoints do not deadlock the host event loop.
 - Make `kunlun inspect` and `kunlun repl` discover or launch the standalone DevTools CLI/desktop
   client; keep structured logs, request traces, capability audit events, and heap/CPU capture usable
   headlessly.
@@ -157,6 +178,11 @@ Goal: source-level debugging for GUI, terminal, and agent-only environments with
 Exit gate: set breakpoint, step, inspect scopes, evaluate, map bundled sources, debug an awaited
 operation, and reconnect after HMR on macOS and Linux from both the standalone client and an
 MCP-capable coding agent. The broader Web/native unification can continue after the JSC slice ships.
+
+Mock business-contract, native JSC, and real Core/M3 application evidence are separate tiers.
+Only real application/request/HMR qualification needs the corresponding M3 slices and producer
+integration. Pending application rows do not block independent M4 implementation, and mock or
+generic-module passes do not satisfy the full exit gate.
 
 ### M5 — Isolation and multi-tenant hardening
 
@@ -188,13 +214,16 @@ to a previous compatible runtime without changing the application.
 
 ## CLI workstream (owned primarily by `kunlunengine-core`)
 
-This runs in parallel after the artifact contract in M3 starts to stabilize.
+CLI work runs in parallel. Native server execution depends on the reviewed M3 artifact contract;
+Inspector/client integration depends on M4. Neither makes the entire CLI or M4 business logic
+wait for M3 completion.
 
 | Phase | User-visible result | Runtime dependency |
 | --- | --- | --- |
 | C0 | Replace fixed `new` writer with generator protocol and first-party templates | None |
 | C1 | `create`, `install`, `dev`, `check`, `test`, `build`, `run`, `doctor` coherent surface | Node fallback |
-| C2 | Native runtime selection, download verification, server artifacts, `inspect` | M3/M4 |
+| C2 (runtime) | Native runtime selection, download verification, server artifacts | M3 artifact/execution contract |
+| C2 (inspection) | `inspect`/`repl` discovery and standalone client integration | M4 contract, Inspector edge, and client; M3 only for real application qualification |
 | C3 | Workspace task graph, filters, parallelism, local/remote cache | Stable command contracts |
 
 The detailed command and template design is in [docs/kunlun-cli.md](./docs/kunlun-cli.md).

@@ -138,8 +138,14 @@ cache keys over package scripts rather than inventing a second workspace graph.
 2. Implement local first-party generator discovery and `--dry-run`; keep `new` as an alias.
 3. Add interactive and fully non-interactive modes with identical plan output.
 4. Add provider commands (`check`, `test`, `install`) with tool availability reported by `doctor`.
-5. Add native runtime artifact/version handshake when runtime M3 is ready.
+5. Add native runtime artifact/version handshake against the reviewed M3 artifact contract.
 6. Add remote templates only after integrity, cache, and script-execution policies are enforced.
+
+The native server handshake is a local execution prerequisite, not a blanket M3 completion gate.
+[M4 DevTools business logic](https://github.com/kunlunengine/runtime/issues/66) and headless
+workflows can develop against contract/mock fixtures in parallel. `inspect`/`repl` client integration
+depends on the M4 Inspector/client slices; only real M3 application debugging needs the native
+server artifact and lifecycle. See the [split CLI dependencies](../ROADMAP.md#cli-workstream-owned-primarily-by-kunlunengine-core).
 
 ## Vite+ baseline used for comparison
 

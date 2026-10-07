@@ -41,6 +41,10 @@ jobs:
               run: python3 distribution/jsc/scripts/test_cargo_backends.py
             - name: Build repository tooling
               run: cargo build -p xtask
+            - name: Check engine-independent runtime provider contract
+              run: |
+                  cargo clippy --locked -p kunlun-runtime-protocol --all-targets -- -D warnings
+                  cargo test --locked -p kunlun-runtime-protocol
             - uses: actions/setup-node@v4
               with:
                   node-version: '24'

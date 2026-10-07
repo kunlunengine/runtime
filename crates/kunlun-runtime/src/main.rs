@@ -14,8 +14,17 @@ use tokio::runtime::Builder;
 #[cfg(unix)]
 use tokio::signal::unix::{Signal, SignalKind};
 
+mod provider;
+
 fn main() -> ExitCode {
-    match run(env::args().skip(1).collect()) {
+    let args: Vec<String> = env::args().skip(1).collect();
+    if let Some(command) = args
+        .first()
+        .and_then(|arg| kunlun_runtime_protocol::Command::recognize(arg))
+    {
+        return provider::run(command, &args[1..]);
+    }
+    match run(args) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("error: {error}");
@@ -31,13 +40,8 @@ fn run(args: Vec<String>) -> Result<(), String> {
         Some("run") => run_command(&args[1..]),
         Some("run-async") => run_async_command(&args[1..]),
         Some("run-module") => run_module_command(&args[1..]),
-        Some("doctor") => doctor_command(),
-        Some("types") => {
+        Some("types") if args.len() == 1 => {
             print!("{TYPESCRIPT_DECLARATIONS}");
-            Ok(())
-        }
-        Some("--version" | "-V" | "version") => {
-            println!("kunlun-runtime {}", env!("CARGO_PKG_VERSION"));
             Ok(())
         }
         Some("help" | "--help" | "-h") | None => {
@@ -51,6 +55,9 @@ fn run(args: Vec<String>) -> Result<(), String> {
 }
 
 fn eval_command(args: &[String]) -> Result<(), String> {
+    if args.len() != 1 {
+        return Err("usage: kunlun-runtime eval <source>".to_owned());
+    }
     let source = args
         .first()
         .ok_or_else(|| "usage: kunlun-runtime eval <source>".to_owned())?;
@@ -151,6 +158,9 @@ fn report_rejections(records: Vec<PromiseRejection>) {
 }
 
 fn read_script(args: &[String], command: &str) -> Result<(String, String, String), String> {
+    if args.len() != 1 {
+        return Err(format!("usage: kunlun-runtime {command} <file>"));
+    }
     let filename = args
         .first()
         .ok_or_else(|| format!("usage: kunlun-runtime {command} <file>"))?;
@@ -494,48 +504,54 @@ fn mebibytes_option(name: &str, value: &str) -> Result<u64, String> {
         .ok_or_else(|| format!("invalid {name} value {value}; byte count overflowed"))
 }
 
-fn doctor_command() -> Result<(), String> {
+fn doctor_report(human: bool) -> Result<provider::DoctorReport, String> {
+    // All human output goes through this switch so JSON stdout is never mixed with logs.
+    macro_rules! report {
+        ($($arg:tt)*) => {
+            if human { println!($($arg)*); }
+        };
+    }
     let backend = JscVm::backend_info();
-    println!("runtime: kunlun-runtime {}", env!("CARGO_PKG_VERSION"));
-    println!("engine: {}", backend.name);
-    println!("backend: {}", backend.backend);
-    println!("engine revision: {}", backend.engine_revision);
-    println!("target: {}", backend.target);
-    println!("distribution mode: {}", backend.distribution_mode);
-    println!("distribution: {}", backend.distribution);
-    println!("hermetic: {}", backend.hermetic);
-    println!("inspection primitive: {}", backend.supports_inspection);
-    println!(
+    report!("runtime: kunlun-runtime {}", env!("CARGO_PKG_VERSION"));
+    report!("engine: {}", backend.name);
+    report!("backend: {}", backend.backend);
+    report!("engine revision: {}", backend.engine_revision);
+    report!("target: {}", backend.target);
+    report!("distribution mode: {}", backend.distribution_mode);
+    report!("distribution: {}", backend.distribution);
+    report!("hermetic: {}", backend.hermetic);
+    report!("inspection primitive: {}", backend.supports_inspection);
+    report!(
         "deferred Promise primitive: {}",
         backend.supports_deferred_promises
     );
-    println!("native ESM loader: {}", backend.supports_native_modules);
-    println!(
+    report!("native ESM loader: {}", backend.supports_native_modules);
+    report!(
         "explicit microtask checkpoint: {}",
         backend.supports_explicit_microtask_checkpoint
     );
-    println!("event loop: {EVENT_LOOP_BACKEND}");
-    println!("AbortSignal and bounded host streams: true");
-    println!(
+    report!("event loop: {EVENT_LOOP_BACKEND}");
+    report!("AbortSignal and bounded host streams: true");
+    report!(
         "default shutdown grace: {} ms",
         DEFAULT_SHUTDOWN_GRACE.as_millis()
     );
-    println!(
+    report!(
         "execution watchdog: {}",
         backend.supports_execution_watchdog
     );
-    println!("heap telemetry: {}", backend.supports_heap_telemetry);
-    println!(
+    report!("heap telemetry: {}", backend.supports_heap_telemetry);
+    report!(
         "default execution timeout: {} ms",
         DEFAULT_EXECUTION_TIMEOUT.as_millis()
     );
-    println!(
+    report!(
         "default watchdog interval: {} ms",
         DEFAULT_WATCHDOG_INTERVAL.as_millis()
     );
-    println!("default heap soft limit: {DEFAULT_SOFT_HEAP_LIMIT} bytes");
-    println!("default heap hard limit: {DEFAULT_HARD_HEAP_LIMIT} bytes");
-    println!("built-in modules: kunlun:fs, kunlun:http (capability-gated)");
+    report!("default heap soft limit: {DEFAULT_SOFT_HEAP_LIMIT} bytes");
+    report!("default heap hard limit: {DEFAULT_HARD_HEAP_LIMIT} bytes");
+    report!("built-in modules: kunlun:fs, kunlun:http (capability-gated)");
 
     let vm = JscVm::new("kunlun-runtime doctor").map_err(|error| error.to_string())?;
     if backend.supports_inspection {
@@ -555,7 +571,7 @@ fn doctor_command() -> Result<(), String> {
             "unexpected JavaScriptCore smoke-test result: {result}"
         ));
     }
-    println!("synchronous smoke test: ok");
+    report!("synchronous smoke test: ok");
     let temporal = vm
         .evaluate(
             "typeof Temporal === 'object' && typeof Temporal.PlainDate === 'function'",
@@ -563,7 +579,7 @@ fn doctor_command() -> Result<(), String> {
         )
         .map_err(|e| e.to_string())?
         == "true";
-    println!("native Temporal API: {temporal}");
+    report!("native Temporal API: {temporal}");
     if backend.hermetic && !temporal {
         return Err("pinned JSC must expose Temporal; check JSC_useTemporal overrides".to_owned());
     }
@@ -577,7 +593,7 @@ fn doctor_command() -> Result<(), String> {
         if value != "2024-02-29" {
             return Err(format!("unexpected Temporal smoke-test result: {value}"));
         }
-        println!("Temporal smoke test: ok");
+        report!("Temporal smoke test: ok");
     }
 
     let runtime = Builder::new_current_thread()
@@ -595,8 +611,15 @@ fn doctor_command() -> Result<(), String> {
     if result != "async-ok" {
         return Err(format!("unexpected async smoke-test result: {result}"));
     }
-    println!("Promise/async/Tokio smoke test: ok");
-    Ok(())
+    report!("Promise/async/Tokio smoke test: ok");
+    Ok(provider::DoctorReport {
+        version: provider::version_report(),
+        smoke_tests: provider::SmokeTests {
+            synchronous: true,
+            temporal,
+            async_timer: true,
+        },
+    })
 }
 
 fn print_help() {
@@ -609,9 +632,14 @@ fn print_help() {
            run <file>          Evaluate a classic JavaScript file\n  \
            run-async <file>    Evaluate a file as an async function body\n  \
            run-module <file>   Evaluate native ESM (bundled JSC only)\n  \
-           doctor              Verify JSC, Inspector, Promise, and Tokio integration\n  \
+           doctor [--json]      Verify JSC primitives, Promise, and Tokio integration\n  \
            types               Print TypeScript declarations for built-in modules\n  \
-           version             Print the runtime version\n\n\
+           version [--json]     Print version and provider capability handshake\n  \
+           check-artifact <dir> --manifest-sha256 <digest> [--json]\n  \
+                               Admit checked artifact bytes without evaluating application code\n\n\
+         Core's kunlun is the user workflow entry point; this binary is its native provider.\n\
+         Provider JSON uses kunlun.runtime-provider/v0.2 (exit 0 ok, 2 usage, 1 failure).\n\
+         check-artifact accepts --bind-read <binding> <dir> and --allow-net <host> grants.\n\n\
          Async permissions:\n  \
            --allow-read <dir>  Grant kunlun:fs read access to a directory\n  \
            --allow-net <host>  Grant kunlun:http access to an exact host\n\n\

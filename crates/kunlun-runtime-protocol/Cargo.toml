@@ -1,0 +1,16 @@
+[package]
+name = "kunlun-runtime-protocol"
+description = "Engine-independent process contract for the Kunlun runtime provider"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

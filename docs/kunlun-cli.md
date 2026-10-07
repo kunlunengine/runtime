@@ -11,8 +11,11 @@ The cross-repository implementation decisions for package layout, rustup-style t
 native builds, and Lightning execution are recorded in
 [cli-toolchain-plan.md](./cli-toolchain-plan.md).
 
-The CLI remains in `kunlunengine-core`. This runtime exposes a machine-readable process protocol and
-a `kunlun-runtime` developer binary; it does not become the project generator.
+The sole user workflow entrance, `kunlun`, remains in `kunlunengine-core`. This runtime exposes the
+[v0.2 provider process contract](./runtime-provider-v0.2.md) through `kunlun-runtime`: a native
+executor and low-level developer tool, not a competing workflow CLI or project generator. Core
+owns help, orchestration and presentation; it consumes provider JSON rather than duplicating
+artifact admission or backend capability checks.
 
 ## Command surface
 

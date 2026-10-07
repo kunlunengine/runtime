@@ -1,0 +1,17 @@
+{
+  "schema": "kunlun.runtime-manifest/v1",
+  "engine": { "abi": 1, "runtime_profile": "kunlun-m2-web/1" },
+  "entry_contract": "kunlun.fetch-entry/v1",
+  "entry": "./server.mjs",
+  "files": [
+    { "url": "./server.mjs", "kind": "module", "sha256": "c20a83213fd766b6bb3adee23cec3e59e4d03a3c621357041497678943b9da03" },
+    { "url": "./no-default.mjs", "kind": "module", "sha256": "bb00bda1e701d734568bd6209430c298306039dbf33e2256ad7a5ccae5e29b2e" },
+    { "url": "./invalid-default.mjs", "kind": "module", "sha256": "1f6ff9ef86cfc6cbb5be38ba464eb6eb555f67b8b036f687187a935ab5690252" },
+    { "url": "./tla-error.mjs", "kind": "module", "sha256": "eec22a673828a1ffe0d1390ad7eed193d02944f31c505fb544afbb63f07a7f40" },
+    { "url": "./denied-import.mjs", "kind": "module", "sha256": "589f3fc6d766f04f9247a123fc60cc9d74b4866f84ca4ce146629af62c3a3da3" },
+    { "url": "./parse-error.mjs", "kind": "module", "sha256": "4a86b64ef3b0d4bc130623c42475f6c40870206612096e77ce00220b829eac27" }
+  ],
+  "required_features": ["closed-module-graph"],
+  "compatibility_flags": [],
+  "capabilities": { "required": [], "optional": [{ "name": "fs.binding", "resource": "public-data" }] }
+}

@@ -4,6 +4,82 @@ use std::cell::Cell;
 
 const URL: &str = "test:///boundary.js";
 
+#[test]
+fn private_callable_is_vm_owned_rooted_and_not_application_visible() {
+    let vm = JscVm::new("private-callable").unwrap();
+    let other = JscVm::new("other-private-callable").unwrap();
+    let baseline = Rc::strong_count(&vm.context);
+    let weak_context = Rc::downgrade(&vm.context);
+    let callable = vm
+        .evaluate_private_callable(
+            "(() => { let calls = 0; const secret = {answer: 42}; \
+             return value => value + ':' + secret.answer + ':' + ++calls; })()",
+            URL,
+        )
+        .unwrap();
+    assert_eq!(Rc::strong_count(&vm.context), baseline + 1);
+    for i in 1..=64 {
+        vm.collect_garbage().unwrap();
+        assert_eq!(
+            vm.call_private_callable(callable, "local").unwrap(),
+            format!("local:42:{i}")
+        );
+    }
+    assert_eq!(
+        vm.evaluate("typeof secret + ':' + typeof calls", URL)
+            .unwrap(),
+        "undefined:undefined"
+    );
+    assert_eq!(
+        other
+            .call_private_callable(callable, "wrong")
+            .unwrap_err()
+            .kind(),
+        JscErrorKind::InvalidInput
+    );
+    assert!(other.release_private_callable(callable).is_err());
+    vm.release_private_callable(callable).unwrap();
+    assert_eq!(Rc::strong_count(&vm.context), baseline);
+    assert!(vm.call_private_callable(callable, "stale").is_err());
+    assert!(vm.release_private_callable(callable).is_err());
+    let replacement = vm.evaluate_private_callable("value => value", URL).unwrap();
+    assert_ne!(callable, replacement);
+    assert!(vm.call_private_callable(callable, "stale").is_err());
+    assert_eq!(
+        vm.call_private_callable(replacement, "昆仑").unwrap(),
+        "昆仑"
+    );
+    // All slot roots are released by the owning VM even without explicit release.
+    drop(vm);
+    assert!(weak_context.upgrade().is_none());
+    assert!(other.call_private_callable(replacement, "dropped").is_err());
+}
+
+#[test]
+fn private_callable_rejects_wrong_type_and_preserves_exceptions() {
+    let vm = JscVm::new("private-callable-errors").unwrap();
+    for expression in ["42", "null", "({})", "undefined"] {
+        assert_eq!(
+            vm.evaluate_private_callable(expression, URL)
+                .unwrap_err()
+                .kind(),
+            JscErrorKind::JavaScriptException
+        );
+    }
+    let callable = vm
+        .evaluate_private_callable("() => { throw Error('private call failed'); }", URL)
+        .unwrap();
+    let error = vm.call_private_callable(callable, "").unwrap_err();
+    assert_eq!(error.kind(), JscErrorKind::JavaScriptException);
+    assert!(
+        error
+            .exception_text()
+            .unwrap()
+            .contains("private call failed")
+    );
+    vm.release_private_callable(callable).unwrap();
+}
+
 struct DropProbe {
     drops: Rc<Cell<usize>>,
     thread: std::thread::ThreadId,

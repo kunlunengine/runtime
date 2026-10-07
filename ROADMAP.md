@@ -129,6 +129,10 @@ Rust FFI/IPC protocol or qualify a native Desktop/mobile host.
 - Convert declared capabilities into opaque, scoped host handles; deny undeclared operations.
 - Add shared conformance fixtures that run on both `runtime-node` and native JSC.
 
+The [initial #51 dispatcher foundation](./docs/m3-fetch-dispatch.md) implements library-only
+admitted-entry preflight and bounded serial request invocation. It has no HTTP listener; pinned
+native entry execution, HTTP lifecycle and actual Core-produced qualification remain pending.
+
 Exit gate: the same hello-service, routing, streaming, error, CORS, and shutdown conformance suite
 passes on Node and JSC without application-source changes.
 

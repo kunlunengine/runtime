@@ -4,6 +4,7 @@ mod artifact;
 mod authority_scope;
 mod builtins;
 mod capabilities;
+mod fetch_dispatch;
 mod host;
 mod module_sources;
 mod modules;
@@ -16,6 +17,10 @@ pub use artifact::{
     RuntimeManifest, admit_artifact,
 };
 pub use capabilities::{ApplicationAuthority, RequestContext, RequestEnvironment, ScopedHandle};
+pub use fetch_dispatch::{
+    DispatchCancellation, DispatchError, DispatchErrorKind, DispatchRequest, DispatchResponse,
+    FetchDispatcher,
+};
 pub use module_sources::ModuleSources;
 pub use web::ConsoleRecord;
 
@@ -591,6 +596,7 @@ struct AsyncStateCleanup<'a> {
     host: &'a mut host::HostDispatcher,
     evaluation_id: u64,
     state: String,
+    finalizer: Option<kunlun_jsc::PrivateCallable>,
     armed: bool,
 }
 
@@ -610,6 +616,7 @@ impl<'a> AsyncStateCleanup<'a> {
             host,
             evaluation_id,
             state,
+            finalizer: None,
             armed: true,
         }
     }
@@ -623,7 +630,15 @@ impl<'a> AsyncStateCleanup<'a> {
     }
 
     fn cleanup(&mut self) {
-        cleanup_state(self.vm, &self.state);
+        if let Some(callable) = self.finalizer.take() {
+            // Request finalizers run while the request host scope still exists.
+            // A terminated engine cannot execute JS; its owner must retire it.
+            // Same private slot on completion, cancellation and drop.
+            let _ = self.vm.call_private_callable(callable, "close");
+        }
+        if !self.state.is_empty() {
+            cleanup_state(self.vm, &self.state);
+        }
         self.timers.cancel_evaluation(self.evaluation_id);
         self.host.cancel_evaluation(self.evaluation_id);
         self.armed = false;
@@ -633,9 +648,41 @@ impl<'a> AsyncStateCleanup<'a> {
 impl Drop for AsyncStateCleanup<'_> {
     fn drop(&mut self) {
         if self.armed {
-            cleanup_state(self.vm, &self.state);
-            self.timers.cancel_evaluation(self.evaluation_id);
-            self.host.cancel_evaluation(self.evaluation_id);
+            self.cleanup();
+        }
+    }
+}
+
+/// Dispatcher-only driver. Poll/result/cleanup remain in a native-rooted
+/// closure rather than the generic evaluator's application-visible JS state.
+async fn run_private_callable(
+    vm: &mut JscVm,
+    timers: &TimerDispatcher,
+    host: &mut host::HostDispatcher,
+    callable: kunlun_jsc::PrivateCallable,
+    command: &str,
+) -> Result<String, RuntimeError> {
+    let _execution = vm.execution_scope()?;
+    let id = NEXT_EVALUATION_ID.fetch_add(1, Ordering::Relaxed);
+    let mut cleanup = AsyncStateCleanup::new(vm, timers, host, id, String::new());
+    cleanup.finalizer = Some(callable);
+    cleanup.vm().call_private_callable(callable, command)?;
+    loop {
+        cleanup.vm().enforce_resource_policy()?;
+        checkpoint(cleanup.vm)?;
+        timers.settle_expired(cleanup.vm)?;
+        cleanup.host.settle_completions(cleanup.vm)?;
+        checkpoint(cleanup.vm)?;
+        let result = cleanup.vm().call_private_callable(callable, "poll")?;
+        if result != "pending" {
+            checkpoint(cleanup.vm)?;
+            cleanup.cleanup();
+            return Ok(result);
+        }
+        if let Some(deadline) = next_runtime_wake(cleanup.vm, timers) {
+            let _ = tokio::time::timeout_at(deadline, cleanup.host().wait_for_completion()).await;
+        } else {
+            cleanup.host().wait_for_completion().await;
         }
     }
 }

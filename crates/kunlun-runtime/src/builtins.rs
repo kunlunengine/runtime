@@ -67,41 +67,71 @@ const BOOTSTRAP_SOURCE: &str = r#"
   };
 
   const abortStates = new WeakMap();
+  const controllerSignals = new WeakMap();
+  // Runtime-owned cancellation must survive application monkeypatches. Keep
+  // private state and notification bookkeeping off mutable prototype methods.
+  const abortApply = Reflect.apply;
+  const abortFreeze = Object.freeze;
+  const abortDefine = Object.defineProperty;
+  const abortSetPrototype = Object.setPrototypeOf;
+  const abortMapGet = WeakMap.prototype.get;
+  const abortMapSet = WeakMap.prototype.set;
+  const AbortErrorClass = Error;
+  const AbortTypeErrorClass = TypeError;
+  const AbortPromiseClass = Promise;
+  const abortGet = (map, key) => abortApply(abortMapGet, map, [key]);
+  const abortSet = (map, key, value) => abortApply(abortMapSet, map, [key, value]);
+  const abortArray = () => abortSetPrototype([], null);
+  const removeAbortListener = (state, listener) => {
+    const remaining = abortArray();
+    for (let i = 0; i < state.listeners.length; i++) {
+      const entry = state.listeners[i];
+      if (entry.listener !== listener) remaining[remaining.length] = entry;
+    }
+    state.listeners = remaining;
+  };
+  const reportAbortListenerError = error => new AbortPromiseClass((_, reject) => reject(error));
   const defaultAbortReason = () => {
-    const error = new Error('This operation was aborted');
-    error.name = 'AbortError';
+    const error = new AbortErrorClass('This operation was aborted');
+    abortDefine(error, 'name', { value: 'AbortError', writable: true, configurable: true });
     return error;
   };
 
   class AbortSignal {
     constructor(token) {
-      if (token !== abortStates) throw new TypeError('Illegal constructor');
-      abortStates.set(this, { aborted: false, reason: undefined, listeners: [], onabort: null });
+      if (token !== abortStates) throw new AbortTypeErrorClass('Illegal constructor');
+      const state = create(null);
+      state.aborted = false; state.reason = undefined;
+      state.listeners = abortArray(); state.onabort = null;
+      abortSet(abortStates, this, state);
     }
 
-    get aborted() { return abortStates.get(this).aborted; }
-    get reason() { return abortStates.get(this).reason; }
-    get onabort() { return abortStates.get(this).onabort; }
+    get aborted() { return abortGet(abortStates, this).aborted; }
+    get reason() { return abortGet(abortStates, this).reason; }
+    get onabort() { return abortGet(abortStates, this).onabort; }
     set onabort(listener) {
-      abortStates.get(this).onabort = typeof listener === 'function' ? listener : null;
+      abortGet(abortStates, this).onabort = typeof listener === 'function' ? listener : null;
     }
 
     throwIfAborted() {
-      const state = abortStates.get(this);
+      const state = abortGet(abortStates, this);
       if (state.aborted) throw state.reason;
     }
 
     addEventListener(type, listener, options = undefined) {
       if (type !== 'abort' || listener == null) return;
-      const state = abortStates.get(this);
-      if (state.listeners.some(entry => entry.listener === listener)) return;
-      state.listeners.push({ listener, once: options === true || options?.once === true });
+      const state = abortGet(abortStates, this);
+      for (let i = 0; i < state.listeners.length; i++) {
+        if (state.listeners[i].listener === listener) return;
+      }
+      const entry = create(null);
+      entry.listener = listener; entry.once = options === true || options?.once === true;
+      state.listeners[state.listeners.length] = entry;
     }
 
     removeEventListener(type, listener) {
       if (type !== 'abort' || listener == null) return;
-      const state = abortStates.get(this);
-      state.listeners = state.listeners.filter(entry => entry.listener !== listener);
+      removeAbortListener(abortGet(abortStates, this), listener);
     }
 
     static abort(reason = defaultAbortReason()) {
@@ -113,30 +143,35 @@ const BOOTSTRAP_SOURCE: &str = r#"
 
   class AbortController {
     constructor() {
-      this.__signal = new AbortSignal(abortStates);
+      abortSet(controllerSignals, this, new AbortSignal(abortStates));
     }
 
-    get signal() { return this.__signal; }
+    get signal() { return abortGet(controllerSignals, this); }
 
     abort(reason = defaultAbortReason()) {
-      const signal = this.__signal;
-      const state = abortStates.get(signal);
+      const signal = abortGet(controllerSignals, this);
+      const state = abortGet(abortStates, signal);
       if (state.aborted) return;
       state.aborted = true;
       state.reason = reason;
-      const event = Object.freeze({ type: 'abort', target: signal, currentTarget: signal });
-      const listeners = state.listeners.slice();
-      for (const entry of listeners) {
+      const event = create(null);
+      event.type = 'abort'; event.target = signal; event.currentTarget = signal;
+      abortFreeze(event);
+      const listeners = abortArray();
+      for (let i = 0; i < state.listeners.length; i++) listeners[i] = state.listeners[i];
+      for (let i = 0; i < listeners.length; i++) {
+        const entry = listeners[i];
         try {
-          if (typeof entry.listener === 'function') entry.listener.call(signal, event);
+          if (typeof entry.listener === 'function') abortApply(entry.listener, signal, [event]);
           else entry.listener.handleEvent(event);
         } catch (error) {
-          Promise.reject(error);
+          reportAbortListenerError(error);
         }
-        if (entry.once) signal.removeEventListener('abort', entry.listener);
+        if (entry.once) removeAbortListener(state, entry.listener);
       }
       if (state.onabort !== null) {
-        try { state.onabort.call(signal, event); } catch (error) { Promise.reject(error); }
+        try { abortApply(state.onabort, signal, [event]); }
+        catch (error) { reportAbortListenerError(error); }
       }
     }
   }

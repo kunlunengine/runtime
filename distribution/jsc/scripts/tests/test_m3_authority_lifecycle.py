@@ -1,9 +1,7 @@
 """Synthetic lifecycle collection/validation; no permission-policy emulation."""
 import copy
 import json
-import os
 import unittest
-from unittest.mock import patch
 
 from test_m3_authority_http import HttpGateTests
 from test_m3_authority import gate, COMMIT, NODE_COMMIT, PACKAGE_VERSION
@@ -106,9 +104,8 @@ class LifecycleGateTests(HttpGateTests):
 
     def test_ambient_loaders_fail_before_child(self):
         for key in gate.LOADER_ENV:
-            with patch.dict(os.environ, {key.lower(): "injected"}), \
-                 self.assertRaises(ValueError):
-                self.node_collection()
+            with self.assertRaisesRegex(ValueError, f"ambient loader rejected: {key.lower()}"):
+                self.node_collection(loader_env={key.lower(): "injected"})
 
     def test_success_error_key_rejected(self):
         for index in (0, 4):

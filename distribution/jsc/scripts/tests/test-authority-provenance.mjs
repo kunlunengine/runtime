@@ -4,8 +4,23 @@ import path from 'node:path';
 import test from 'node:test';
 import { dependencyClosure, rejectAmbientLoaders, runtimeIdentity } from '../node-provenance.mjs';
 
+const loaderEnv = ['NODE_OPTIONS', 'NODE_PATH', 'npm_config_node_options',
+  'LD_PRELOAD', 'LD_LIBRARY_PATH', 'DYLD_LIBRARY_PATH', 'DYLD_INSERT_LIBRARIES',
+  'DYLD_FRAMEWORK_PATH'];
+
+function withoutAmbientLoaders(callback) {
+  const forbidden = new Set(loaderEnv.map(key => key.toUpperCase()));
+  const previous = Object.entries(process.env).filter(([key]) => forbidden.has(key.toUpperCase()));
+  try {
+    for (const [key] of previous) delete process.env[key];
+    return callback();
+  } finally {
+    for (const [key, value] of previous) process.env[key] = value;
+  }
+}
+
 test('runtime identity comes from the actual observation process', () => {
-  const identity = runtimeIdentity();
+  const identity = withoutAmbientLoaders(() => runtimeIdentity());
   assert.equal(identity.version, process.version);
   assert.equal(identity.arch, process.arch);
   assert.equal(identity.platform, process.platform);
@@ -14,8 +29,7 @@ test('runtime identity comes from the actual observation process', () => {
 });
 
 test('ambient loader controls fail closed without changing the environment', () => {
-  for (const key of ['NODE_OPTIONS', 'NODE_PATH', 'npm_config_node_options',
-    'LD_PRELOAD', 'LD_LIBRARY_PATH', 'DYLD_LIBRARY_PATH', 'DYLD_INSERT_LIBRARIES']) {
+  for (const key of loaderEnv) {
     const previous = process.env[key];
     try {
       process.env[key] = 'synthetic-loader';
@@ -49,13 +63,13 @@ test('dependency provenance hashes recursive runtime files, not only package ver
   }));
   writeFileSync(path.join(dependency, 'index.js'), 'export const allowed = true;\n');
 
-  const before = dependencyClosure(core);
+  const before = withoutAmbientLoaders(() => dependencyClosure(core));
   assert.deepStrictEqual(Object.keys(before), ['transport-helper@1.0.0', 'undici@1.0.0']);
   for (const digest of Object.values(before)) assert.match(digest, /^[0-9a-f]{64}$/);
-  assert.deepStrictEqual(dependencyClosure(core), before);
+  assert.deepStrictEqual(withoutAmbientLoaders(() => dependencyClosure(core)), before);
   const metadata = readFileSync(path.join(dependency, 'package.json'), 'utf8');
   writeFileSync(path.join(dependency, 'index.js'), 'export const allowed = false;\n');
-  const after = dependencyClosure(core);
+  const after = withoutAmbientLoaders(() => dependencyClosure(core));
   assert.equal(after['undici@1.0.0'], before['undici@1.0.0']);
   assert.notEqual(after['transport-helper@1.0.0'], before['transport-helper@1.0.0']);
   assert.equal(readFileSync(path.join(dependency, 'package.json'), 'utf8'), metadata);

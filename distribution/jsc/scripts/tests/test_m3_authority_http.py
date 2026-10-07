@@ -2,6 +2,7 @@
 import argparse
 import copy
 import json
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -110,7 +111,7 @@ class HttpGateTests(unittest.TestCase):
                                  raw_change=lambda raw: raw["backend"].update(backend="system-jsc"))
         self.assertEqual(gate.load_json(self.root / "collected/report.json")["status"], "failed")
 
-    def node_collection(self, mutation=None):
+    def node_collection(self, mutation=None, *, loader_env=None):
         with tempfile.TemporaryDirectory() as temp:
             core = (Path(temp) / "core").resolve()
             package = core / "packages/runtime-node"
@@ -143,7 +144,11 @@ class HttpGateTests(unittest.TestCase):
                     Path(arguments[3]).write_text(json.dumps(raw))
                 return ""
 
-            with patch.object(gate, "ROOT", self.root), patch.object(gate.m2, "command", side_effect=command), \
+            env = {key: value for key, value in os.environ.items()
+                   if key.upper() not in gate.LOADER_ENV}
+            env.update(loader_env or {})
+            with patch.dict(os.environ, env, clear=True), \
+                 patch.object(gate, "ROOT", self.root), patch.object(gate.m2, "command", side_effect=command), \
                  patch.object(gate, "runner_identity", return_value=self.reports[4]["runner"]):
                 gate.collect_node(args)
             report = gate.load_json(args.output / "report.json")

@@ -799,6 +799,7 @@ dependencies = [
  "futures-util",
  "getrandom 0.4.3",
  "kunlun-jsc",
+ "kunlun-runtime-protocol",
  "libc",
  "reqwest",
  "serde",
@@ -807,6 +808,14 @@ dependencies = [
  "sourcemap",
  "tokio",
  "url",
+]
+
+[[package]]
+name = "kunlun-runtime-protocol"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

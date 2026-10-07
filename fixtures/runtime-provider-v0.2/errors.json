@@ -1,0 +1,37 @@
+[
+  {
+    "arguments": ["doctor", "--json", "PRIVATE_SENTINEL"],
+    "exit_code": 2,
+    "operation": "doctor",
+    "code": "invalid_arguments",
+    "admission_kind": null
+  },
+  {
+    "arguments": ["version", "--json", "--json"],
+    "exit_code": 2,
+    "operation": "version",
+    "code": "invalid_arguments",
+    "admission_kind": null
+  },
+  {
+    "arguments": ["check-artifact", "--json", "PRIVATE_SENTINEL"],
+    "exit_code": 2,
+    "operation": "check-artifact",
+    "code": "invalid_arguments",
+    "admission_kind": null
+  },
+  {
+    "arguments": ["check-artifact", "$artifact", "--json", "--manifest-sha256", "0000000000000000000000000000000000000000000000000000000000000000"],
+    "exit_code": 1,
+    "operation": "check-artifact",
+    "code": "admission_rejected",
+    "admission_kind": "integrity"
+  },
+  {
+    "arguments": ["check-artifact", "$artifact", "--json", "--manifest-sha256", "8426a39ef4bb82e80863c0ff7f3ba0c648c238888ddbc9c0a37131921a356a95"],
+    "exit_code": 1,
+    "operation": "check-artifact",
+    "code": "admission_rejected",
+    "admission_kind": "capability"
+  }
+]

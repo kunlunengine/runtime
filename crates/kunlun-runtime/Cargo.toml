@@ -28,6 +28,7 @@ base64.workspace = true
 sourcemap.workspace = true
 libc.workspace = true
 kunlun-jsc.workspace = true
+kunlun-runtime-protocol.workspace = true
 reqwest.workspace = true
 futures-util.workspace = true
 serde.workspace = true

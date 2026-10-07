@@ -913,6 +913,7 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
+ "sourcemap",
 ]
 
 [[package]]

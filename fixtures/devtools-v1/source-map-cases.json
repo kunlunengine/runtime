@@ -1,0 +1,32 @@
+{
+  "evidence": "MOCK ONLY; not native Inspector or HMR qualification",
+  "coordinates": "zero-based lines and UTF-16 columns; retrieval uses UTF-8 bytes",
+  "max_map_bytes": 1048576,
+  "cases": [
+    {"name":"mapped","action":"lookup","line":0,"column":0,"expected":{"line":0,"column":0}},
+    {"name":"mapped-glb","action":"lookup","line":0,"column":12,"expected":{"line":0,"column":0}},
+    {"name":"unmapped-segment","action":"lookup","line":0,"column":14,"expected":null},
+    {"name":"no-cross-line-glb","action":"lookup","line":1,"column":0,"expected":null},
+    {"name":"utf16-column","action":"lookup","line":0,"column":17,"expected":{"line":0,"column":33}},
+    {"name":"stale-revision","action":"lookup","mutation":"revision","error":"source_not_found"},
+    {"name":"stale-epoch","action":"lookup","mutation":"epoch","error":"stale_epoch"},
+    {"name":"foreign-target","action":"lookup","mutation":"target","error":"stale_epoch"},
+    {"name":"unregistered-generated","action":"lookup","mutation":"source","error":"source_not_found"},
+    {"name":"unregistered-map","action":"lookup","mutation":"map","error":"source_not_found"},
+    {"name":"no-map-association","action":"lookup","mutation":"no_association","error":"source_not_found"},
+    {"name":"stale-map-association","action":"lookup","mutation":"map_revision","error":"source_not_found"},
+    {"name":"foreign-epoch-map-association","action":"lookup","mutation":"map_epoch","error":"stale_epoch"},
+    {"name":"foreign-target-map-association","action":"lookup","mutation":"map_target","error":"stale_epoch"},
+    {"name":"unregistered-original","action":"lookup","mutation":"original","error":"source_not_found"},
+    {"name":"unsupported-adapter","action":"lookup","mutation":"unsupported","error":"unsupported"},
+    {"name":"invalid-map","action":"lookup","mutation":"invalid_map","error":"malformed"},
+    {"name":"max-size-map","action":"lookup","mutation":"max_size_map","expected":{"line":0,"column":0}},
+    {"name":"oversized-map","action":"lookup","mutation":"oversized_map","error":"message_too_large"},
+    {"name":"bounded-utf8","action":"read","offset":0,"max_bytes":7,"text":"export ","eof":false},
+    {"name":"utf8-codepoint-boundary","action":"read","offset":35,"max_bytes":3,"text":"é\n","eof":true},
+    {"name":"utf8-too-small","action":"read","offset":31,"max_bytes":1,"error":"source_range"},
+    {"name":"utf8-mid-codepoint","action":"read","offset":32,"max_bytes":8,"error":"source_range"},
+    {"name":"zero-read-limit","action":"read","offset":0,"max_bytes":0,"error":"source_range"},
+    {"name":"oversized-read-limit","action":"read","offset":0,"max_bytes":16385,"error":"source_range"}
+  ]
+}

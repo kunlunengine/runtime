@@ -47,8 +47,11 @@ absorbing a desktop shell or agent SDK while still making its debugger first-cla
 
 The [draft runtime boundary v1](./devtools-protocol-v1.md) and engine-independent protocol fixtures
 start [M4 #65](https://github.com/kunlunengine/runtime/issues/65) in parallel with M3. This initial
-#66 slice is business-contract evidence only: it supplies no production broker, native Inspector,
-or completed CLI/MCP product. M3 integration is required only for real application/request/HMR
+#66 contract/fixture work is business-contract evidence only: it includes discovery, correlated
+semantic results, source-map and cancellation mocks, but supplies no production broker, native
+Inspector, or completed CLI/MCP product. The separate DevTools product owner/repository and first
+version's Inspector/headless-tool review remain pending. M3 integration is required only for real
+application/request/HMR
 qualification, not for boundary or bridge development. The
 [#67 bridge investigation](./inspector-bridge-plan.md) records the pinned-source API and pause-loop
 constraints; it is not an implemented native bridge.
@@ -156,6 +159,11 @@ capture without opening a window. Machine-readable output is required for agents
 M4 is tracked in [#65](https://github.com/kunlunengine/runtime/issues/65), independently of
 [M3 #47](https://github.com/kunlunengine/runtime/issues/47). The numbered steps below describe final
 delivery order; work can start in parallel according to each slice's prerequisites:
+
+Standalone product delivery starts with **Kunlun Desktop**, then the DevTools showcase hosted on it.
+Desktop implementation and independent product repositories are separate workstreams/threads,
+not additions to this runtime Cargo workspace. That priority does not make Desktop implementation
+or future DevTools repository selection a prerequisite for runtime-owned #66 contracts/mocks.
 
 - [#66](https://github.com/kunlunengine/runtime/issues/66) defines the versioned boundary and
   standalone target/session/source/authorization business logic using deterministic mock adapters.

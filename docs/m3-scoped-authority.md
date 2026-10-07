@@ -154,6 +154,16 @@ pinned four-platform comparison belong to #53 and are **not** replaced by a
 mock Node permission layer or a local system-JSC pass. #50's cross-adapter
 qualification remains open until that gate runs the real adapters.
 
+The shared HTTP and post-headers lifecycle probes now exercise the real Node
+adapter too: ordered network traffic, scoped redirect denials, invocation
+cancellation/revocation, stale handles/body readers and concurrent independent
+isolates are compared without rewriting probe bytes. Native host-context
+ownership and resource-counter assertions are explicitly separate from shared
+observations; no Node context/provider service is invented for the comparison.
+Four-physical-platform evidence execution is deferred to
+[#63](https://github.com/kunlunengine/runtime/issues/63), so implementation can
+proceed independently while #53 retains its formal qualification gate.
+
 The [authority conformance evidence slice](./m3-authority-conformance.md) defines
 the shared observation contract, native report collection, strict comparison,
 and real Core adapter integration / outstanding physical-platform dependencies.

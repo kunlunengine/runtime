@@ -131,6 +131,50 @@ jobs:
           /usr/bin/python3 distribution/jsc/scripts/m3_authority.py collect-native \
             --target "$TARGET" --output "$RUNNER_TEMP/m3-authority-native-${TARGET}"
 
+      - name: Collect native M3 HTTP authority observations
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        shell: bash
+        env:
+          KUNLUN_JSC_DIST_DIR: ${{ steps.build.outputs.staging }}
+          KUNLUN_JSC_RECEIPT_SHA256: ${{ steps.build.outputs.receipt_sha256 }}
+          DYLD_LIBRARY_PATH: ${{ steps.build.outputs.staging }}/lib
+          MACOSX_DEPLOYMENT_TARGET: ${{ steps.build.outputs.deployment_target }}
+        run: |
+          /usr/bin/python3 distribution/jsc/scripts/m3_authority.py collect-native \
+            --suite request-authority-http/v1 \
+            --target "$TARGET" --output "$RUNNER_TEMP/m3-authority-http-native-${TARGET}"
+
+      - name: Upload native M3 HTTP authority observations
+        if: ${{ always() && steps.build.outcome == 'success' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: m3-authority-http-native-${{ matrix.target }}
+          path: ${{ runner.temp }}/m3-authority-http-native-${{ matrix.target }}/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Collect native M3 authority lifecycle observations
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        shell: bash
+        env:
+          KUNLUN_JSC_DIST_DIR: ${{ steps.build.outputs.staging }}
+          KUNLUN_JSC_RECEIPT_SHA256: ${{ steps.build.outputs.receipt_sha256 }}
+          DYLD_LIBRARY_PATH: ${{ steps.build.outputs.staging }}/lib
+          MACOSX_DEPLOYMENT_TARGET: ${{ steps.build.outputs.deployment_target }}
+        run: |
+          /usr/bin/python3 distribution/jsc/scripts/m3_authority.py collect-native \
+            --suite request-authority-lifecycle/v1 \
+            --target "$TARGET" --output "$RUNNER_TEMP/m3-authority-lifecycle-native-${TARGET}"
+
+      - name: Upload native M3 authority lifecycle observations
+        if: ${{ always() && steps.build.outcome == 'success' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: m3-authority-lifecycle-native-${{ matrix.target }}
+          path: ${{ runner.temp }}/m3-authority-lifecycle-native-${{ matrix.target }}/
+          if-no-files-found: error
+          retention-days: 30
+
       - name: Upload native M3 authority observations
         if: ${{ always() && steps.build.outcome == 'success' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

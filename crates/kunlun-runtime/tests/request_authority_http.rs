@@ -570,6 +570,7 @@ fn shared_http_authority_observations_match_contract() {
     drop(artifact);
     drop(fixture);
     if let Some(path) = std::env::var_os("KUNLUN_M3_HTTP_OBSERVATIONS") {
+        let backend = kunlun_jsc::JscVm::backend_info();
         let report = json!({
             "schema_version": 1,
             "suite": contract["suite"],
@@ -582,6 +583,13 @@ fn shared_http_authority_observations_match_contract() {
             "observations": observations,
             "lifecycle": lifecycle,
             "requests": requests,
+            "backend": {
+                "backend": backend.backend,
+                "target": backend.target,
+                "engine_revision": backend.engine_revision,
+                "distribution_mode": backend.distribution_mode,
+                "hermetic": backend.hermetic,
+            },
         });
         let mut file = fs::OpenOptions::new()
             .write(true)

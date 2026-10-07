@@ -223,7 +223,7 @@ wait for M3 completion.
 | C0 | Replace fixed `new` writer with generator protocol and first-party templates | None |
 | C1 | `create`, `install`, `dev`, `check`, `test`, `build`, `run`, `doctor` coherent surface | Node fallback |
 | C2 (runtime) | Native runtime selection, download verification, server artifacts | M3 artifact/execution contract |
-| C2 (inspection) | `inspect`/`repl` discovery and standalone client integration | M4 contract, Inspector edge, and client; M3 only for real application qualification |
+| C2 (inspection) | `inspect`/`repl` discovery and standalone client integration | M4 contract/client (#66 contract/mock adapter enables CLI/MCP work); #67 Inspector edge only for native attach validation; M3 only for real application qualification |
 | C3 | Workspace task graph, filters, parallelism, local/remote cache | Stable command contracts |
 
 The detailed command and template design is in [docs/kunlun-cli.md](./docs/kunlun-cli.md).

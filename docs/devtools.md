@@ -146,8 +146,8 @@ capture without opening a window. Machine-readable output is required for agents
 ## Delivery order
 
 M4 is tracked in [#65](https://github.com/kunlunengine/runtime/issues/65), independently of
-[M3 #47](https://github.com/kunlunengine/runtime/issues/47). The order below describes contract
-and integration prerequisites within DevTools, not a requirement to finish M3 first.
+[M3 #47](https://github.com/kunlunengine/runtime/issues/47). The numbered steps below describe final
+delivery order; work can start in parallel according to each slice's prerequisites:
 
 - [#66](https://github.com/kunlunengine/runtime/issues/66) defines the versioned boundary and
   standalone target/session/source/authorization business logic using deterministic mock adapters.
@@ -167,7 +167,7 @@ Link its implementation issues when the owner/repository is selected; the runtim
 the shared boundary and fixtures, not a new GUI or general DevTools crate.
 
 1. Use the platform Web Inspector locally to validate JSC source naming, WIP messages, and pause-loop
-   behavior during the engine work.
+   behavior during the engine work, in parallel with contract and business-logic development.
 2. Define the versioned runtime-to-DevTools contract, then implement the portable broker, source maps,
    HMR reconnection, diagnostics, and protocol fixtures.
 3. Ship the standalone CLI and MCP + Skill vertical slice so terminal-only and agent-only developers

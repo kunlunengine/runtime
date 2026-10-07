@@ -25,6 +25,8 @@ kunlun-runtime -> kunlun-jsc -> kunlun-jsc-sys -> JavaScriptCore
 - `kunlun-jsc` owns safe, `!Send + !Sync` contexts, protected Promise resolvers, revocable host
   callbacks, and checked ArrayBuffer/TypedArray handles. See the [ownership API](./docs/jsc-binding.md#safe-host-callbacks-and-buffers).
 - `kunlun-runtime` owns Tokio, isolate lifecycle, async evaluation, and the native process entry.
+- `kunlun-devtools-protocol` owns draft runtime/DevTools plain-data boundary types and fixtures,
+  not the standalone DevTools service or clients.
 - `kunlun-runtime-protocol` owns the engine-independent Core/provider process envelope and grammar.
 
 ## Bootstrap
@@ -70,6 +72,8 @@ and fail-closed admission; Fetch entry invocation remains tracked by #51.
 - [docs/jsc-distribution.md](./docs/jsc-distribution.md) — pinned engine inputs, artifact metadata,
   validation, and revision review procedure.
 - [docs/devtools.md](./docs/devtools.md) — Inspector backend and the standalone DevTools platform.
+- [docs/devtools-protocol-v1.md](./docs/devtools-protocol-v1.md) — draft M4 runtime boundary and
+  engine-independent contract fixtures; not native Inspector qualification.
 - [docs/kunlun-desktop.md](./docs/kunlun-desktop.md) — accepted pinned-CEF presentation architecture
   and native sandbox/signing/update qualification gates.
 - [docs/wuling-host.md](./docs/wuling-host.md) — Wuling ADE preview host contract, consumer fixture,

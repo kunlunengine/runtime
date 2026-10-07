@@ -151,6 +151,8 @@ edge uses the existing M2 pinned JSC/ESM/event-loop baseline, not an M3 Fetch se
 This workspace owns the runtime/Inspector boundary and native fixtures. General service/core
 business logic and clients belong to the separate DevTools product; these issues coordinate that
 work without adding a GUI or general DevTools service to this Cargo workspace.
+The [initial boundary slice](./docs/devtools-protocol-v1.md) records implemented/pending #66 scope;
+mock, native JSC, and application evidence remain separate, and the full M4 exit gate is pending.
 
 - Bridge JSC Inspector messages through an authenticated, loopback-only-by-default transport.
 - Define the versioned runtime-to-DevTools boundary; the standalone service supplies target

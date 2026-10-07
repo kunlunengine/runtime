@@ -19,10 +19,15 @@ vulnerabilities according to the [security policy](./SECURITY.md), not in a publ
 
 M1 is complete and the [M2 main baseline is restored](./docs/m2-exit-gate.md#m2-closeout-status).
 The M2 tracker #27 is closed; [#46](https://github.com/kunlunengine/runtime/issues/46) still needs
-final closeout review. The next workstream is [M3 (#47)](https://github.com/kunlunengine/runtime/issues/47),
-starting with [Wuling fixture requirements](./docs/m3-wuling-conformance.md) for #42 and the #48
-artifact contract review. Follow the trackers' dependency order: fixture planning is not native
-compatibility, and ordinary green CI is not signed release authorization.
+final closeout review. [M3 (#47)](https://github.com/kunlunengine/runtime/issues/47) and
+[M4 (#65)](https://github.com/kunlunengine/runtime/issues/65) are parallel workstreams with
+separate implementation issues and acceptance evidence. M3 uses the
+[Wuling fixture requirements](./docs/m3-wuling-conformance.md) for #42 and the #48 artifact contract;
+M4 business logic starts with [contract/mock fixtures (#66)](https://github.com/kunlunengine/runtime/issues/66),
+and its Inspector edge uses the existing M2 baseline. Follow each slice's concrete prerequisites,
+not milestone numbering: only real M3 application debugger qualification needs the corresponding
+M3 artifact/server integration. Fixture planning is not native compatibility, and ordinary green CI
+is not signed release authorization.
 
 ## Development Setup
 

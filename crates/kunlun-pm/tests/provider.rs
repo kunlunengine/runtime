@@ -570,6 +570,45 @@ fn static_inputs_may_not_escape_through_symlinks() {
 }
 
 #[test]
+fn workspace_pattern_limit_counts_unique_inclusions_and_exclusions() {
+    let project = Project::fixture();
+    let mut patterns = vec!["packages/*".to_string(), "!packages/excluded".to_string()];
+    patterns.extend((0..510).map(|index| {
+        if index % 2 == 0 {
+            format!("missing/package-{index}")
+        } else {
+            format!("!missing/package-{index}")
+        }
+    }));
+    patterns.extend(patterns.clone());
+    project.set(
+        "pnpm-workspace.yaml",
+        &serde_yaml_ng::to_string(&json!({"packages": patterns})).unwrap(),
+    );
+    let (output, reply) = project.run("detect", &[]);
+    assert!(output.status.success(), "{reply}");
+    assert_eq!(
+        reply["result"]["workspaceImporters"],
+        conformance()["workspaceImporters"]
+    );
+}
+
+#[test]
+fn workspace_pattern_limit_is_checked_before_expansion() {
+    for prefix in ["", "!"] {
+        let project = Project::fixture();
+        project.set("blocked", "not a directory");
+        let mut patterns = vec!["blocked/*".to_string()];
+        patterns.extend((0..512).map(|index| format!("{prefix}missing/package-{index}")));
+        project.set(
+            "pnpm-workspace.yaml",
+            &serde_yaml_ng::to_string(&json!({"packages": patterns})).unwrap(),
+        );
+        project.error("limit_exceeded");
+    }
+}
+
+#[test]
 fn shared_negative_fixtures_agree_with_real_process_exits() {
     for case in conformance()["negativeCases"].as_array().unwrap() {
         let project = Project::fixture();

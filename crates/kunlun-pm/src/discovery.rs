@@ -92,8 +92,12 @@ pub fn discover(inputs: &mut Inputs) -> Result<(String, BTreeMap<String, Manifes
         )?;
         let workspace: Workspace = serde_json::from_value(value)
             .map_err(|_| Diagnostic::new(ErrorCode::UnsupportedConfiguration))?;
+        let patterns: BTreeSet<_> = workspace.packages.into_iter().collect();
+        if patterns.len() > 512 {
+            return Err(Diagnostic::new(ErrorCode::LimitExceeded));
+        }
         let mut exclusions = Vec::new();
-        for pattern in workspace.packages {
+        for pattern in patterns {
             if let Some(exclusion) = pattern.strip_prefix('!') {
                 validate_pattern(exclusion)?;
                 exclusions.push(exclusion.to_string());

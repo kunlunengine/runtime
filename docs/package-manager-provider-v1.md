@@ -144,7 +144,8 @@ contents enter failure output. Versioned readonly contracts are in
 [`protocol.rs`](../crates/kunlun-pm/src/protocol.rs).
 
 Response limit is **1 MiB including newline**. Input limits are 8 MiB per file, 32 MiB total,
-100,000 parsed values, 64 nesting levels, 8,192-byte strings and 512 importers. Graph limit is
+100,000 parsed values, 64 nesting levels, 8,192-byte strings, 512 unique workspace patterns
+and 512 importers. Graph limit is
 10,000 nodes. Why allows 1,000 paths, depth 64 and 100,000 visits. Exhaustion is an error.
 Startup failures, signals and broken stdout are transport failures, not successful replies.
 Invoke the selected binary directly: Cargo build output is not provider JSON.

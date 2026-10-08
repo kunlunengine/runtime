@@ -1,0 +1,7 @@
+{
+  "name": "@fixture/excluded",
+  "version": "1.0.0",
+  "scripts": {
+    "preinstall": "echo THIS_MUST_NOT_EXECUTE"
+  }
+}

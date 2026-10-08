@@ -29,6 +29,9 @@ kunlun-runtime -> kunlun-jsc -> kunlun-jsc-sys -> JavaScriptCore
 - `kunlun-devtools-protocol` owns draft runtime/DevTools plain-data boundary types and fixtures,
   not the standalone DevTools service or clients.
 - `kunlun-runtime-protocol` owns the engine-independent Core/provider process envelope and grammar.
+- `kunlun-pm` is an independent read-only C1-P0 package-manager component hosted in this workspace,
+  not runtime execution or ESM resolution. It provides Node-free static frozen plans and `why`,
+  with a [Core JS/TS handoff](./integration/package-manager/README.md); installation remains unavailable.
 
 ## Bootstrap
 
@@ -103,6 +106,8 @@ with bounded serial library invocation; HTTP lifecycle and pinned-engine qualifi
   JSON diagnostics, and admission-only process interface consumed by Core's single workflow CLI.
 - [docs/cli-toolchain-plan.md](./docs/cli-toolchain-plan.md) — package-manager, toolchain, native-build,
   and Lightning-provider decisions.
+- [docs/package-manager-provider-v1.md](./docs/package-manager-provider-v1.md) — implemented C1-P0
+  read-only native PM protocol, supported pnpm subset, deny-only policy and Core handoff.
 
 ## Non-goals
 

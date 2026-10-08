@@ -5,6 +5,9 @@ main pushes, and merge-queue commits, including documentation-only changes. Conf
 **M2 required gate** as a required repository/merge-queue check; changing branch protection is
 a maintainer action, not something the workflow can enforce itself.
 
+For the end-to-end contributor and release lifecycle, including how this validation evidence is
+promoted (and what it does not authorize), see the [branch and release process](./release-process.md).
+
 The final job requires successful macOS, Linux, and Miri jobs **and exactly four successful
 platform reports** at the checkout's full commit SHA. Missing, skipped, cancelled, failed,
 duplicated, or mismatched evidence cannot produce a green gate. There is no system-JSC fallback.

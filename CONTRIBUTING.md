@@ -96,7 +96,9 @@ generated output.
 
 ## Commits and Pull Requests
 
-- Create a branch from `main` and use a short descriptive name.
+- Follow the [branch and release process](./docs/release-process.md): create a short-lived branch
+  from `main`, then use a pull request and the merge queue; release tags and artifact publication
+  have separate evidence gates.
 - Write imperative commit subjects with a useful prefix such as `feat:`, `fix:`, `docs:`, `ci:`, or
   `build:`.
 - Link the issue the pull request addresses, preferably with `Closes #123` when appropriate.
@@ -108,6 +110,10 @@ All changes go through review and the merge queue. When a pull request is approv
 checks pass, select **Merge when ready**. The aggregate required check is produced by the repository's
 GitHub App; do not add an Actions aggregation job. Do not bypass the queue except during a documented
 repository emergency.
+
+Do not treat a green pull request or ordinary main-branch run as release approval. Use the
+[release process](./docs/release-process.md) and the [M2 exit-gate procedure](./docs/m2-exit-gate.md)
+for candidate validation and publication evidence.
 
 By submitting a contribution, you agree that it may be distributed under this repository's
 [MIT License](./LICENSE).

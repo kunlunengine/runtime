@@ -210,7 +210,8 @@ Goal: make the native runtime installable and supportable.
 
 - Signed artifacts, checksums, provenance attestations, SBOM, license bundle, and reproducible-build
   checks.
-- `kunlun runtime install/list/use/doctor` version management.
+- Core's `kunlun env list/install/use/rollback` version management, sharing the direct Runtime
+  installer's verification and activation rules.
 - Stable engine ABI compatibility policy and runtime manifest negotiation.
 - Performance gates for startup, request latency, memory, module load, and snapshot feasibility.
 - Windows is gated on a supportable WebKit/JSC build and debugger story; it is not silently promised.
@@ -235,6 +236,14 @@ wait for M3 completion.
 The detailed command and template design is in [docs/kunlun-cli.md](./docs/kunlun-cli.md).
 Package format, toolchain distribution, native build, and Lightning-provider decisions are in
 [docs/cli-toolchain-plan.md](./docs/cli-toolchain-plan.md).
+
+Native CLI work is separate from the Node compatibility preview. Core/native components own the
+Node-free launcher, `kunlun-pm`, toolchain selection and installation-source-aware `self-update`;
+CLI update state must not move the selected Runtime. Nasti owns native build/dev semantics and
+Lightning owns test semantics; Runtime supplies the JSC executor and separately qualified
+Node-API route. These are [implementation requirements](./docs/cli-toolchain-plan.md#native-responsibility-boundary),
+not completed capabilities. Direct Rolldown/OXC Rust integration does not require the JS addon
+route, and neither route may use installation or symbol inventories as execution evidence.
 
 ## Release labels
 

@@ -89,6 +89,8 @@ with bounded serial library invocation; HTTP lifecycle and pinned-engine qualifi
   heap telemetry, and terminal memory policy.
 - [docs/m2-exit-gate.md](./docs/m2-exit-gate.md) — four-platform conformance, leak/sanitizer evidence,
   and the immutable-commit M2 release-validation procedure.
+- [docs/release-process.md](./docs/release-process.md) — short-lived branch, PR, immutable-tag, and
+  artifact publication workflow.
 - [docs/module-loading.md](./docs/module-loading.md) — M2 URL resolver contract and native ESM boundary.
 - [docs/runtime-manifest-v1.md](./docs/runtime-manifest-v1.md) — M3 artifact schema, integrity,
   admission, and proposed Fetch entry contract.

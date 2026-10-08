@@ -1,0 +1,8 @@
+{
+  "evidence": "MOCK ONLY — finite local event recording, not native capture or persistence qualification",
+  "cases": [
+    {"name":"recording frame count","max_bytes":4194304,"frames":65,"expected":{"code":"limit_exceeded","resource":"recording"}},
+    {"name":"recording serialized byte budget","max_bytes":1,"frames":1,"expected":{"code":"limit_exceeded","resource":"recording"}},
+    {"name":"bounded recording success","max_bytes":4194304,"frames":64,"expected":null}
+  ]
+}

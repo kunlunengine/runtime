@@ -1,0 +1,111 @@
+{
+  "evidence": "MOCK ONLY — independent session business-contract cases, not Inspector or application qualification",
+  "identity": {"target":"mock-runtime","session":"session-1","epoch":1},
+  "setup": "Explicit attach with request_id setup-attach and inspect permission before each case",
+  "target": {
+    "id":"mock-runtime","epoch":1,"name":"Contract fixture (MOCK ONLY)","backend":"mock","state":"available",
+    "capabilities":[
+      {"operation":"attach","support":{"status":"supported"}},
+      {"operation":"detach","support":{"status":"supported"}},
+      {"operation":"list_sources","support":{"status":"supported"}},
+      {"operation":"read_source","support":{"status":"supported"}},
+      {"operation":"read_scopes","support":{"status":"supported"}},
+      {"operation":"set_breakpoint","support":{"status":"supported"}},
+      {"operation":"remove_breakpoint","support":{"status":"supported"}},
+      {"operation":"pause","support":{"status":"supported"}},
+      {"operation":"continue","support":{"status":"supported"}},
+      {"operation":"step","support":{"status":"supported"}},
+      {"operation":"read_logs","support":{"status":"supported"}},
+      {"operation":"cancel","support":{"status":"supported"}},
+      {"operation":"evaluate","support":{"status":"unsupported","reason":"not_implemented"}},
+      {"operation":"mutate","support":{"status":"unsupported","reason":"not_implemented"}},
+      {"operation":"capture_cpu","support":{"status":"unsupported","reason":"not_implemented"}},
+      {"operation":"capture_heap","support":{"status":"unsupported","reason":"not_implemented"}},
+      {"operation":"lookup_source_map","support":{"status":"unsupported","reason":"not_implemented"}}
+    ]
+  },
+  "cases": [
+    {
+      "name": "read-only clients cannot control, evaluate, mutate, or capture",
+      "grants": ["inspect"],
+      "steps": [
+        {"action":"command","request_id":"denied-control","epoch":1,"command":{"op":"pause"},"expect":{"status":"failure","error":{"code":"permission_denied","permission":"control"}}},
+        {"action":"command","request_id":"denied-eval","epoch":1,"command":{"op":"evaluate","expression":"fixture-secret-never-audit"},"expect":{"status":"failure","error":{"code":"permission_denied","permission":"evaluate"}}},
+        {"action":"command","request_id":"denied-mutate","epoch":1,"command":{"op":"mutate","handle":{"identity":{"target":"mock-runtime","session":"session-1","epoch":1},"pause":1,"id":"object-1"},"value":"fixture-secret-never-audit"},"expect":{"status":"failure","error":{"code":"permission_denied","permission":"mutate"}}},
+        {"action":"command","request_id":"denied-cpu","epoch":1,"command":{"op":"capture_cpu","max_bytes":1024},"expect":{"status":"failure","error":{"code":"permission_denied","permission":"capture_sensitive"}}},
+        {"action":"command","request_id":"denied-heap","epoch":1,"command":{"op":"capture_heap","max_bytes":1024},"expect":{"status":"failure","error":{"code":"permission_denied","permission":"capture_sensitive"}}},
+        {"action":"command","request_id":"logs","epoch":1,"command":{"op":"read_logs","max_entries":1},"expect":{"status":"success","result":{"op":"read_logs","entries":[{"sequence":1,"level":"info","message":{"kind":"redacted"}}],"truncated":false}}}
+      ]
+    },
+    {
+      "name": "authorized protocol-specific operations are explicitly unsupported",
+      "grants": ["inspect","evaluate","capture_sensitive"],
+      "steps": [
+        {"action":"command","request_id":"eval","epoch":1,"command":{"op":"evaluate","expression":"1 + 1"},"expect":{"status":"failure","error":{"code":"unsupported","operation":"evaluate","reason":"not_implemented"}}},
+        {"action":"command","request_id":"cpu","epoch":1,"command":{"op":"capture_cpu","max_bytes":1024},"expect":{"status":"failure","error":{"code":"unsupported","operation":"capture_cpu","reason":"not_implemented"}}},
+        {"action":"command","request_id":"heap","epoch":1,"command":{"op":"capture_heap","max_bytes":1024},"expect":{"status":"failure","error":{"code":"unsupported","operation":"capture_heap","reason":"not_implemented"}}},
+        {"action":"command","request_id":"eval","epoch":1,"command":{"op":"evaluate","expression":"must-not-replay"},"expect":{"status":"failure","error":{"code":"duplicate_request"}}}
+      ]
+    },
+    {
+      "name": "pause scopes step and continue invalidate previous handles",
+      "grants": ["inspect","control"],
+      "steps": [
+        {"action":"command","request_id":"pause","epoch":1,"command":{"op":"pause"},"expect":{"status":"success","result":{"op":"pause"}}},
+        {"action":"command","request_id":"scopes","epoch":1,"command":{"op":"read_scopes","handle":{"identity":{"target":"mock-runtime","session":"session-1","epoch":1},"pause":1,"id":"scope-1"}},"expect":{"status":"success","result":{"op":"read_scopes","scopes":[{"name":"module","handle":{"identity":{"target":"mock-runtime","session":"session-1","epoch":1},"pause":1,"id":"scope-1"},"variables":[{"name":"n","value":{"kind":"number","value":"1"}},{"name":"sensitive","value":{"kind":"redacted"}}],"truncated":false}],"truncated":false}}},
+        {"action":"command","request_id":"step","epoch":1,"command":{"op":"step"},"expect":{"status":"success","result":{"op":"step"}}},
+        {"action":"command","request_id":"old-scope","epoch":1,"command":{"op":"read_scopes","handle":{"identity":{"target":"mock-runtime","session":"session-1","epoch":1},"pause":1,"id":"scope-1"}},"expect":{"status":"failure","error":{"code":"stale_handle"}}},
+        {"action":"command","request_id":"continue","epoch":1,"command":{"op":"continue"},"expect":{"status":"success","result":{"op":"continue"}}},
+        {"action":"command","request_id":"running-step","epoch":1,"command":{"op":"step"},"expect":{"status":"failure","error":{"code":"invalid_state"}}},
+        {"action":"events","expect":[
+          {"version":"1","identity":{"target":"mock-runtime","session":"session-1","epoch":1},"sequence":1,"data":{"kind":"paused","pause":1,"reason":"requested","frames":[{"name":"fixture","handle":{"identity":{"target":"mock-runtime","session":"session-1","epoch":1},"pause":1,"id":"scope-1"},"location":{"source":{"target":"mock-runtime","epoch":1,"id":"module-1","url":"kunlun:fixture/module","revision":"revision-1"},"line":0,"column":0}}],"truncated":false}},
+          {"version":"1","identity":{"target":"mock-runtime","session":"session-1","epoch":1},"sequence":2,"data":{"kind":"resumed"}},
+          {"version":"1","identity":{"target":"mock-runtime","session":"session-1","epoch":1},"sequence":3,"data":{"kind":"paused","pause":2,"reason":"step","frames":[{"name":"fixture","handle":{"identity":{"target":"mock-runtime","session":"session-1","epoch":1},"pause":2,"id":"scope-1"},"location":{"source":{"target":"mock-runtime","epoch":1,"id":"module-1","url":"kunlun:fixture/module","revision":"revision-1"},"line":0,"column":0}}],"truncated":false}},
+          {"version":"1","identity":{"target":"mock-runtime","session":"session-1","epoch":1},"sequence":4,"data":{"kind":"resumed"}}
+        ]}
+      ]
+    },
+    {
+      "name": "same-epoch reconnect and replacement never reuse handles or replay",
+      "grants": ["inspect","control"],
+      "steps": [
+        {"action":"command","request_id":"pause","epoch":1,"command":{"op":"pause"},"expect":{"status":"success","result":{"op":"pause"}}},
+        {"action":"disconnect"},
+        {"action":"command","request_id":"disconnected","epoch":1,"command":{"op":"pause"},"expect":{"status":"failure","error":{"code":"disconnected"}}},
+        {"action":"attach","request_id":"reattach","epoch":1,"next_sequence":2,"state":{"state":"running"}},
+        {"action":"events","expect":[]},
+        {"action":"command","request_id":"old-handle","epoch":1,"command":{"op":"read_scopes","handle":{"identity":{"target":"mock-runtime","session":"session-1","epoch":1},"pause":1,"id":"scope-1"}},"expect":{"status":"failure","error":{"code":"stale_handle"}}},
+        {"action":"command","request_id":"pause","epoch":1,"command":{"op":"pause"},"expect":{"status":"failure","error":{"code":"duplicate_request"}}},
+        {"action":"command","request_id":"fresh-pause","epoch":1,"command":{"op":"pause"},"expect":{"status":"success","result":{"op":"pause"}}},
+        {"action":"events","expect":[{"version":"1","identity":{"target":"mock-runtime","session":"session-1","epoch":1},"sequence":2,"data":{"kind":"paused","pause":2,"reason":"requested","frames":[{"name":"fixture","handle":{"identity":{"target":"mock-runtime","session":"session-1","epoch":1},"pause":2,"id":"scope-1"},"location":{"source":{"target":"mock-runtime","epoch":1,"id":"module-1","url":"kunlun:fixture/module","revision":"revision-1"},"line":0,"column":0}}],"truncated":false}}]},
+        {"action":"replace"},
+        {"action":"command","request_id":"old-eval","epoch":1,"command":{"op":"evaluate","expression":"must-not-execute"},"expect":{"status":"failure","error":{"code":"stale_epoch"}}},
+        {"action":"command","request_id":"not-attached","epoch":2,"command":{"op":"pause"},"expect":{"status":"failure","error":{"code":"disconnected"}}},
+        {"action":"attach","request_id":"new-epoch-attach","epoch":2,"next_sequence":1,"state":{"state":"running"}},
+        {"action":"events","expect":[]}
+      ]
+    },
+    {
+      "name": "source retrieval is registered immutable and bounded",
+      "grants": ["inspect"],
+      "steps": [
+        {"action":"command","request_id":"source","epoch":1,"command":{"op":"read_source","source":{"target":"mock-runtime","epoch":1,"id":"module-1","url":"kunlun:fixture/module","revision":"revision-1"},"offset":0,"max_bytes":20},"expect":{"status":"success","result":{"op":"read_source","chunk":{"source":{"target":"mock-runtime","epoch":1,"id":"module-1","url":"kunlun:fixture/module","revision":"revision-1"},"offset":0,"total_bytes":20,"text":"export const n = 1;\n","eof":true}}}},
+        {"action":"command","request_id":"revision","epoch":1,"command":{"op":"read_source","source":{"target":"mock-runtime","epoch":1,"id":"module-1","url":"kunlun:fixture/module","revision":"revision-2"},"offset":0,"max_bytes":20},"expect":{"status":"failure","error":{"code":"source_not_found"}}},
+        {"action":"command","request_id":"no-fetch","epoch":1,"command":{"op":"read_source","source":{"target":"mock-runtime","epoch":1,"id":"module-1","url":"file:///etc/passwd","revision":"revision-1"},"offset":0,"max_bytes":20},"expect":{"status":"failure","error":{"code":"source_not_found"}}},
+        {"action":"command","request_id":"range","epoch":1,"command":{"op":"read_source","source":{"target":"mock-runtime","epoch":1,"id":"module-1","url":"kunlun:fixture/module","revision":"revision-1"},"offset":21,"max_bytes":20},"expect":{"status":"failure","error":{"code":"source_range"}}}
+      ]
+    },
+    {
+      "name": "cancel before dispatch settles the original request without replay",
+      "grants": ["inspect","control"],
+      "steps": [
+        {"action":"queue","request_id":"pending-pause","epoch":1,"command":{"op":"pause"}},
+        {"action":"command","request_id":"cancel","epoch":1,"command":{"op":"cancel","request_id":"pending-pause"},"expect":{"status":"success","result":{"op":"cancel","request_id":"pending-pause","status":"cancelled"}}},
+        {"action":"completions","expect":[{"version":"1","request_id":"pending-pause","identity":{"target":"mock-runtime","session":"session-1","epoch":1},"result":{"status":"failure","error":{"code":"cancelled"}}}]},
+        {"action":"command","request_id":"pending-pause","epoch":1,"command":{"op":"pause"},"expect":{"status":"failure","error":{"code":"duplicate_request"}}},
+        {"action":"command","request_id":"late","epoch":1,"command":{"op":"cancel","request_id":"pending-pause"},"expect":{"status":"success","result":{"op":"cancel","request_id":"pending-pause","status":"too_late"}}},
+        {"action":"events","expect":[]}
+      ]
+    }
+  ]
+}

@@ -29,11 +29,16 @@ kunlun build [project]                 build all selected application targets
 kunlun run <task>                      run workspace tasks
 kunlun start                           start a built application
 kunlun inspect                         open/attach developer tools
-kunlun runtime <subcommand>            install/list/use/doctor native runtimes
+kunlun env <action>                    list/install/use/rollback native runtimes
+kunlun self-update                     update standalone CLI; respect package-managed ownership
 kunlun doctor                          validate project, engines, runtime, and toolchain
 ```
 
 Aliases may retain `kunlun new`, but documentation and generator semantics standardize on `create`.
+`env` manages Runtime versions; `self-update` manages only the CLI distribution. They share verified
+installation primitives, not version state. The native responsibility and source-aware update
+requirements are in [the toolchain plan](./cli-toolchain-plan.md#runtime-selection-and-cli-self-update).
+This command surface is a target, not evidence that a native launcher or updater is implemented.
 
 The first coherent release needs `create`, `dev`, `check`, `test`, `build`, `start`, and `doctor`.
 Workspace caching and remote execution come later; command names and exit behavior should stabilize

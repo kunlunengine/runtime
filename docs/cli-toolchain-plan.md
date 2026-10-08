@@ -1,6 +1,8 @@
 # `kunlun` CLI Package, Toolchain, Build, and Test Plan
 
-Status: decision draft, 2026-09-05. Package-management policy and delivery gates are expanded below.
+Status: implementation requirements, not a declaration of implemented native CLI capabilities.
+The initial source audit was recorded on 2026-09-05; the Native ownership and update requirements
+below incorporate the subsequent Core CLI coordination.
 
 This document coordinates four repositories without moving their ownership boundaries:
 
@@ -8,11 +10,14 @@ This document coordinates four repositories without moving their ownership bound
 | --- | --- | --- |
 | workflow and provider selection | `kunlunengine/core` | `@kunlun-js/cli` and `BuildEngine` |
 | build and transform | `zixiao-labs/Nasti` | Nasti 2.5.2, Rolldown 1.2.6, OXC 0.147 |
-| test semantics and orchestration | `zixiao-labs/Lightning` | Lightning 2.1.0 |
+| test semantics and orchestration | `zixiao-labs/Lightning` | Lightning 3.1.0; Node >=22.12.0 |
 | native execution and verified runtime artifacts | `kunlunengine/runtime` | pinned JSC plus Tokio host |
 
-The source audit used Nasti commit `41e9618`, Lightning commit `d031aff`, and Core commit `2d1a67e`.
-Versions are observations, not new compatibility ranges.
+The initial source audit used Nasti commit `41e9618`, Lightning commit `d031aff` (then 2.1.0), and
+Core commit `2d1a67e`. The subsequent Core handoff uses Lightning 3.1.0, whose published package
+pins Nasti 2.5.2 and Rolldown 1.2.6, with OXC transform ^0.147.0. The actual project lockfile,
+including peer-resolved provider copies, is authoritative for qualification. These observations
+do not introduce compatibility ranges or certify the toolchain on JSC.
 
 ## Decisions
 
@@ -32,6 +37,33 @@ Versions are observations, not new compatibility ranges.
    changing transforms, plugin hooks, and output semantics would make conformance ambiguous.
 5. **Extend Lightning with a Kunlun/JSC executor.** Do not fork its collector, assertions, mocks,
    snapshots, reporters, or browser mode into a second framework.
+
+## Native responsibility boundary
+
+Use **JS orchestration plus native kernels**, but do not make JavaScript orchestration a prerequisite
+for bootstrap. The native launcher must select, verify, diagnose, update, and roll back its supported
+components with Node absent. Project JS providers remain explicit optional execution paths.
+
+| Concern | Semantic owner | Native implementation boundary |
+| --- | --- | --- |
+| `kunlun` entry, help, selection and presentation | Core | Native launcher/selector; no second workflow CLI in Runtime |
+| `env` and toolchain acquisition | Core workflow + Runtime distribution | Native verification/activation; consume the direct Runtime installer's shared contract |
+| `self-update` | Core CLI distribution | Installation-source-aware CLI updater; separate from Runtime selection |
+| package management | Core provider + independent `kunlun-pm` component | Rust resolve/fetch/store/link; not part of the production ESM resolver |
+| build and dev server | Nasti through Core's `BuildEngine` | Rolldown/OXC kernel, native server infrastructure, explicit plugin capabilities |
+| testing | Lightning | Runtime supplies an isolated JSC executor, not a second test framework |
+| project/library generation | Core generator protocol | Core owns templates/plans; native file operations must preserve the same plan and write policy |
+| library compilation/declarations | Nasti build provider | OXC/Rolldown where supported; declaration emit does not replace project TypeScript checking |
+
+The launcher and `kunlun-pm` belong to Core or its dedicated native components, not the Runtime
+executable. This repository supplies engine execution, ABI/capability reports and verified Runtime
+artifacts. The [current Runtime process API](./runtime-provider-v0.2.md) remains admission-only;
+neither `doctor` nor `check-artifact` is a build provider, test worker, or application launcher.
+
+Native-only mode must reject unsupported JS configuration, plugins, scripts and providers before
+execution. Compatibility mode may use a declared `requiresNode` provider, but never silently fall
+back to ambient Node, pnpm, Corepack, a system JSC, or a different build engine. A Node-backed
+`install → build → test` workflow is compatibility evidence, not the native release gate.
 
 ## Package-management provider
 
@@ -341,6 +373,33 @@ the trust model already implemented for JSC distributions in `distribution/jsc/b
 must verify the selected component before execution, support rollback, and never download from an
 ordinary Cargo build script.
 
+### Runtime selection and CLI self-update
+
+`kunlun env list/install/use/rollback` is the Core workflow for Runtime versions. It must share the
+direct Runtime installer's store, lock, inventory/receipt validation and activation rules. Listing
+is discovery, not trust: a local receipt must not authorize activation or execution by itself.
+
+`kunlun self-update` updates the CLI distribution, not the selected Runtime or project dependencies:
+
+- **npm/pnpm-managed CLI:** report the owning package manager and explicit upgrade instructions;
+  do not overwrite its files, run a different installer, or execute an unverified ambient tool.
+- **standalone native CLI:** resolve an explicit immutable release for the supported target,
+  verify trusted release metadata and the complete staged inventory, then validate the candidate
+  executable before atomic activation. Retain the prior verified version for explicit rollback.
+- **source checkout or unknown origin:** refuse in-place self-update with a source-specific
+  remediation. Installation origin must come from validated distribution metadata, not a guessed
+  executable path or a project-controlled receipt.
+
+CLI and Runtime may reuse verification/locking/activation primitives, but must have independent
+version stores, receipts and active pointers. Updating one must not move the other's selection or
+edit the project lockfile. Do not add a `kunlun-runtime self-update` or `env` workflow.
+
+Acceptance includes interrupted downloads, corrupt/missing files, concurrent updates, incompatible
+target/protocol, candidate startup failure and explicit rollback. Each failure preserves the prior
+active version. Native launcher selection, offline diagnostics, Runtime activation and standalone
+CLI update must be exercised with Node/pnpm/Corepack absent from `PATH`; bootstrap must not evaluate
+project code or fetch dependencies to discover what to run.
+
 ## Build and transpile
 
 Core already has the correct public boundary: a `BuildEngine` creates sessions and reports explicit
@@ -374,6 +433,42 @@ Delivery path:
 SWC remains useful as an independently named provider or focused transform component. It is not the
 default Native Nasti plan: current Nasti already depends on OXC transforms and Rolldown bundling, so
 SWC would create a second behavior matrix instead of being a mechanical port.
+
+### Native dev server and library output
+
+A Rust dev server is allowed and can reuse existing upstream work such as Rolldown's dev engine.
+HTTP/WebSocket transport, file watching, scheduling, incremental cache and process lifecycle can
+move to Rust. Nasti still owns configuration, entry resolution, plugin ordering, module-graph,
+HMR and source-map semantics. Integrate through the same `BuildEngine`/provider contract, not a
+parallel `kunlun` build configuration.
+
+Use the same fixture corpus for Node and native providers: cold build, edits and invalidation,
+dependency changes, HMR updates, source-mapped errors, failed-build recovery, cancellation and
+shutdown. Unsupported plugins fail explicitly; stale build events must not replace newer outputs,
+and shutdown must close listeners/watchers and terminate owned child processes.
+
+Library scaffolding remains a Core generator operation; library compilation remains a Nasti build
+operation. Rust OXC declaration emit may support an explicitly reported isolated-declarations
+subset. It is not full TypeScript type checking. Validate JS outputs, exports, declaration files and
+source maps as packed consumers; do not advertise library compatibility from a template-only test.
+
+### Direct Rust crates versus Node-API qualification
+
+Direct Rolldown/OXC crate integration and loading their existing JS/napi-rs packages on JSC are
+different routes. The former avoids Node-API for those compiled-in kernels, but does not automatically
+support JS configuration or plugin hooks. The latter requires a real JSC Node-API adapter and the
+JS host APIs those packages use; exporting ABI symbols alone is insufficient.
+
+For the JS package route, qualify the exact lockfile-resolved addon versions, platform binaries and
+digests. Core's current handoff includes Nasti 2.5.2/Lightning 3.1.0 with Rolldown 1.2.6 and OXC
+0.147.0. If an older peer-resolved Nasti 2.4.4 remains, its Rolldown 1.2.1/OXC 0.142.0 chain needs
+separate evidence or must be removed through a reviewed dependency update.
+
+Acceptance requires actual module loading and build/transform/parse execution, asynchronous work,
+callbacks/TSFN, buffer/reference/GC lifetime, owning-thread access and teardown/cancellation on
+each advertised target. Symbol inventories, a restricted synchronous addon fixture, Node smoke
+tests and successful Runtime installation are separate evidence, not Rolldown/OXC certification.
+Keep public Node-API capability claims fail-closed until that route is qualified.
 
 ## Lightning and native testing
 
@@ -421,7 +516,10 @@ name.
 | C1-P1 pnpm bridge | core | pinned fallback, frozen CI, JSON diagnostics, differential oracle |
 | C1-P2 native store/linker | native PM crate | clean frozen install with no Node/pnpm/Corepack on `PATH` |
 | C1-T1 toolchain selector | core + runtime | native project/global precedence, verified install, rollback, offline doctor |
+| C1-U1 CLI updater | core/native CLI distribution | source-aware update; independent CLI/Runtime state; failure preserves active versions |
 | B0 conformance fixtures | core + Nasti | same target/artifact diagnostics through in-process and process adapters |
+| B2 native build/dev provider | Nasti + core | Rolldown/OXC kernels; shared build/HMR/error/cancel fixtures; explicit unsupported plugins |
+| ABI1 JS addon qualification | runtime + core fixture producer | actual locked Rolldown/OXC execution and lifecycle evidence; not a direct-crate build gate |
 | T0/T1 executor boundary | core + Lightning + runtime | `kunlun test` plus one JSC worker fixture with honest capability output |
 
 M2-R1 (#28) owns the engine-independent resolver, contextual errors, URL/cache identity contract,
@@ -443,6 +541,9 @@ for the restored main baseline, outstanding #46 review and separate release-vali
 - [npm provenance statements and their limits](https://docs.npmjs.com/generating-provenance-statements/)
 - [Corepack distribution and supported Node versions](https://github.com/nodejs/corepack#how-to-install)
 - [SWC Rust usage](https://swc.rs/docs/usage-core)
+- [Lightning 3.1.0 published package metadata](https://registry.npmjs.org/@lightning-js/lightning/3.1.0)
+- [Rolldown dev engine design](https://github.com/rolldown/rolldown/blob/main/internal-docs/dev-engine/design.md)
+- [OXC isolated declarations](https://github.com/oxc-project/oxc/blob/main/crates/oxc_isolated_declarations/README.md)
 - [Nasti source](https://github.com/zixiao-labs/Nasti)
 - [Lightning source](https://github.com/zixiao-labs/Lightning)
 - [Kunlun Core source](https://github.com/kunlunengine/core)

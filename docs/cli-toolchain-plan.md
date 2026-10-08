@@ -50,9 +50,11 @@ of those operations may invoke Node. The provider boundary exists to keep pnpm i
 future formats possible, not to hide a permanent Node dependency.
 
 The package-management sections below are delivery requirements, not implemented capabilities. This
-runtime repository currently has no `kunlun-pm` crate, installer, lifecycle runner, or package policy
-engine. The CLI and provider implementation belong to Core and a native PM component; the runtime
-supplies execution capabilities only through its declared contracts.
+workspace now hosts the independent [C1-P0 `kunlun-pm` component](./package-manager-provider-v1.md):
+read-only static discovery, a declared pnpm v9 subset, frozen plans and `why`, plus a Core JS/TS
+handoff. It is not linked into Runtime. There is still no installer, lifecycle runner, verified
+content policy engine or native-default provider switch. The CLI and provider workflow belong to
+Core and the independent native PM component; Runtime supplies only its declared execution contracts.
 
 ### Why pnpm format wins the first round
 

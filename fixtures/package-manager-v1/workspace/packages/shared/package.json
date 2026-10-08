@@ -1,0 +1,7 @@
+{
+  "name": "@fixture/shared",
+  "version": "1.2.0",
+  "dependencies": {
+    "leaf": "^1.0.0"
+  }
+}

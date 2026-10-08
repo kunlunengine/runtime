@@ -1,0 +1,20 @@
+{
+  "name": "@fixture/root",
+  "version": "1.0.0",
+  "private": true,
+  "packageManager": "pnpm@10.15.0",
+  "dependencies": {
+    "@fixture/shared": "workspace:*",
+    "ui": "^1.0.0"
+  },
+  "devDependencies": {
+    "tool": "~1.0.0"
+  },
+  "optionalDependencies": {
+    "platform": "1.0.0"
+  },
+  "scripts": {
+    "pnpm:devPreinstall": "echo THIS_MUST_NOT_EXECUTE",
+    "prepare": "node -e \"require('node:fs').writeFileSync('PROJECT_CODE_EXECUTED', 'unsafe')\""
+  }
+}

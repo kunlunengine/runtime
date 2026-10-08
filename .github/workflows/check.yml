@@ -45,9 +45,19 @@ jobs:
               run: |
                   cargo clippy --locked -p kunlun-runtime-protocol --all-targets -- -D warnings
                   cargo test --locked -p kunlun-runtime-protocol
+            - name: Check independent package-manager P0
+              run: |
+                  cargo build --locked -p kunlun-pm
+                  cargo clippy --locked -p kunlun-pm --all-targets -- -D warnings
+                  cargo test --locked -p kunlun-pm
+                  PATH="" ./target/debug/kunlun-pm plan --project fixtures/package-manager-v1/workspace --frozen --ignore-scripts --json
             - uses: actions/setup-node@v4
               with:
                   node-version: '24'
+            - name: Check Core package-manager process handoff
+              run: |
+                  npx --yes -p typescript@5.9.3 tsc -p integration/package-manager/test/tsconfig.json
+                  KUNLUN_PM_BINARY="$PWD/target/debug/kunlun-pm" node --test integration/package-manager/test/*.test.mjs
             - name: Check Web profile declarations
               run: npx --yes -p typescript@5.9.3 tsc --noEmit --strict --lib es2022 types/tests/profile.ts
             - name: Check artifact contract types

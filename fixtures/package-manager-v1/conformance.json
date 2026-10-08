@@ -1,0 +1,55 @@
+{
+  "schema": "kunlun.package-manager-conformance/v1",
+  "workspaceImporters": [".", "packages/app", "packages/shared"],
+  "knownUnbuiltImporters": [".", "packages/app"],
+  "whyLeafPaths": [
+    {"importer": ".", "nodes": ["ui@1.0.0(react@18.0.0)", "leaf@1.1.0"]},
+    {"importer": ".", "nodes": ["workspace:packages/shared", "leaf@1.1.0"]},
+    {"importer": "packages/app", "nodes": ["workspace:packages/shared", "leaf@1.1.0"]},
+    {"importer": "packages/shared", "nodes": ["leaf@1.1.0"]}
+  ],
+  "negativeCases": [
+    {
+      "name": "ambiguous-authority",
+      "file": "kunlun.lock",
+      "write": "not-a-second-authority",
+      "code": "ambiguous_authority"
+    },
+    {
+      "name": "executable-hook-config",
+      "file": ".pnpmfile.cjs",
+      "write": "throw new Error('MUST_NOT_EXECUTE')",
+      "code": "unsupported_configuration"
+    },
+    {
+      "name": "credential-config",
+      "file": ".npmrc",
+      "write": "//registry.example.test/:_authToken=TOP_SECRET",
+      "code": "unsupported_configuration"
+    },
+    {
+      "name": "self-authorized-policy",
+      "file": "kunlun-pm-policy.json",
+      "write": "{\"schema\":\"kunlun.package-manager-policy/v1\",\"lifecycleScripts\":\"allow\",\"trusted\":true}",
+      "code": "policy_denied"
+    },
+    {
+      "name": "unsupported-lock-schema",
+      "file": "pnpm-lock.yaml",
+      "replace": ["lockfileVersion: '9.0'", "lockfileVersion: '6.0'"],
+      "code": "unsupported_schema"
+    },
+    {
+      "name": "frozen-specifier-drift",
+      "file": "pnpm-lock.yaml",
+      "replace": ["specifier: ^1.0.0", "specifier: ^2.0.0"],
+      "code": "frozen_drift"
+    },
+    {
+      "name": "missing-transitive-node",
+      "file": "pnpm-lock.yaml",
+      "replace": ["leaf: 1.1.0", "leaf: 1.9.0"],
+      "code": "graph_invalid"
+    }
+  ]
+}

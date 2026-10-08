@@ -1,0 +1,4 @@
+{
+  "schema": "kunlun.package-manager-policy/v1",
+  "lifecycleScripts": "deny"
+}

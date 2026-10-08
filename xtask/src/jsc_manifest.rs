@@ -4,7 +4,9 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs::File;
 use std::io::Read;
-use std::path::{Component, Path};
+use std::path::Path;
+
+use crate::jsc_paths as paths;
 
 const SCHEMA_LOCATION: &str = "./manifest.schema.json";
 const CANONICAL_REPOSITORY: &str = "https://github.com/WebKit/WebKit.git";
@@ -672,18 +674,9 @@ fn require_absent_digest(
 }
 
 fn validate_relative_path(label: &str, value: &str, errors: &mut Vec<String>) {
-    let path = Path::new(value);
-    if value.is_empty()
-        || path.is_absolute()
-        || path.components().any(|component| {
-            matches!(
-                component,
-                Component::ParentDir | Component::RootDir | Component::Prefix(_)
-            )
-        })
-    {
+    if !paths::is_portable_relative_path(value) {
         errors.push(format!(
-            "{label} must be a non-empty repository-relative path without '..': {value:?}"
+            "{label} must be a canonical portable repository-relative path: {value:?}"
         ));
     }
 }
@@ -892,6 +885,27 @@ mod tests {
                 .iter()
                 .any(|error| error.contains("missing required target triple"))
         );
+    }
+
+    #[test]
+    fn rejects_nonportable_manifest_paths_on_every_host() {
+        for path in [
+            r"artifacts\jsc.tar.zst",
+            "C:/artifacts/jsc.tar.zst",
+            "artifacts/jsc.tar.zst:stream",
+            "artifacts/NUL.tar.zst",
+            "artifacts/jsc.tar.zst.",
+            "artifacts//jsc.tar.zst",
+        ] {
+            let mut value = manifest_value();
+            value["targets"][0]["artifact"]["archive_path"] = json!(path);
+            assert!(
+                errors_for(value)
+                    .iter()
+                    .any(|error| error.contains("canonical portable")),
+                "{path:?}"
+            );
+        }
     }
 
     #[test]

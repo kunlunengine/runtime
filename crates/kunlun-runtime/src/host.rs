@@ -2,7 +2,7 @@ use crate::authority_scope::AuthorityScope;
 use crate::capabilities::RequestHostScope;
 use base64::Engine;
 use cap_std::ambient_authority;
-use cap_std::fs::{Dir, OpenOptions, OpenOptionsExt};
+use cap_std::fs::Dir;
 use kunlun_jsc::{DeferredPromise, HostCall, JscError, JscVm};
 use reqwest::redirect::Policy;
 use serde::{Deserialize, Serialize};
@@ -264,19 +264,12 @@ impl HostPermissions {
 
     pub(crate) fn authorize_binding_read(&self, binding: &str, path: &Path) -> Result<(), String> {
         let authorized = self.binding_read(binding, path)?;
-        let mut options = OpenOptions::new();
-        options.read(true).custom_flags(libc::O_NONBLOCK);
-        let file = authorized
-            .directory
-            .open_with(authorized.relative_path, &options)
-            .map_err(|_| "filesystem path is unavailable within the binding".to_owned())?;
-        if !file
-            .metadata()
-            .map_err(|_| "filesystem path is unavailable within the binding".to_owned())?
-            .is_file()
-        {
-            return Err("filesystem binding reads require a regular file".to_owned());
-        }
+        crate::regular_file::open_regular_file(
+            &authorized.directory,
+            &authorized.relative_path,
+            false,
+        )
+        .map_err(|_| "filesystem path is unavailable within the binding".to_owned())?;
         Ok(())
     }
 
@@ -1583,17 +1576,11 @@ async fn read_text_file(
     };
     tasks
         .run_blocking(move || {
-            let mut options = OpenOptions::new();
-            options.read(true).custom_flags(libc::O_NONBLOCK);
-            let file = authorized
-                .directory
-                .open_with(authorized.relative_path, &options)?;
-            if !file.metadata()?.is_file() {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "filesystem reads require a regular file",
-                ));
-            }
+            let file = crate::regular_file::open_regular_file(
+                &authorized.directory,
+                &authorized.relative_path,
+                false,
+            )?;
             let mut bytes = Vec::new();
             file.take((MAX_HTTP_RESPONSE_BYTES + 1) as u64)
                 .read_to_end(&mut bytes)?;
@@ -1633,17 +1620,11 @@ fn open_file_stream(
     let (sender, receiver) = mpsc::channel(STREAM_BUFFER_CHUNKS);
     let producer = tasks.spawn_blocking(move || {
         let result = (|| -> io::Result<()> {
-            let mut options = OpenOptions::new();
-            options.read(true).custom_flags(libc::O_NONBLOCK);
-            let mut file = authorized
-                .directory
-                .open_with(authorized.relative_path, &options)?;
-            if !file.metadata()?.is_file() {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "filesystem streams require a regular file",
-                ));
-            }
+            let mut file = crate::regular_file::open_regular_file(
+                &authorized.directory,
+                &authorized.relative_path,
+                false,
+            )?;
             let mut buffer = vec![0; STREAM_CHUNK_BYTES];
             loop {
                 let read = file.read(&mut buffer)?;

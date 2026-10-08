@@ -76,6 +76,8 @@ with bounded serial library invocation; HTTP lifecycle and pinned-engine qualifi
 - [docs/jsc-binding.md](./docs/jsc-binding.md) — how WebKit/JSC is built and bound to Rust.
 - [docs/jsc-distribution.md](./docs/jsc-distribution.md) — pinned engine inputs, artifact metadata,
   validation, and revision review procedure.
+- [docs/windows-port.md](./docs/windows-port.md) — implemented Windows portability foundation,
+  pinned upstream build path, and remaining engine/debugger/release gates; not target qualification.
 - [docs/devtools.md](./docs/devtools.md) — Inspector backend and the standalone DevTools platform.
 - [docs/devtools-protocol-v1.md](./docs/devtools-protocol-v1.md) — draft M4 runtime boundary and
   engine-independent contract fixtures; not native Inspector qualification.

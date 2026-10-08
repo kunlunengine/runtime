@@ -1,14 +1,13 @@
 //! Public resolver contract tests. These exercise module identities and policy;
 //! JavaScriptCore linking, evaluation, and import callbacks are separate work.
 
-#![cfg(unix)]
-
 use kunlun_runtime::{
     BUILTIN_MODULES, ModuleKind, ModuleResolutionError, ModuleResolutionErrorKind, ModuleResolver,
     ModuleUrl,
 };
 use std::collections::{HashMap, HashSet};
 use std::fs;
+#[cfg(unix)]
 use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -126,13 +125,16 @@ fn unix_path_layouts_and_unicode_round_trip_without_changing_identity() {
     let entry = fixture.entry(&resolver);
     // Both supported host families use absolute POSIX paths. Keep the fixtures
     // under the test root instead of depending on a real user's home directory.
-    for relative in [
+    let mut paths = vec![
         "Users/alice/My App/模块 ☃.mjs",
         "home/alice/my-app/模块 ☃.mjs",
         "src/100%.mjs",
         "src/%2f.mjs",
-        "src/what?#.mjs",
-    ] {
+    ];
+    if cfg!(unix) {
+        paths.push("src/what?#.mjs");
+    }
+    for relative in paths {
         let path = fixture.write(relative);
         let expected = resolver.resolve_entry(relative).unwrap();
         let encoded = file_url(&path);
@@ -204,7 +206,13 @@ fn query_and_fragment_are_identity_parts_but_not_filesystem_names() {
 #[test]
 fn aliases_and_cyclic_edges_converge_on_the_same_cache_entries() {
     let fixture = Fixture::new();
+    #[cfg(unix)]
     symlink("dep.mjs", fixture.root.join("src/dep-alias.mjs")).unwrap();
+    let dependency = if cfg!(unix) {
+        "./dep-alias.mjs"
+    } else {
+        "./dep.mjs"
+    };
     let resolver = fixture.resolver();
     let entry = fixture.entry(&resolver);
     let mut cache = HashMap::new();
@@ -214,7 +222,7 @@ fn aliases_and_cyclic_edges_converge_on_the_same_cache_entries() {
     // Follow resolver edges A -> B -> A repeatedly. This is a cache identity
     // contract, not a claim that JavaScriptCore has linked or evaluated a cycle.
     for _ in 0..16 {
-        for specifier in ["./dep-alias.mjs", "./nested/../entry.mjs"] {
+        for specifier in [dependency, "./nested/../entry.mjs"] {
             current = resolver.resolve(specifier, &current).unwrap();
             cache
                 .entry(current.cache_key().to_owned())
@@ -225,7 +233,9 @@ fn aliases_and_cyclic_edges_converge_on_the_same_cache_entries() {
     assert_eq!(cache.len(), 2);
     assert_eq!(cache.values().cloned().collect::<HashSet<_>>().len(), 2);
 
-    let another_instance = resolver.resolve("./dep-alias.mjs?v=2", &entry).unwrap();
+    let another_instance = resolver
+        .resolve(&format!("{dependency}?v=2"), &entry)
+        .unwrap();
     assert!(
         cache
             .insert(another_instance.cache_key().to_owned(), another_instance)
@@ -435,18 +445,25 @@ fn root_boundary_checks_cover_dot_segments_prefix_siblings_and_symlinks() {
     fs::create_dir(&outside).unwrap();
     let secret = outside.join("secret.mjs");
     fs::write(&secret, "export const secret = true;").unwrap();
-    symlink(&outside, fixture.root.join("src/outside-directory")).unwrap();
-    symlink(&secret, fixture.root.join("src/outside-file.mjs")).unwrap();
+    #[cfg(unix)]
+    {
+        symlink(&outside, fixture.root.join("src/outside-directory")).unwrap();
+        symlink(&secret, fixture.root.join("src/outside-file.mjs")).unwrap();
+    }
     let resolver = fixture.resolver();
     let entry = fixture.entry(&resolver);
-    let cases = [
+    let mut cases = vec![
         "../../project 空间-copy/secret.mjs".to_owned(),
         "./%2e%2e/%2e%2e/project 空间-copy/secret.mjs".to_owned(),
         secret.to_str().unwrap().to_owned(),
         file_url(&secret).to_string(),
-        "./outside-directory/secret.mjs".to_owned(),
-        "./outside-file.mjs".to_owned(),
     ];
+    if cfg!(unix) {
+        cases.extend([
+            "./outside-directory/secret.mjs".to_owned(),
+            "./outside-file.mjs".to_owned(),
+        ]);
+    }
     for specifier in cases {
         let error = resolution_error(&resolver, &specifier, &entry);
         match error.kind {
@@ -458,15 +475,19 @@ fn root_boundary_checks_cover_dot_segments_prefix_siblings_and_symlinks() {
         }
     }
 
-    symlink("loop-b.mjs", fixture.root.join("src/loop-a.mjs")).unwrap();
-    symlink("loop-a.mjs", fixture.root.join("src/loop-b.mjs")).unwrap();
-    assert!(matches!(
-        resolution_error(&resolver, "./loop-a.mjs", &entry).kind,
-        ModuleResolutionErrorKind::InvalidFileModule { .. }
-    ));
+    #[cfg(unix)]
+    {
+        symlink("loop-b.mjs", fixture.root.join("src/loop-a.mjs")).unwrap();
+        symlink("loop-a.mjs", fixture.root.join("src/loop-b.mjs")).unwrap();
+        assert!(matches!(
+            resolution_error(&resolver, "./loop-a.mjs", &entry).kind,
+            ModuleResolutionErrorKind::InvalidFileModule { .. }
+        ));
+    }
 }
 
 #[test]
+#[cfg(unix)]
 fn canonical_root_allows_in_root_symlinks_and_symlinked_application_roots() {
     let fixture = Fixture::new();
     let root_alias = fixture.base.join("application-link");

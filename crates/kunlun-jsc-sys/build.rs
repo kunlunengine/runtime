@@ -3,6 +3,8 @@ use std::path::PathBuf;
 
 #[path = "../../distribution/jsc/backend.rs"]
 mod backend;
+#[path = "../../distribution/jsc/paths.rs"]
+mod jsc_paths;
 
 const MANIFEST: &str = "../../distribution/jsc/manifest.json";
 const HEADER: &str = "include/kunlun_jsc.h";
@@ -24,6 +26,7 @@ fn main() {
 
     println!("cargo:rerun-if-env-changed=KUNLUN_JSC_RECEIPT_SHA256");
     println!("cargo:rerun-if-changed=../../distribution/jsc/backend.rs");
+    println!("cargo:rerun-if-changed=../../distribution/jsc/paths.rs");
     println!("cargo:rerun-if-changed={MANIFEST}");
 
     let target = env::var("TARGET").expect("Cargo sets TARGET");

@@ -75,6 +75,11 @@ verification is not a defense against a process that can rewrite them concurrent
 revision), `target`, `distribution mode`, distribution description, and `hermetic`. Here `hermetic`
 means Kunlun controls the selected JSC build, not that libc/system dependencies disappear.
 
+Windows x64 portability work is tracked in [Windows port](./windows-port.md). Its native
+engine-free CI and filesystem checks do not enable a Windows bundled backend or qualify a release.
+Artifact paths use canonical forward slashes and portable names on every host, never host-native
+path strings; reparse points and ambiguous Win32 aliases are rejected.
+
 The offline backend policy and corruption tests run with `cargo test -p xtask`; actual Cargo feature
 rejection tests run with `python3 distribution/jsc/scripts/test_cargo_backends.py` after
 `cargo fetch --locked` has cached Rust dependencies. Every rejection invocation uses `--offline`.

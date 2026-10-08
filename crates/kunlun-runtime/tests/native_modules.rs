@@ -64,16 +64,20 @@ fn sources_preserve_query_identity_and_deny_unregistered_generated_modules() {
 
 #[test]
 fn source_fetch_rejects_symlink_replacement_and_invalid_utf8() {
-    use std::os::unix::fs::symlink;
     let f = Fixture::new();
-    let outside = Fixture::new();
-    f.write("entry.mjs", "export default 1;");
-    outside.write("secret.mjs", "export default 'secret';");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+        let outside = Fixture::new();
+        f.write("entry.mjs", "export default 1;");
+        outside.write("secret.mjs", "export default 'secret';");
+        let sources = f.sources();
+        let entry = sources.resolve("entry.mjs", None).unwrap();
+        std::fs::remove_file(f.0.join("entry.mjs")).unwrap();
+        symlink(outside.0.join("secret.mjs"), f.0.join("entry.mjs")).unwrap();
+        assert!(sources.fetch(&entry).is_err());
+    }
     let sources = f.sources();
-    let entry = sources.resolve("entry.mjs", None).unwrap();
-    std::fs::remove_file(f.0.join("entry.mjs")).unwrap();
-    symlink(outside.0.join("secret.mjs"), f.0.join("entry.mjs")).unwrap();
-    assert!(sources.fetch(&entry).is_err());
     std::fs::write(f.0.join("invalid.mjs"), [0xff]).unwrap();
     let url = sources.resolve("invalid.mjs", None).unwrap();
     assert!(sources.fetch(&url).unwrap_err().contains("UTF-8"));

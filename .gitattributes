@@ -1,0 +1,3 @@
+# Artifact inputs (patches, headers, licenses, fixtures) are hashed as bytes.
+# Keep their checked-out contents identical on Windows, macOS, and Linux.
+* text=auto eol=lf

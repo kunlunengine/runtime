@@ -110,11 +110,26 @@ def toolchain_tool_version(
 
 
 def checked_relative_path(value: str, label: str) -> PurePosixPath:
-    """Reject absolute paths and traversal before using manifest paths."""
-    path = PurePosixPath(value)
-    if not value or path.is_absolute() or ".." in path.parts:
-        raise ArtifactError(f"{label} is not a safe relative path: {value!r}")
-    return path
+    """Require canonical portable names, matching distribution/jsc/paths.rs."""
+    ascii_uppercase = str.maketrans("abcdefghijklmnopqrstuvwxyz", "ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+    devices = {"CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"}
+    for part in value.split("/"):
+        stem = part.split(".", 1)[0].translate(ascii_uppercase)
+        if (
+            not part
+            or part in {".", ".."}
+            or part.endswith((".", " "))
+            or any(ord(c) < 32 or 127 <= ord(c) <= 159 or c in '<>:"\\|?*' for c in part)
+            or stem in devices
+            or (stem[:3] in {"COM", "LPT"} and stem[3:] in set("123456789¹²³"))
+        ):
+            raise ArtifactError(f"{label} is not a safe relative path: {value!r}")
+    return PurePosixPath(value)
+
+
+def is_reparse_point(path: Path) -> bool:
+    """Reject all Windows reparse points, not just symbolic-link tags."""
+    return bool(getattr(path.lstat(), "st_file_attributes", 0) & 0x400)
 
 
 def license_filename(index: int, component: str, source_path: str) -> str:
@@ -127,7 +142,7 @@ def license_filename(index: int, component: str, source_path: str) -> str:
 
 def copy_exact(source: Path, destination: Path, expected_digest: str | None = None) -> None:
     """Copy a regular file and optionally enforce its reviewed digest."""
-    if not source.is_file() or source.is_symlink():
+    if not source.is_file() or source.is_symlink() or is_reparse_point(source):
         raise ArtifactError(f"required regular file is missing: {source}")
     if expected_digest is not None:
         actual = sha256_file(source)
@@ -246,8 +261,9 @@ def create_build_metadata(
 def iter_regular_files(root: Path) -> Iterable[Path]:
     """Yield artifact files in stable archive order."""
     for path in sorted(root.rglob("*"), key=lambda item: item.relative_to(root).as_posix()):
-        if path.is_symlink():
-            raise ArtifactError(f"artifact staging tree must not contain symlinks: {path}")
+        checked_relative_path(path.relative_to(root).as_posix(), "artifact staging path")
+        if path.is_symlink() or is_reparse_point(path):
+            raise ArtifactError(f"artifact staging tree must not contain symlinks or reparse points: {path}")
         if path.is_file():
             yield path
         elif not path.is_dir():
@@ -536,19 +552,17 @@ def decompress_archive(archive: Path, zstd: str, destination: Path) -> list[tarf
         members = source.getmembers()
         names: set[str] = set()
         for member in members:
-            path = PurePosixPath(member.name)
+            try:
+                path = checked_relative_path(member.name, "archive member")
+            except ArtifactError as error:
+                raise ArtifactError(f"unsafe or duplicate archive member: {member.name!r}") from error
             normalized = path.as_posix()
             if (
-                not member.name
-                or not path.parts
-                or path.is_absolute()
-                or ".." in path.parts
-                or member.name != normalized
-                or normalized in names
+                normalized.casefold() in names
                 or not (member.isfile() or member.isdir())
             ):
                 raise ArtifactError(f"unsafe or duplicate archive member: {member.name!r}")
-            names.add(normalized)
+            names.add(normalized.casefold())
             if path.parts[0] not in ALLOWED_TOP_LEVEL:
                 raise ArtifactError(f"unexpected top-level archive member: {member.name}")
         source.extractall(extract_root, members=members)

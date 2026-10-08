@@ -3,7 +3,7 @@ use crate::source_maps::{MAX_MAP_BYTES, SourceMaps};
 use crate::{ModuleKind, ModuleResolver, ModuleUrl};
 use base64::Engine;
 use cap_std::ambient_authority;
-use cap_std::fs::{Dir, OpenOptions, OpenOptionsExt};
+use cap_std::fs::Dir;
 use kunlun_jsc::ModuleLoader;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -158,15 +158,8 @@ impl ModuleSources {
         // Directory-relative open preserves containment even if a component is
         // swapped for a symlink after resolution. O_NONBLOCK avoids hanging if
         // the file is raced into a FIFO; metadata rejects all non-regular files.
-        let mut options = OpenOptions::new();
-        options.read(true).custom_flags(libc::O_NONBLOCK);
-        let file = self
-            .directory
-            .open_with(relative, &options)
+        let file = crate::regular_file::open_regular_file(&self.directory, relative, false)
             .map_err(|e| format!("cannot fetch {url}: {e}"))?;
-        if !file.metadata().map_err(|e| e.to_string())?.is_file() {
-            return Err(format!("module {url} is not a regular file"));
-        }
         let mut source = String::new();
         file.take(limit as u64 + 1)
             .read_to_string(&mut source)

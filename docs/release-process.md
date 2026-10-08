@@ -100,6 +100,10 @@ supportable WebKit/JSC build and release story. Do not advertise or add `x86_64-
 Runtime release target until that engine path and its artifact, test, and signed-evidence gates have
 been qualified.
 
+The [Windows port foundation](./windows-port.md) adds native engine-free CI and filesystem
+portability. It is not Windows JSC or product release evidence and does not authorize adding a
+Windows asset to the release matrix.
+
 If a published artifact is defective, do not move its tag or overwrite the asset. Preserve the
 original evidence, report the affected digest and impact, and issue a separately reviewed corrective
 release with a new immutable tag.

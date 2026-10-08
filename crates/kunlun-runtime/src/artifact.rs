@@ -4,7 +4,7 @@ use crate::modules::{ModuleKind, ModuleResolver};
 use crate::source_maps::{MAX_MAP_BYTES, SourceMaps};
 use crate::{ApplicationAuthority, HostPermissions};
 use cap_std::ambient_authority;
-use cap_std::fs::{Dir, OpenOptions, OpenOptionsExt};
+use cap_std::fs::Dir;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -593,11 +593,7 @@ fn read_bounded(
     location: &str,
     limit: usize,
 ) -> Result<Vec<u8>, AdmissionError> {
-    let mut options = OpenOptions::new();
-    options
-        .read(true)
-        .custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW);
-    let file = directory.open_with(relative, &options).map_err(|e| {
+    let file = crate::regular_file::open_regular_file(directory, relative, true).map_err(|e| {
         AdmissionError::new(
             if e.kind() == std::io::ErrorKind::NotFound {
                 AdmissionErrorKind::MissingFile
@@ -608,23 +604,6 @@ fn read_bounded(
             format!("cannot open file: {:?}", e.kind()),
         )
     })?;
-    if !file
-        .metadata()
-        .map_err(|e| {
-            AdmissionError::new(
-                AdmissionErrorKind::InvalidFile,
-                location,
-                format!("cannot inspect file: {:?}", e.kind()),
-            )
-        })?
-        .is_file()
-    {
-        return Err(AdmissionError::new(
-            AdmissionErrorKind::InvalidFile,
-            location,
-            "not a regular file",
-        ));
-    }
     let mut bytes = Vec::new();
     file.take(limit as u64 + 1)
         .read_to_end(&mut bytes)

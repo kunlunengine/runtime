@@ -8,6 +8,14 @@ mod jsc_ownership;
 #[path = "../../crates/kunlun-jsc/src/rejection_ledger.rs"]
 mod jsc_rejection_ledger;
 
+#[path = "../../distribution/jsc/paths.rs"]
+mod jsc_paths;
+
+// Exercise the production file-open policy without manufacturing a JSC backend.
+#[cfg(test)]
+#[path = "../../crates/kunlun-runtime/src/regular_file.rs"]
+mod runtime_regular_file;
+
 mod jsc_manifest;
 
 use std::env;

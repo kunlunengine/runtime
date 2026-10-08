@@ -71,7 +71,8 @@
     "relativePath": {
       "type": "string",
       "minLength": 1,
-      "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+$"
+      "description": "Canonical forward-slash portable relative path; the Rust validator also rejects Win32 device aliases.",
+      "pattern": "^(?!/)(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*//)(?!.*[. ](?:/|$))[^<>:\"\\\\|?*\\u0000-\\u001f\\u007f-\\u009f]+(?<!/)$"
     },
     "sha256": {
       "type": "string",

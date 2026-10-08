@@ -7,7 +7,11 @@ use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
+use crate::jsc_paths as paths;
+
 pub const RECEIPT: &str = ".kunlun-jsc-verification.json";
+#[cfg(windows)]
+const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
 pub const TARGETS: [&str; 4] = [
     "aarch64-apple-darwin",
     "x86_64-apple-darwin",
@@ -86,6 +90,22 @@ fn inventory(
         let entry = entry.map_err(|e| e.to_string())?;
         let path = entry.path();
         let kind = entry.file_type().map_err(|e| e.to_string())?;
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::MetadataExt;
+            // Junctions and other reparse points must not escape the verified tree.
+            if fs::symlink_metadata(&path)
+                .map_err(|e| e.to_string())?
+                .file_attributes()
+                & FILE_ATTRIBUTE_REPARSE_POINT
+                != 0
+            {
+                return Err(format!(
+                    "distribution contains a reparse point: {}",
+                    path.display()
+                ));
+            }
+        }
         if kind.is_symlink() || (!kind.is_file() && !kind.is_dir()) {
             return Err(format!(
                 "distribution contains a symlink or special file: {}",
@@ -95,12 +115,9 @@ fn inventory(
         if kind.is_dir() {
             inventory(root, &path, files)?;
         } else {
-            let relative = path
-                .strip_prefix(root)
-                .map_err(|e| e.to_string())?
-                .to_str()
-                .ok_or("distribution path is not UTF-8")?
-                .to_owned();
+            let relative =
+                paths::inventory_path(path.strip_prefix(root).map_err(|e| e.to_string())?)
+                    .ok_or("distribution path is not a canonical portable UTF-8 path")?;
             if relative != RECEIPT {
                 files.insert(relative, sha256(&path)?);
             }
@@ -390,6 +407,17 @@ mod tests {
                     .contains(&fixture.staging().join(RECEIPT).canonicalize().unwrap())
             );
         }
+    }
+
+    #[test]
+    fn receipt_inventory_uses_portable_paths() {
+        let fixture = Fixture::new(TARGETS[0]);
+        let receipt = json(&fixture.staging().join(RECEIPT)).unwrap();
+        let files = receipt["files"].as_object().unwrap();
+        assert!(files.contains_key("include/kunlun_jsc.h"));
+        assert!(files.contains_key("metadata/build.json"));
+        assert!(files.keys().all(|path| !path.contains('\\')));
+        assert!(fixture.verify(&fixture.receipt()).is_ok());
     }
 
     #[test]

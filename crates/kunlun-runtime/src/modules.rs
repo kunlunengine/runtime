@@ -634,7 +634,12 @@ mod tests {
 
     #[test]
     fn non_interrupted_filesystem_errors_are_preserved_without_retry() {
-        for errno in [libc::ENOENT, libc::EACCES, libc::EIO, libc::EAGAIN] {
+        for kind in [
+            io::ErrorKind::NotFound,
+            io::ErrorKind::PermissionDenied,
+            io::ErrorKind::Other,
+            io::ErrorKind::WouldBlock,
+        ] {
             for interruptions in [0, 2] {
                 let mut attempts = 0;
                 let error = retry_interrupted::<()>(|| {
@@ -643,12 +648,12 @@ mod tests {
                     if attempts <= interruptions {
                         Err(io::ErrorKind::Interrupted.into())
                     } else {
-                        Err(io::Error::from_raw_os_error(errno))
+                        Err(kind.into())
                     }
                 })
                 .unwrap_err();
                 assert_eq!(attempts, interruptions + 1);
-                assert_eq!(error.raw_os_error(), Some(errno));
+                assert_eq!(error.kind(), kind);
             }
         }
     }

@@ -77,6 +77,48 @@ jobs:
             - name: Run tests
               run: cargo test -p xtask
 
+    windows-portability:
+        name: Windows x64 portability (not JSC qualification)
+        runs-on: windows-2025
+        timeout-minutes: 20
+        permissions:
+            contents: read
+        defaults:
+            run:
+                shell: pwsh
+        steps:
+            - uses: actions/checkout@v7
+              with:
+                  persist-credentials: false
+            - name: Install native Windows Rust
+              uses: dtolnay/rust-toolchain@stable
+              with:
+                  components: clippy
+            - name: Verify native Windows host
+              run: |
+                  $version = rustc -vV
+                  if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+                  if ($version -notcontains "host: x86_64-pc-windows-msvc") {
+                      throw "Windows portability tests require the native x64 MSVC Rust host"
+                  }
+            - name: Cache cargo registry
+              uses: actions/cache@v4
+              with:
+                  path: ~/.cargo/registry
+                  key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+            - name: Validate byte-pinned manifest on Windows
+              run: cargo xtask jsc-manifest validate
+            - name: Lint engine-independent code and shared file opens
+              run: cargo clippy --locked -p xtask -p kunlun-runtime-protocol -p kunlun-devtools-protocol --all-targets -- -D warnings
+            - name: Test engine-independent code and shared file opens
+              run: cargo test --locked -p xtask -p kunlun-runtime-protocol -p kunlun-devtools-protocol
+            - name: Test portable artifact paths and extraction
+              run: python -m unittest discover -s distribution/jsc/scripts/tests -p test_jsc_paths.py -v
+            - name: Cache dependencies for offline backend rejection tests
+              run: cargo fetch --locked
+            - name: Keep unqualified Windows JSC fail-closed
+              run: python distribution/jsc/scripts/test_cargo_backends.py
+
     m0-macos:
         name: M0 macOS (${{ matrix.arch }})
         strategy:

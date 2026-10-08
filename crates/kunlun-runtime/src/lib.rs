@@ -8,6 +8,7 @@ mod fetch_dispatch;
 mod host;
 mod module_sources;
 mod modules;
+mod regular_file;
 mod source_maps;
 mod web;
 pub use artifact::{
